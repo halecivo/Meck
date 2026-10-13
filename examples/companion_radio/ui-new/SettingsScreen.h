@@ -1399,6 +1399,7 @@ public:
       String path = _otaServer->arg("path");
       if (path.isEmpty()) path = "/";
       String msg = _otaServer->arg("msg");
+      if (!fmPathAllowed(path)) { path = "/"; msg = "Path not allowed"; }
       Serial.printf("FM: page request path='%s'\n", path.c_str());
       String html = fmBuildPage(path, msg);
       _otaServer->send(200, "text/html", html);
@@ -1407,6 +1408,10 @@ public:
     // --- File download: GET /dl?path=/file.txt ---
     _otaServer->on("/dl", HTTP_GET, [this]() {
       String path = _otaServer->arg("path");
+      if (!fmPathAllowed(path)) {
+        _otaServer->send(403, "text/plain", "Forbidden");
+        return;
+      }
       File f = SD.open(path, FILE_READ);
       if (!f || f.isDirectory()) {
         if (f) f.close();
@@ -1436,11 +1441,13 @@ public:
     });
 
     // --- File upload: POST /upload?dir=/ → redirect back to listing ---
+    static bool fmUploadOk = false;
     _otaServer->on("/upload", HTTP_POST,
       [this]() {
         String dir = _otaServer->arg("dir");
-        if (dir.isEmpty()) dir = "/";
-        _otaServer->sendHeader("Location", "/?path=" + dir + "&msg=Upload+complete");
+        if (dir.isEmpty() || !fmPathAllowed(dir)) dir = "/";
+        _otaServer->sendHeader("Location", "/?path=" + fmUrlEncode(dir) +
+          (fmUploadOk ? "&msg=Upload+complete" : "&msg=Upload+rejected"));
         _otaServer->send(303, "text/plain", "Redirecting...");
       },
       [this]() {
@@ -1453,8 +1460,14 @@ public:
           if (!dir.endsWith("/")) dir += "/";
           String fullPath = dir + upload.filename;
           Serial.printf("FM: Upload start: %s\n", fullPath.c_str());
-          fmUploadFile = SD.open(fullPath, FILE_WRITE);
-          if (!fmUploadFile) Serial.println("FM: Failed to open file for write");
+          fmUploadOk = false;
+          if (upload.filename.indexOf('/') >= 0 || !fmPathAllowed(fullPath)) {
+            Serial.println("FM: Upload rejected (path not allowed)");
+          } else {
+            fmUploadFile = SD.open(fullPath, FILE_WRITE);
+            if (!fmUploadFile) Serial.println("FM: Failed to open file for write");
+            else fmUploadOk = true;
+          }
 
         } else if (upload.status == UPLOAD_FILE_WRITE) {
           if (fmUploadFile) fmUploadFile.write(upload.buf, upload.currentSize);
@@ -1479,18 +1492,18 @@ public:
     _otaServer->on("/mkdir", HTTP_GET, [this]() {
       String dir = _otaServer->arg("dir");
       String name = _otaServer->arg("name");
-      if (dir.isEmpty()) dir = "/";
+      if (dir.isEmpty() || !fmPathAllowed(dir)) dir = "/";
       if (name.isEmpty()) {
-        _otaServer->sendHeader("Location", "/?path=" + dir + "&msg=No+name");
+        _otaServer->sendHeader("Location", "/?path=" + fmUrlEncode(dir) + "&msg=No+name");
         _otaServer->send(303);
         return;
       }
       String full = dir + (dir.endsWith("/") ? "" : "/") + name;
-      bool ok = SD.mkdir(full);
+      bool ok = name.indexOf('/') < 0 && fmPathAllowed(full) && SD.mkdir(full);
       digitalWrite(SDCARD_CS, HIGH);
       Serial.printf("FM: mkdir '%s' %s\n", full.c_str(), ok ? "OK" : "FAIL");
       _otaServer->sendHeader("Location",
-        "/?path=" + dir + "&msg=" + (ok ? "Folder+created" : "mkdir+failed"));
+        "/?path=" + fmUrlEncode(dir) + "&msg=" + (ok ? "Folder+created" : "mkdir+failed"));
       _otaServer->send(303);
     });
 
@@ -1498,9 +1511,9 @@ public:
     _otaServer->on("/rm", HTTP_GET, [this]() {
       String path = _otaServer->arg("path");
       String ret = _otaServer->arg("ret");
-      if (ret.isEmpty()) ret = "/";
-      if (path.isEmpty() || path == "/") {
-        _otaServer->sendHeader("Location", "/?path=" + ret + "&msg=Bad+path");
+      if (ret.isEmpty() || !fmPathAllowed(ret)) ret = "/";
+      if (path.isEmpty() || path == "/" || !fmPathAllowed(path)) {
+        _otaServer->sendHeader("Location", "/?path=" + fmUrlEncode(ret) + "&msg=Bad+path");
         _otaServer->send(303);
         return;
       }
@@ -1514,7 +1527,7 @@ public:
       digitalWrite(SDCARD_CS, HIGH);
       Serial.printf("FM: rm '%s' %s\n", path.c_str(), ok ? "OK" : "FAIL");
       _otaServer->sendHeader("Location",
-        "/?path=" + ret + "&msg=" + (ok ? "Deleted" : "Delete+failed"));
+        "/?path=" + fmUrlEncode(ret) + "&msg=" + (ok ? "Deleted" : "Delete+failed"));
       _otaServer->send(303);
     });
 
@@ -1522,7 +1535,12 @@ public:
     _otaServer->on("/confirm-rm", HTTP_GET, [this]() {
       String path = _otaServer->arg("path");
       String ret = _otaServer->arg("ret");
-      if (ret.isEmpty()) ret = "/";
+      if (ret.isEmpty() || !fmPathAllowed(ret)) ret = "/";
+      if (!fmPathAllowed(path)) {
+        _otaServer->sendHeader("Location", "/?path=" + fmUrlEncode(ret) + "&msg=Bad+path");
+        _otaServer->send(303);
+        return;
+      }
       String name = path;
       int sl = name.lastIndexOf('/');
       if (sl >= 0) name = name.substring(sl + 1);
@@ -1596,6 +1614,38 @@ public:
       else r += c;
     }
     return r;
+  }
+
+  static bool fmIsOrUnder(const String& lowerPath, const char* prefix) {
+    size_t n = strlen(prefix);
+    return lowerPath.startsWith(prefix) && (lowerPath.length() == n || lowerPath[n] == '/');
+  }
+
+  // Paths coming from the browser are untrusted. Reject traversal and the
+  // aliases FAT accepts for the same file (case, 8.3 short names such as
+  // MESHCO~1, trailing dots/spaces), then refuse the files that hold secrets:
+  // the node identity (private key) and the saved WiFi password.
+  static bool fmPathAllowed(const String& path) {
+    size_t len = path.length();
+    if (len == 0 || len > 200 || path[0] != '/') return false;
+    for (size_t i = 0; i < len; i++) {
+      char c = path[i];
+      if ((uint8_t)c < 0x20 || c == 0x7F || c == '\\' || c == '~' || c == ':' ||
+          c == '*' || c == '?' || c == '"' || c == '<' || c == '>' || c == '|') return false;
+      if (c == '/' && i + 1 < len) {
+        char n = path[i + 1];
+        if (n == '/' || n == ' ' || n == '.') return false;   // "//", hidden/dot names, "/.."
+      }
+      if (c == '/' && i > 0 && (path[i - 1] == ' ' || path[i - 1] == '.')) return false;
+    }
+    if (len > 1 && (path[len - 1] == ' ' || path[len - 1] == '.')) return false;
+
+    String lower = path;
+    lower.toLowerCase();
+    while (lower.length() > 1 && lower.endsWith("/")) lower.remove(lower.length() - 1);
+    if (fmIsOrUnder(lower, "/meshcore/identity")) return false;
+    if (lower == "/web/wifi.cfg") return false;
+    return true;
   }
 
   static String fmUrlEncode(const String& s) {
