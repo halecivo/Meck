@@ -1034,12 +1034,30 @@ public:
       "</body></html>";
   }
 
+  // A firmware write takes about a minute; losing power part-way is recoverable
+  // thanks to the two OTA slots but wastes the update, so refuse on a weak battery.
+  #ifndef MECK_OTA_MIN_BATT_MV
+    #define MECK_OTA_MIN_BATT_MV 3500
+  #endif
+  bool otaBatteryTooLow() {
+    #if defined(LilyGo_TDeck_Pro_Max)
+    uint16_t mv = board.getBattMilliVolts();
+    if (mv > 0 && mv < MECK_OTA_MIN_BATT_MV) {
+      Serial.printf("OTA: Battery too low for update (%u mV < %d mV)\n", (unsigned)mv, MECK_OTA_MIN_BATT_MV);
+      _otaError = MECK_TR("Battery too low - charge first", "Batterie trop faible - rechargez");
+      return true;
+    }
+    #endif
+    return false;
+  }
+
   void startOTA() {
     _editMode = EDIT_OTA;
     _otaPhase = OTA_PHASE_CONFIRM;
     _otaBytesReceived = 0;
     _otaUploadOk = false;
     _otaError = nullptr;
+    if (otaBatteryTooLow()) _otaPhase = OTA_PHASE_ERROR;
   }
 
   void startOTAServer() {
@@ -1344,6 +1362,13 @@ public:
 
     _otaPhase = OTA_PHASE_VERIFY;
     if (!verifyFirmwareFile()) {
+      _otaPhase = OTA_PHASE_ERROR;
+      return;
+    }
+
+    // Re-check now that WiFi is off: the radio load during the upload can mask
+    // how low the battery really is.
+    if (otaBatteryTooLow()) {
       _otaPhase = OTA_PHASE_ERROR;
       return;
     }
