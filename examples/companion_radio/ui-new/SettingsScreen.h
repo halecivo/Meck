@@ -33,6 +33,20 @@
   #include <DNSServer.h>
   #include <Update.h>
   #include <esp_ota_ops.h>
+
+  // Board identity embedded in every image so OTA can refuse a firmware that
+  // was built for a different board (a wrong pinout can leave the device
+  // unresponsive). verifyFirmwareFile() scans the uploaded image for
+  // MECK_OTA_ID_PREFIX followed by the id and compares it with ours.
+  #define MECK_OTA_ID_PREFIX "MECKBRD:"
+  #if defined(LilyGo_TDeck_Pro_Max)
+    #define MECK_OTA_BOARD "tdeck_max"
+  #elif defined(LilyGo_TDeck_Pro)
+    #define MECK_OTA_BOARD "tdeck_pro"
+  #else
+    #define MECK_OTA_BOARD "other"
+  #endif
+  static const char kMeckOtaBoardMarker[] __attribute__((used)) = MECK_OTA_ID_PREFIX MECK_OTA_BOARD;
 #endif
 
 // Forward declarations
@@ -1162,6 +1176,10 @@ public:
     // Check ESP32 image magic byte
     uint8_t magic;
     f.read(&magic, 1);
+
+    // Board id embedded in the image (empty if the image predates the marker)
+    char imageBoard[24] = {0};
+    bool hasBoardId = (magic == 0xE9) && findImageBoardId(f, imageBoard, sizeof(imageBoard));
     f.close();
     digitalWrite(SDCARD_CS, HIGH);
 
@@ -1170,7 +1188,61 @@ public:
       Serial.printf("OTA: Bad magic: 0x%02X\n", magic);
       return false;
     }
+    // Compare against the marker array itself so it is kept in the image
+    const char* ownBoard = kMeckOtaBoardMarker;
+    asm volatile("" : "+r"(ownBoard));   // force the array to be emitted, not constant-folded away
+    ownBoard += sizeof(MECK_OTA_ID_PREFIX) - 1;
+    if (hasBoardId && strcmp(imageBoard, ownBoard) != 0) {
+      _otaError = MECK_TR("Firmware is for another board", "Firmware pour une autre carte");
+      Serial.printf("OTA: Board mismatch: image '%s', this device '%s'\n", imageBoard, ownBoard);
+      return false;
+    }
+    #ifdef MECK_OTA_REQUIRE_BOARD_ID
+    if (!hasBoardId) {
+      _otaError = MECK_TR("No board id in firmware", "Identifiant de carte absent");
+      Serial.println("OTA: Image has no board id marker");
+      return false;
+    }
+    #endif
     return true;
+  }
+
+  // Scan an image for MECK_OTA_ID_PREFIX<id> and copy <id> to out. Returns
+  // false if the image carries no (non-empty) id, e.g. a build from before the
+  // marker existed. The bare prefix literal inside verify code is skipped
+  // because its id is empty.
+  bool findImageBoardId(File& f, char* out, size_t outLen) {
+    const char* prefix = MECK_OTA_ID_PREFIX;
+    const size_t pl = strlen(prefix);
+    const size_t CHUNK = 2048;
+    const size_t OVERLAP = pl + 32;   // longest id we accept follows the prefix
+    uint8_t* buf = (uint8_t*)malloc(CHUNK + OVERLAP);
+    if (!buf) return false;
+
+    bool found = false;
+    size_t have = 0;
+    bool eof = false;
+    f.seek(0);
+    while (!eof && !found) {
+      int n = f.read(buf + have, CHUNK);
+      if (n <= 0) eof = true; else have += n;
+      // Only start matches early enough that their id is fully in the buffer,
+      // until the final pass.
+      size_t limit = eof ? have : (have > OVERLAP ? have - OVERLAP : 0);
+      for (size_t i = 0; i < limit && i + pl < have && !found; i++) {
+        if (buf[i] != (uint8_t)prefix[0] || memcmp(buf + i, prefix, pl) != 0) continue;
+        size_t j = i + pl, k = 0;
+        while (j < have && k < outLen - 1 && buf[j] >= 0x21 && buf[j] < 0x7F) out[k++] = (char)buf[j++];
+        out[k] = '\0';
+        if (k > 0) found = true;
+      }
+      if (!eof && !found) {
+        memmove(buf, buf + limit, have - limit);
+        have -= limit;
+      }
+    }
+    free(buf);
+    return found;
   }
 
   bool flashFirmwareFromSD(DisplayDriver& display) {
