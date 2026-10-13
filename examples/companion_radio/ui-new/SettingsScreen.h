@@ -734,6 +734,14 @@ private:
                   _prefs->freq, _prefs->bw, _prefs->sf, _prefs->cr, _prefs->tx_power_dbm);
   }
 
+  // Companion repeat mode is on (switched on from the app): a frequency
+  // change was refused because it is not an allowed repeat frequency
+  void alertRepeatFreq() {
+    extern void meckShowAlert(const char* text, int duration_millis);
+    meckShowAlert(MECK_TR("Repeat mode on: only\n433, 869.495 or 918 MHz",
+                          "R\xC3\xA9p\xC3\xA9teur actif : seuls\n433, 869.495, 918 MHz"), 2500);
+  }
+
 public:
   SettingsScreen(UITask* task, mesh::RTCClock* rtc, NodePrefs* prefs)
     : _task(task), _rtc(rtc), _prefs(prefs),
@@ -3351,9 +3359,13 @@ public:
           if (_editPos > 0) {
             float f = strtof(_editBuf, nullptr);
             f = constrain(f, 400.0f, 2500.0f);
-            _prefs->freq = f;
-            _radioChanged = true;
-            Serial.printf("Settings: Freq typed to %.3f\n", f);
+            if (!the_mesh.isFreqChangeAllowed(f)) {
+              alertRepeatFreq();
+            } else {
+              _prefs->freq = f;
+              _radioChanged = true;
+              Serial.printf("Settings: Freq typed to %.3f\n", f);
+            }
           }
           _editMode = EDIT_NONE;
         } else if (type == ROW_ADD_CHANNEL) {
@@ -3552,7 +3564,10 @@ public:
                         _prefs->ui_font_style);
         } else {
           // Apply radio preset
-          if (_editPickerIdx >= 0 && _editPickerIdx < (int)NUM_RADIO_PRESETS) {
+          if (_editPickerIdx >= 0 && _editPickerIdx < (int)NUM_RADIO_PRESETS
+              && !the_mesh.isFreqChangeAllowed(RADIO_PRESETS[_editPickerIdx].freq)) {
+            alertRepeatFreq();
+          } else if (_editPickerIdx >= 0 && _editPickerIdx < (int)NUM_RADIO_PRESETS) {
             const RadioPreset& p = RADIO_PRESETS[_editPickerIdx];
             _prefs->freq = p.freq;
             _prefs->bw = p.bw;

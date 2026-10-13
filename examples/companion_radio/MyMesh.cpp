@@ -69,6 +69,7 @@
 #define CMD_SEND_ANON_REQ             57
 #define CMD_SET_AUTOADD_CONFIG        58
 #define CMD_GET_AUTOADD_CONFIG        59
+#define CMD_GET_ALLOWED_REPEAT_FREQ   60
 #define CMD_SET_PATH_HASH_MODE        61
 #define CMD_SEND_CHANNEL_DATA         62
 #define CMD_SET_DEFAULT_FLOOD_SCOPE   63   // v1.15+ (device-wide default scope name+key)
@@ -694,6 +695,10 @@ bool MyMesh::filterRecvFloodPacket(mesh::Packet* packet) {
   }
 
   return false;  // never filter Ã¢â‚¬â€ let normal processing continue
+}
+
+bool MyMesh::allowPacketForward(const mesh::Packet* packet) {
+  return _prefs.client_repeat != 0;
 }
 
 uint8_t MyMesh::getHeardBy(const uint8_t* payload, uint16_t payload_len,
@@ -1872,6 +1877,37 @@ uint32_t MyMesh::getBLEPin() {
   return _active_ble_pin;
 }
 
+struct FreqRange {
+  uint32_t lower_freq, upper_freq;
+};
+
+// Companion repeat mode: the only frequencies it may be on (kHz), as
+// upstream MeshCore. The Settings alert and serial CLI messages list them.
+static FreqRange repeat_freq_ranges[] = {
+  { 433000, 433000 },
+  { 869495, 869495 },
+  { 918000, 918000 }
+};
+
+bool MyMesh::isValidClientRepeatFreq(uint32_t f) const {
+  for (int i = 0; i < sizeof(repeat_freq_ranges)/sizeof(repeat_freq_ranges[0]); i++) {
+    auto r = &repeat_freq_ranges[i];
+    if (f >= r->lower_freq && f <= r->upper_freq) return true;
+  }
+  return false;
+}
+
+bool MyMesh::isFreqChangeAllowed(float freq_mhz) const {
+  if (_prefs.client_repeat == 0) return true;
+  return isValidClientRepeatFreq((uint32_t)(freq_mhz * 1000.0f + 0.5f));  // MHz to kHz, rounded
+}
+
+// Serial CLI reply when a frequency change is refused (repeat mode is on)
+static void printRepeatFreqRefusal() {
+  Serial.println("  Error: repeat mode is on, so freq must be 433.000, 869.495 or 918.000");
+  Serial.println("  (turn repeat mode off in the companion app to use other frequencies)");
+}
+
 void MyMesh::startInterface(BaseSerialInterface &serial) {
   _serial = &serial;
 #if defined(ESP32) && defined(BLE_PIN_CODE) && !defined(WIFI_SSID) && !defined(MECK_WIFI_COMPANION)
@@ -1904,6 +1940,8 @@ void MyMesh::handleCmdFrame(size_t len) {
     i += 40;
     StrHelper::strzcpy((char *)&out_frame[i], FIRMWARE_VERSION, 20);
     i += 20;
+    out_frame[i++] = _prefs.client_repeat ? 1 : 0;   // v9+
+    out_frame[i++] = _prefs.path_hash_mode;  // v10+
     _serial->writeFrame(out_frame, i);
   } else if (cmd_frame[0] == CMD_APP_START &&
              len >= 8) { // sent when app establishes connection, respond with node ID
@@ -2457,13 +2495,20 @@ void MyMesh::handleCmdFrame(size_t len) {
     i += 4;
     uint8_t sf = cmd_frame[i++];
     uint8_t cr = cmd_frame[i++];
+    uint8_t repeat = 0;  // default - false
+    if (len > i) {
+      repeat = cmd_frame[i++];   // FIRMWARE_VER_CODE  9+
+    }
 
-    if (freq >= 300000 && freq <= 2500000 && sf >= 5 && sf <= 12 && cr >= 5 && cr <= 8 && bw >= 7000 &&
+    if (repeat && !isValidClientRepeatFreq(freq)) {
+      writeErrFrame(ERR_CODE_ILLEGAL_ARG);
+    } else if (freq >= 300000 && freq <= 2500000 && sf >= 5 && sf <= 12 && cr >= 5 && cr <= 8 && bw >= 7000 &&
         bw <= 500000) {
       _prefs.sf = sf;
       _prefs.cr = cr;
       _prefs.freq = (float)freq / 1000.0;
       _prefs.bw = (float)bw / 1000.0;
+      _prefs.client_repeat = repeat ? 1 : 0;
       savePrefs();
 
       radio_set_params(_prefs.freq, _prefs.bw, _prefs.sf, _prefs.cr);
@@ -3056,6 +3101,15 @@ void MyMesh::handleCmdFrame(size_t len) {
     out_frame[i++] = RESP_CODE_AUTOADD_CONFIG;
     out_frame[i++] = _prefs.autoadd_config;
     _serial->writeFrame(out_frame, i);
+  } else if (cmd_frame[0] == CMD_GET_ALLOWED_REPEAT_FREQ) {
+    int i = 0;
+    out_frame[i++] = RESP_ALLOWED_REPEAT_FREQ;
+    for (int k = 0; k < sizeof(repeat_freq_ranges)/sizeof(repeat_freq_ranges[0]) && i + 8 < sizeof(out_frame); k++) {
+      auto r = &repeat_freq_ranges[k];
+      memcpy(&out_frame[i], &r->lower_freq, 4); i += 4;
+      memcpy(&out_frame[i], &r->upper_freq, 4); i += 4;
+    }
+    _serial->writeFrame(out_frame, i);
 #if defined(BLE_PIN_CODE) && defined(MECK_WIFI_COMPANION)
   } else if (cmd_frame[0] == CMD_RUN_CLI_COMMAND && len >= 3) {
     // App command line (upstream MeshCore, v14+). This build answers
@@ -3369,7 +3423,9 @@ void MyMesh::checkCLIRescueCmd() {
 
       } else if (memcmp(config, "freq ", 5) == 0) {
         float f = atof(&config[5]);
-        if (f >= 400.0f && f <= 928.0f) {
+        if (f >= 400.0f && f <= 928.0f && !isFreqChangeAllowed(f)) {
+          printRepeatFreqRefusal();
+        } else if (f >= 400.0f && f <= 928.0f) {
           _prefs.freq = f;
           savePrefs();
           radio_set_params(_prefs.freq, _prefs.bw, _prefs.sf, _prefs.cr);
@@ -3472,7 +3528,9 @@ void MyMesh::checkCLIRescueCmd() {
           float bw   = strtof(parts[1], nullptr);
           int sf     = atoi(parts[2]);
           int cr     = atoi(parts[3]);
-          if (freq >= 400.0f && freq <= 928.0f && bw >= 7.8f && bw <= 500.0f
+          if (freq >= 400.0f && freq <= 928.0f && !isFreqChangeAllowed(freq)) {
+            printRepeatFreqRefusal();
+          } else if (freq >= 400.0f && freq <= 928.0f && bw >= 7.8f && bw <= 500.0f
               && sf >= 5 && sf <= 12 && cr >= 5 && cr <= 8) {
             _prefs.freq = freq;
             _prefs.bw = bw;
@@ -3496,6 +3554,11 @@ void MyMesh::checkCLIRescueCmd() {
         bool found = false;
         for (int i = 0; i < (int)NUM_RADIO_PRESETS; i++) {
           if (strcasecmp(RADIO_PRESETS[i].name, name) == 0) {
+            if (!isFreqChangeAllowed(RADIO_PRESETS[i].freq)) {
+              printRepeatFreqRefusal();
+              found = true;   // matched, but not applied
+              break;
+            }
             _prefs.freq = RADIO_PRESETS[i].freq;
             _prefs.bw = RADIO_PRESETS[i].bw;
             _prefs.sf = RADIO_PRESETS[i].sf;
@@ -3515,7 +3578,11 @@ void MyMesh::checkCLIRescueCmd() {
         if (!found) {
           char* endp;
           long idx = strtol(name, &endp, 10);
-          if (endp != name && *endp == '\0' && idx >= 0 && idx < (int)NUM_RADIO_PRESETS) {
+          if (endp != name && *endp == '\0' && idx >= 0 && idx < (int)NUM_RADIO_PRESETS
+              && !isFreqChangeAllowed(RADIO_PRESETS[idx].freq)) {
+            printRepeatFreqRefusal();
+            found = true;   // matched, but not applied
+          } else if (endp != name && *endp == '\0' && idx >= 0 && idx < (int)NUM_RADIO_PRESETS) {
             _prefs.freq = RADIO_PRESETS[idx].freq;
             _prefs.bw = RADIO_PRESETS[idx].bw;
             _prefs.sf = RADIO_PRESETS[idx].sf;

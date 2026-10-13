@@ -316,8 +316,12 @@ static int meckImportConfig(MyMesh& mesh,
         double freq = atof(val);
         // Auto-detect units: >3000 = kHz, <=3000 = MHz
         if (freq > 3000.0) freq /= 1000.0;
-        prefs->freq = (float)freq;
-        prefsChanged = true;
+        if (mesh.isFreqChangeAllowed((float)freq)) {
+          prefs->freq = (float)freq;
+          prefsChanged = true;
+        } else {
+          Serial.printf("Config Import: frequency %.3f skipped (repeat mode is on)\n", freq);
+        }
       }
       else if (strcmp(key, "bandwidth") == 0) {
         double bw = atof(val);

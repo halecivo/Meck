@@ -118,6 +118,12 @@ struct NodePrefs {  // persisted to file
   // final field and keep the default 0 (off).
   uint8_t agc_reset_interval;      // default 0
 
+  // Companion repeat mode (upstream MeshCore, protocol v9): 1 = this
+  // companion also forwards packets, as a repeater does. Switched on only
+  // from the app, on an allowed repeat frequency. Stored at prefs byte 62,
+  // which was spare, so older prefs files load it as 0 (off).
+  uint8_t client_repeat;           // default 0
+
   // --- Font helpers (inline, no overhead) ---
   // Returns the DisplayDriver text-size index for "small/body" text.
   // T-Deck Pro: 0 = built-in 6×8 (or 7pt with custom fonts), 1 = 9pt.
