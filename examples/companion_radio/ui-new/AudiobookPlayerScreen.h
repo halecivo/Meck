@@ -45,6 +45,10 @@
 #include <JPEGDEC.h>
 
 #include "../NodePrefs.h"
+#ifdef MECK_UI_V2
+  #include "ui2/Ui2Chrome.h"
+  #include "ui2/Ui2List.h"
+#endif
 
 // Forward declarations
 class UITask;
@@ -1371,6 +1375,141 @@ private:
     drawFooter(display, leftBuf, MECK_TR("W/S:Nav Enter:Open", "W/S Ent:Ouvrir"));
   }
 
+#ifdef MECK_UI_V2
+  // UI v2 library: folders and audio files as list rows (title, author,
+  // format, resume marker).
+  void renderFileListV2(DisplayDriver& display) {
+    using namespace ui2;
+    Ui2Canvas c(display);
+    Ui2Chrome::statusHeader(c);
+    const int total = (int)_fileList.size();
+    char right[16];
+    Ui2List::pageLabel(right, sizeof(right), _selectedFile, total, ROWS_PER_PAGE);
+    Ui2Chrome::titleBar(c, MECK_TR("Audiobooks", "Livres audio"), right);
+
+    if (total == 0) {
+      Ui2List::emptyState(c, BODY_Y, FOOTER_Y, UI2_IC_HEADPHONES, MECK_TR("No audiobooks yet", "Aucun livre audio"),
+                          MECK_TR("Add .m4b or .mp3 files to /audiobooks/ on the SD card.",
+                                  "Ajoutez des .m4b ou .mp3 dans /audiobooks/ sur la SD."));
+      const Ui2Key keys[] = { ui2Key("Q", MECK_TR("Back", "Retour")) };
+      Ui2Chrome::footer(c, keys, 1);
+      return;
+    }
+    const int start = Ui2List::pageStart(_selectedFile, ROWS_PER_PAGE);
+    for (int i = start; i < total && i < start + ROWS_PER_PAGE; i++) {
+      const AudiobookFileEntry& fe = _fileList[i];
+      Ui2Row r;
+      if (fe.isDir && fe.name == "..") {
+        r.icon = UI2_IC_BACK;
+        r.title = MECK_TR("Up one folder", "Dossier parent");
+      } else if (fe.isDir) {
+        r.icon = UI2_IC_FOLDER;
+        r.title = fe.name.c_str();
+        r.chevron = true;
+      } else {
+        r.icon = UI2_IC_AUDIO;
+        r.title = fe.displayTitle.c_str();
+        r.sub = fe.displayAuthor.length() ? fe.displayAuthor.c_str() : nullptr;
+        r.right = fe.fileType.c_str();
+        if (fe.hasBookmark) r.right2 = MECK_TR("resume", "reprendre");
+        r.rightMax = 72;
+      }
+      r.selected = (i == _selectedFile);
+      Ui2List::drawRow(c, BODY_Y + (i - start) * ROW_H, r);
+    }
+    const Ui2Key keys[] = {
+      ui2KeyIcon(UI2_IC_ENTER, MECK_TR("Open", "Ouvrir")),
+      ui2Key("W/S", MECK_TR("Move", "D\xC3\xA9placer"), true),
+      ui2Key("Q", MECK_TR("Back", "Retour")),
+    };
+    Ui2Chrome::footer(c, keys, 3);
+  }
+
+  // UI v2 now playing: cover (or a headphones icon), title, author and
+  // chapter, then a progress bar with times, the play state and a volume
+  // bar. The sleep timer shows as a chip in the title bar.
+  void renderPlayerV2(DisplayDriver& display) {
+    using namespace ui2;
+    Ui2Canvas c(display);
+    Ui2Chrome::statusHeader(c);
+    char track[16] = "", sleep[16] = "";
+    if (_playlist.size() > 1 && _playlistIdx >= 0)
+      snprintf(track, sizeof(track), "%d / %d", _playlistIdx + 1, (int)_playlist.size());
+    if (_sleepTimerActive) {
+      unsigned long remaining = millis() < _sleepTimerEnd ? (_sleepTimerEnd - millis()) / 1000 : 0;
+      snprintf(sleep, sizeof(sleep), "%lu:%02lu", remaining / 60, remaining % 60);
+    }
+    Ui2Chrome::titleBar(c, MECK_TR("Now playing", "Lecture"), track[0] ? track : nullptr,
+                        sleep[0] ? sleep : nullptr, UI2_IC_MOON);
+
+    int16_t y = BODY_Y + 8;
+    if (_hasCover && _coverBitmap) {
+      // The cover is decoded for the 128-unit canvas; draw it through the
+      // scaled path, centred (about 56 x 75 px on the panel).
+      display.setColor(DisplayDriver::LIGHT);
+      display.drawXbm((display.width() - _coverW) / 2, (y * 128 + 319) / 320, _coverBitmap, _coverW, _coverH);
+      y += _coverH * 320 / 128 + 10;
+    } else {
+      c.icon((SCREEN_W - 32) / 2, y, UI2_IC_HEADPHONES, 32);
+      y += 32 + 10;
+    }
+
+    const char* title = _metadata.title[0] ? _metadata.title : _currentFile.c_str();
+    int n = c.wrap(8, y + 14, SCREEN_W - 16, 18, 2, title, UI2_F_TITLE, true, true, nullptr, UI2_CENTER);
+    y += n * 18 + 4;
+    if (_metadata.author[0]) {
+      c.textFit(8, y + 12, SCREEN_W - 16, _metadata.author, UI2_F_BODY, true, UI2_CENTER);
+      y += 18;
+    }
+    if (_metadata.chapterCount > 0 && _currentChapter >= 0) {
+      char ch[32];
+      snprintf(ch, sizeof(ch), MECK_TR("Chapter %d / %d", "Chapitre %d / %d"), _currentChapter + 1, _metadata.chapterCount);
+      c.textFit(8, y + 11, SCREEN_W - 16, ch, UI2_F_META, true, UI2_CENTER);
+    }
+
+    // Progress bar and times
+    const int16_t barX = 16, barW = SCREEN_W - 32, barY = 226;
+    c.rect(barX, barY, barW, 8);
+    if (_durationSec > 0 && _currentPosSec > 0) {
+      int fillW = (int)((uint64_t)_currentPosSec * (barW - 4) / _durationSec);
+      if (fillW > barW - 4) fillW = barW - 4;
+      if (fillW > 0) c.fill(barX + 2, barY + 2, fillW, 4);
+    }
+    char cur[12], tot[12];
+    formatTime(_currentPosSec, cur, sizeof(cur));
+    if (_durationSec > 0) formatTime(_durationSec, tot, sizeof(tot));
+    else strcpy(tot, "--:--");
+    c.text(barX, barY + 22, cur, UI2_F_NUM11);
+    c.text(barX + barW - Ui2Canvas::textWidth(tot, UI2_F_NUM11), barY + 22, tot, UI2_F_NUM11);
+
+    // Play state and volume
+    const int16_t rowY = 256;
+    bool playing = _isPlaying && !_isPaused;
+    c.icon(barX, rowY, playing ? UI2_IC_PLAY : UI2_IC_PAUSE, 16);
+    c.text(barX + 22, Ui2Canvas::boxBaseline(UI2_F_LABEL, rowY, 16),
+           _isPlaying ? (_isPaused ? MECK_TR("Paused", "En pause") : MECK_TR("Playing", "Lecture"))
+                      : MECK_TR("Stopped", "Arr\xC3\xAAt\xC3\xA9"), UI2_F_LABEL);
+    const int16_t volW = 84, volX = barX + barW - volW;
+    c.icon(volX - 18, rowY + 2, UI2_IC_SPEAKER, 12);
+    c.segBar(volX, rowY + 4, volW, 8, _volume, 21);
+
+    // Keys without room in the footer
+    const char* hint = _playlist.size() > 1 ? MECK_TR("N next track  \xC2\xB7  Z sleep timer", "N piste suiv.  \xC2\xB7  Z minuterie")
+                     : _metadata.chapterCount > 0 ? MECK_TR("[ ] chapter  \xC2\xB7  Z sleep timer", "[ ] chapitre  \xC2\xB7  Z minuterie")
+                     : MECK_TR("Z sleep timer", "Z minuterie");
+    c.textFit(8, 288, SCREEN_W - 16, hint, UI2_F_META, true, UI2_CENTER);
+
+    const Ui2Key keys[] = {
+      ui2KeyIcon(UI2_IC_ENTER, playing ? MECK_TR("Pause", "Pause") : MECK_TR("Play", "Lire")),
+      ui2Key("A/D", MECK_TR("Seek", "Saut"), true),
+      ui2Key("W/S", MECK_TR("Volume", "Volume"), true),
+      ui2Key("Q", playing ? MECK_TR("Leave", "Sortir") : MECK_TR("Close", "Fermer")),
+    };
+    Ui2Chrome::footer(c, keys, 4);
+  }
+
+#endif
+
   // ---- Render: Player ----
   void renderPlayer(DisplayDriver& display) {
     // Layout budget: 128 total - 14 footer = 114 usable virtual units.
@@ -1675,6 +1814,16 @@ public:
 
   int render(DisplayDriver& display) override {
     if (!_sdReady) {
+#ifdef MECK_UI_V2
+      Ui2Canvas c(display);
+      Ui2Chrome::statusHeader(c);
+      Ui2Chrome::titleBar(c, MECK_TR("Audiobooks", "Livres audio"));
+      Ui2List::emptyState(c, ui2::BODY_Y, ui2::FOOTER_Y, UI2_IC_SD, MECK_TR("SD card not found", "Carte SD introuvable"),
+                          MECK_TR("Insert an SD card with an /audiobooks/ folder.", "InsÃ©rez une SD avec un dossier /audiobooks/."));
+      const Ui2Key keys[] = { ui2Key("Q", MECK_TR("Back", "Retour")) };
+      Ui2Chrome::footer(c, keys, 1);
+      return 5000;
+#endif
       display.setCursor(0, 20);
       display.setTextSize(1);
       display.setColor(DisplayDriver::LIGHT);
@@ -1686,11 +1835,16 @@ public:
       return 5000;
     }
 
+#ifdef MECK_UI_V2
+    if (_mode == FILE_LIST) renderFileListV2(display);
+    else if (_mode == PLAYER) renderPlayerV2(display);
+#else
     if (_mode == FILE_LIST) {
       renderFileList(display);
     } else if (_mode == PLAYER) {
       renderPlayer(display);
     }
+#endif
 
     // E-ink refresh takes ~648ms during which audio.loop() can't run
     // (SPI bus shared between display and SD card). This causes audible
