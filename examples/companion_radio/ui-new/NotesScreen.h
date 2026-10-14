@@ -105,6 +105,7 @@ private:
 
   // Delete confirmation state
   String _deleteTarget;   // File to delete
+  Mode _deleteReturn = FILE_LIST;  // Where a cancelled delete goes back to
 
   // RTC timestamp support
   uint32_t _rtcTime;      // Unix timestamp (0 = unavailable)
@@ -633,7 +634,8 @@ private:
 
   // Delete confirmation as a dialog over the note list
   void renderDeleteConfirmV2(DisplayDriver& display) {
-    renderFileListV2(display);
+    if (_deleteReturn == READING) renderReadPage(display);
+    else renderFileListV2(display);
     Ui2Canvas c(display);
     String body = _deleteTarget + "\n" + MECK_TR("This cannot be undone.", "Action irr\xC3\xA9versible.");
     Ui2List::dialog(c, UI2_IC_DEL, MECK_TR("Delete note?", "Supprimer la note ?"), body.c_str(),
@@ -653,7 +655,7 @@ private:
       display.setColor(DisplayDriver::YELLOW);
       display.setCursor(0, footerY);
       display.print(MECK_TR("Q:Bk Ent:Edit", "Q:Ret Ent:\xC3\x89" "diter"));
-      const char* right = MECK_TR("X:Delete", "X:Suppr");
+      const char* right = MECK_TR("Sh+Del:Delete", "Sh+Del:Suppr");
       display.setCursor(display.width() - display.getTextWidth(right) - 2, footerY);
       display.print(right);
       return;
@@ -740,7 +742,7 @@ private:
     display.setCursor(0, footerY);
     display.print(MECK_TR("Q:Bk Ent:Edit", "Q:Ret Ent:\xC3\x89" "diter"));
 
-    const char* right = MECK_TR("X:Delete", "X:Suppr");
+    const char* right = MECK_TR("Sh+Del:Delete", "Sh+Del:Suppr");
     display.setCursor(display.width() - display.getTextWidth(right) - 2, footerY);
     display.print(right);
   }
@@ -1100,6 +1102,14 @@ private:
     if (c == '\r' || c == 13) {
       drawBriefSplash(MECK_TR("Deleting...", "Suppression..."));
       deleteNote(_deleteTarget);
+      if (_deleteTarget == _currentFile) {
+        // Deleted the open note: drop its buffer too
+        _dirty = false;
+        _currentFile = "";
+        _bufLen = 0;
+        _buf[0] = '\0';
+        _cursorPos = 0;
+      }
       _deleteTarget = "";
       _selectedFile = 0;
       _mode = FILE_LIST;
@@ -1114,7 +1124,7 @@ private:
     if (c == KEY_CANCEL) {
 #endif
       _deleteTarget = "";
-      _mode = FILE_LIST;
+      _mode = _deleteReturn;
       return true;
     }
 
@@ -1372,6 +1382,17 @@ public:
   bool startDeleteFromList() {
     if (_selectedFile < 1 || _selectedFile > (int)_fileList.size()) return false;
     _deleteTarget = _fileList[_selectedFile - 1];
+    _deleteReturn = FILE_LIST;
+    _mode = CONFIRM_DELETE;
+    Serial.printf("Notes: Confirm delete %s\n", _deleteTarget.c_str());
+    return true;
+  }
+
+  // Shift+Del while reading: confirm before deleting the open note
+  bool startDeleteCurrent() {
+    if (_mode != READING || _currentFile.length() == 0) return false;
+    _deleteTarget = _currentFile;
+    _deleteReturn = READING;
     _mode = CONFIRM_DELETE;
     Serial.printf("Notes: Confirm delete %s\n", _deleteTarget.c_str());
     return true;

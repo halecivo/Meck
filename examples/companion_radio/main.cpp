@@ -4720,11 +4720,9 @@ void handleKeyboardInput() {
         return;
       }
 
-      // Shift+Del = delete note
+      // Shift+Del = delete note, after a confirmation
       if (key == KEY_CANCEL) {
-        Serial.println("Notes: Deleting current note");
-        notes->deleteCurrentNote();
-        ui_task.forceRefresh();
+        if (notes->startDeleteCurrent()) ui_task.forceRefresh();
         return;
       }
 
