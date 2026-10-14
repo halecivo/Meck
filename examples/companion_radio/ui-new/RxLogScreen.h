@@ -4,6 +4,10 @@
 #include <helpers/ui/DisplayDriver.h>
 #include "MeckLang.h"
 #include <MeshCore.h>
+#ifdef MECK_UI_V2
+  #include "ui2/Ui2Chrome.h"
+  #include "ui2/Ui2List.h"
+#endif
 
 class UITask;            // forward decl -- used only to navigate back to Settings
 extern MyMesh the_mesh;
@@ -133,6 +137,97 @@ class RxLogScreen : public UIScreen {
     return y;
   }
 
+#ifdef MECK_UI_V2
+  // UI v2 entry block: route and type with the SNR, time / size / hash,
+  // path, channel or From/To, and the decoded text. Returns the y after it.
+  int16_t renderEntryV2(Ui2Canvas& c, const RxLogEntry& e, int16_t y) {
+    using namespace ui2;
+    uint8_t route = e.header & 0x03;
+    bool flood = (route == 0x00 || route == 0x01);
+    uint8_t ptype = (e.header >> 2) & 0x0F;
+    const int16_t w = SCREEN_W - 2 * PAD;
+
+    char l1[40], snr[16];
+    snprintf(l1, sizeof(l1), "%s \xC2\xB7 %s", flood ? "FLOOD" : "DIRECT", typeName(ptype));
+    snprintf(snr, sizeof(snr), "%.2f dB", e.snr / 4.0f);
+    int16_t sw = Ui2Canvas::textWidth(snr, UI2_F_SMALL);
+    c.textFit(PAD, y + 13, w - sw - 8, l1, UI2_F_LABEL);
+    c.text(SCREEN_W - PAD - sw, y + 13, snr, UI2_F_SMALL);
+    y += 18;
+
+    int32_t local = (int32_t)e.timestamp + ((int32_t)the_mesh.getNodePrefs()->utc_offset_hours * 3600);
+    int hrs = (local / 3600) % 24, mins = (local / 60) % 60, secs = local % 60;
+    if (hrs < 0) hrs += 24;
+    char l2[64];
+    int p = snprintf(l2, sizeof(l2), MECK_TR("%02d:%02d:%02d \xC2\xB7 %u B \xC2\xB7 ", "%02d:%02d:%02d \xC2\xB7 %u o \xC2\xB7 "),
+                     hrs, mins, secs, (unsigned)e.size);
+    for (int i = 0; i < MAX_HASH_SIZE && p < (int)sizeof(l2) - 3; i++) p += snprintf(l2 + p, sizeof(l2) - p, "%02X", e.hash[i]);
+    c.textFit(PAD, y + 11, w, l2, UI2_F_META);
+    y += 14;
+
+    uint8_t hops = e.path_len & 63;
+    uint8_t bph = (e.path_len >> 6) + 1;
+    char path[96];
+    int q = snprintf(path, sizeof(path), MECK_TR("Path: %d hops", "Chemin : %d sauts"), hops);
+    if (hops > 0) {
+      q += snprintf(path + q, sizeof(path) - q, "  ");
+      for (int h = 0; h < hops && q < (int)sizeof(path) - 8; h++) {
+        for (int b = 0; b < bph; b++) q += snprintf(path + q, sizeof(path) - q, "%02x", e.path[h * bph + b]);
+        if (h < hops - 1) q += snprintf(path + q, sizeof(path) - q, " > ");
+      }
+    }
+    c.textFit(PAD, y + 11, w, path, UI2_F_META);
+    y += 14;
+
+    char l5[48] = "";
+    if (ptype == PAYLOAD_TYPE_GRP_TXT || ptype == PAYLOAD_TYPE_GRP_DATA) {
+      if (e.channel_name[0]) snprintf(l5, sizeof(l5), "Ch %02x  #%s", e.payload0, e.channel_name);
+      else                   snprintf(l5, sizeof(l5), "Ch %02x", e.payload0);
+    } else if (ptype == PAYLOAD_TYPE_REQ || ptype == PAYLOAD_TYPE_RESPONSE
+               || ptype == PAYLOAD_TYPE_TXT_MSG || ptype == PAYLOAD_TYPE_PATH) {
+      snprintf(l5, sizeof(l5), MECK_TR("From %02x  To %02x", "De %02x  \xC3\x80 %02x"), e.payload1, e.payload0);
+    }
+    if (l5[0]) {
+      c.textFit(PAD, y + 11, w, l5, UI2_F_META);
+      y += 14;
+    }
+    if (e.text[0]) {
+      c.textFit(PAD, y + 13, w, e.text, UI2_F_BODY);
+      y += 17;
+    }
+    return y;
+  }
+
+  int renderV2(DisplayDriver& display, int count) {
+    using namespace ui2;
+    Ui2Canvas c(display);
+    Ui2Chrome::statusHeader(c);
+    char right[24];
+    if (count > 0) snprintf(right, sizeof(right), "%d / %d", _scrollPos + 1, count);
+    else right[0] = '\0';
+    Ui2Chrome::titleBar(c, MECK_TR("RX log", "Journal RX"), right);
+    if (count == 0) {
+      Ui2List::emptyState(c, BODY_Y, FOOTER_Y, UI2_IC_RADIO, MECK_TR("No packets received yet", "Aucun paquet re\xC3\xA7u"),
+                          MECK_TR("Packets appear here as they arrive.", "Les paquets apparaissent ici."));
+    } else {
+      // Newest first from _scrollPos; only whole blocks (the longest is 77 px)
+      int16_t y = BODY_Y + 4;
+      for (int d = _scrollPos; d < count && y + 77 <= FOOTER_Y; d++) {
+        const RxLogEntry* e = the_mesh.getRxLogEntry(count - 1 - d);
+        if (!e) break;
+        if (d > _scrollPos) { c.hline(PAD, y, SCREEN_W - 2 * PAD); y += 5; }
+        y = renderEntryV2(c, *e, y);
+      }
+    }
+    const Ui2Key keys[] = {
+      ui2Key("W/S", MECK_TR("Scroll", "D\xC3\xA9" "filer"), true),
+      ui2Key("Q", MECK_TR("Back", "Retour")),
+    };
+    Ui2Chrome::footer(c, keys, 2);
+    return 5000;
+  }
+#endif
+
 public:
   RxLogScreen(UITask* task, mesh::RTCClock* rtc)
     : _task(task), _rtc(rtc), _scrollPos(0) {}
@@ -143,6 +238,9 @@ public:
     int count = the_mesh.getRxLogCount();
     if (_scrollPos < 0) _scrollPos = 0;
     if (_scrollPos > count - 1) _scrollPos = (count > 0) ? count - 1 : 0;
+#ifdef MECK_UI_V2
+    return renderV2(display, count);
+#endif
 
     // === Header ===
     display.setTextSize(1);
