@@ -888,6 +888,10 @@ static uint32_t _atoi(const char* sp) {
   // Serial "screendump" command: print the last drawn frame
   void meckScreenDump() { display.dumpScreen(Serial); }
 
+  // Serial "uialarm <slot>" command: fire alarm slot 1-5 at the next alarm check
+  static volatile int meckDebugAlarmSlot = -1;
+  void meckDebugFireAlarm(int slot) { meckDebugAlarmSlot = slot - 1; }
+
   // Serial "uimsg <hops> <sender>|<text>" command: add a test message to the
   // Public channel history on this device only (nothing is transmitted).
   // "{XX}" in the text inserts the byte 0xXX (emoji escapes). hops -1 adds
@@ -3231,6 +3235,10 @@ void loop() {
         lastAlarmCheck = millis();
         uint32_t rtcNow = the_mesh.getRTCClock()->getCurrentTime();
         int fireSlot = alarmScr->checkAlarms(rtcNow, the_mesh.getNodePrefs()->utc_offset_hours);
+#ifdef MECK_UI_SCREENDUMP
+        if (fireSlot < 0 && meckDebugAlarmSlot >= 0 && meckDebugAlarmSlot < ALARM_SLOT_COUNT) fireSlot = meckDebugAlarmSlot;
+        meckDebugAlarmSlot = -1;
+#endif
         if (fireSlot >= 0 && !alarmScr->isRinging()) {
           // If audiobook is playing, the alarm will take over the shared Audio*
           // object. The audiobook auto-saves bookmarks every 30s, so at most

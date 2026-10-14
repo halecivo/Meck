@@ -3863,16 +3863,22 @@ void MyMesh::checkCLIRescueCmd() {
       extern void meckScreenDump();
       meckScreenDump();
     } else if (memcmp(cli_command, "key ", 4) == 0) {
-      // Debug: press a key as if typed: "key s", "key enter", "key esc", "key bs"
+      // Debug: press a key as if typed: "key s", "key enter", "key esc", "key bs",
+      // "key mic" / "key micup" (Mic key press / release, KB_KEY_MIC / KB_KEY_MIC_RELEASE)
       extern void meckDebugKey(char k);
       const char* k = &cli_command[4];
       char kc = (strcmp(k, "enter") == 0) ? '\r' : (strcmp(k, "esc") == 0) ? 27
-              : (strcmp(k, "bs") == 0) ? '\b' : (strcmp(k, "space") == 0) ? ' ' : k[0];
+              : (strcmp(k, "bs") == 0) ? '\b' : (strcmp(k, "space") == 0) ? ' '
+              : (strcmp(k, "mic") == 0) ? 0x02 : (strcmp(k, "micup") == 0) ? 0x03 : k[0];
       meckDebugKey(kc);
     } else if (memcmp(cli_command, "uimsg ", 6) == 0) {
       // Debug: add a local test message to the Public channel history
       extern void meckDebugAddMsg(const char* arg);
       meckDebugAddMsg(&cli_command[6]);
+    } else if (memcmp(cli_command, "uialarm ", 8) == 0) {
+      // Debug: ring alarm slot 1-5 at the next alarm check (within ~10 s)
+      extern void meckDebugFireAlarm(int slot);
+      meckDebugFireAlarm(atoi(&cli_command[8]));
 #endif
     } else if (strcmp(cli_command, "clock") == 0) {
       uint32_t t = getRTCClock()->getCurrentTime();
