@@ -28,6 +28,10 @@
 #include <helpers/ui/UIScreen.h>
 #include <helpers/ui/DisplayDriver.h>
 #include "MeckLang.h"
+#ifdef MECK_UI_V2
+  #include "ui2/Ui2Chrome.h"
+  #include "ui2/Ui2List.h"
+#endif
 #include <SD.h>
 #include <driver/i2s.h>
 #include "Audio.h"
@@ -1104,6 +1108,179 @@ private:
     }
   }
 
+#ifdef MECK_UI_V2
+  // ---------------------------------------------------------------------------
+  // UI v2 rendering
+  // ---------------------------------------------------------------------------
+  void renderMessageListV2(DisplayDriver& display) {
+    using namespace ui2;
+    Ui2Canvas c(display);
+    Ui2Chrome::statusHeader(c);
+    const int total = (int)_fileList.size();
+    char right[16];
+    Ui2List::pageLabel(right, sizeof(right), _selectedFile, total, ROWS_PER_PAGE);
+    Ui2Chrome::titleBar(c, MECK_TR("Voice messages", "Messages vocaux"), right);
+    if (total == 0) {
+      Ui2List::emptyState(c, BODY_Y, FOOTER_Y, UI2_IC_MIC, MECK_TR("No voice messages", "Aucun message vocal"),
+                          MECK_TR("Hold the Mic key to record one.", "Maintenez Mic pour enregistrer."));
+      const Ui2Key keys[] = { ui2KeyIcon(UI2_IC_MIC, MECK_TR("Record", "Enregistrer")), ui2Key("Q", MECK_TR("Back", "Retour")) };
+      Ui2Chrome::footer(c, keys, 2);
+    } else {
+      const int start = Ui2List::pageStart(_selectedFile, ROWS_PER_PAGE);
+      for (int i = start; i < total && i < start + ROWS_PER_PAGE; i++) {
+        char dur[12], name[64];
+        snprintf(dur, sizeof(dur), "%.1f s", _fileList[i].durationSec);
+        snprintf(name, sizeof(name), "%s", _fileList[i].name);
+        char* dot = strrchr(name, '.');
+        if (dot && dot != name) *dot = '\0';
+        Ui2Row r;
+        r.icon = (_listPlaying && i == _listPlayIdx) ? UI2_IC_PLAY : UI2_IC_MIC;
+        r.title = name;
+        r.right = dur;
+        r.rightMax = 64;
+        r.selected = (i == _selectedFile);
+        Ui2List::drawRow(c, BODY_Y + (i - start) * ROW_H, r);
+      }
+      if (_listPlaying) {
+        const Ui2Key keys[] = { ui2Key("Q", MECK_TR("Stop", "Arr\xC3\xAAt")) };
+        Ui2Chrome::footer(c, keys, 1);
+      } else {
+        const Ui2Key keys[] = {
+          ui2KeyIcon(UI2_IC_ENTER, MECK_TR("Play", "Lire")),
+          ui2KeyIcon(UI2_IC_MIC, MECK_TR("Record", "Enreg.")),
+          ui2Key("F", MECK_TR("Send", "Envoyer")),
+          ui2Key("D", MECK_TR("Delete", "Suppr.")),
+        };
+        Ui2Chrome::footer(c, keys, 4);
+      }
+    }
+    // "Loading" toast while a forward-send file is read off SD and encoded;
+    // _loadingDrawn tells the main loop the toast is on screen.
+    if (_loadPending) {
+      Ui2List::toast(c, MECK_TR("Loading\xE2\x80\xA6\nEncoding voice", "Chargement\xE2\x80\xA6\nEncodage du vocal"), UI2_IC_REFRESH);
+      _loadingDrawn = true;
+    }
+  }
+
+  void renderRecordingV2(DisplayDriver& display) {
+    using namespace ui2;
+    Ui2Canvas c(display);
+    Ui2Chrome::statusHeader(c);
+    char lim[16];
+    snprintf(lim, sizeof(lim), MECK_TR("max %d s", "max %d s"), VOICE_MAX_SECONDS);
+    Ui2Chrome::titleBar(c, MECK_TR("Recording", "Enregistrement"), lim, "REC", UI2_IC_MIC, true);
+
+    c.icon((SCREEN_W - 32) / 2, 72, UI2_IC_MIC, 32);
+    char el[12];
+    snprintf(el, sizeof(el), "%.1f", _recSamples / (float)VOICE_SAMPLE_RATE);
+    c.textFit(0, 168, SCREEN_W, el, UI2_F_NUM40, true, UI2_CENTER);
+    c.textFit(0, 188, SCREEN_W, MECK_TR("seconds", "secondes"), UI2_F_META, true, UI2_CENTER);
+
+    // Progress against the buffer, then the input level of the last 256 samples
+    const int16_t barX = 16, barW = SCREEN_W - 32;
+    float progress = (float)_recSamples / VOICE_BUF_SAMPLES;
+    if (progress > 1.0f) progress = 1.0f;
+    c.rect(barX, 212, barW, 10);
+    int fillW = (int)(progress * (barW - 4));
+    if (fillW > 0) c.fill(barX + 2, 214, fillW, 6);
+    if (_recSamples > 256) {
+      int32_t sum = 0;
+      for (uint32_t i = _recSamples - 256; i < _recSamples; i++) {
+        int16_t s = _recBuffer[i];
+        sum += (s < 0) ? -s : s;
+      }
+      int segs = (int)((sum / 256) * 20 / 16384);
+      if (segs > 20) segs = 20;
+      c.icon(barX, 236, UI2_IC_SPEAKER, 12);
+      c.segBar(barX + 18, 238, barW - 18, 8, segs, 20);
+    }
+    c.textFit(PAD, 284, SCREEN_W - 2 * PAD, MECK_TR("Release the Mic key to stop", "Rel\xC3\xA2" "chez Mic pour arr\xC3\xAAter"),
+              UI2_F_META, true, UI2_CENTER);
+  }
+
+  void renderReviewV2(DisplayDriver& display) {
+    using namespace ui2;
+    Ui2Canvas c(display);
+    Ui2Chrome::statusHeader(c);
+    Ui2Chrome::titleBar(c, MECK_TR("Review", "\xC3\x89" "coute"), nullptr,
+                        _reviewPlaying ? MECK_TR("Playing", "Lecture") : nullptr, UI2_IC_PLAY, true);
+    char dur[24], size[24], c2[40];
+    snprintf(dur, sizeof(dur), "%.1f s", _recSamples / (float)VOICE_SAMPLE_RATE);
+    uint32_t sizeBytes = 44 + _recSamples * sizeof(int16_t);
+    if (sizeBytes > 1024) snprintf(size, sizeof(size), MECK_TR("%.1f KB", "%.1f Ko"), sizeBytes / 1024.0f);
+    else snprintf(size, sizeof(size), MECK_TR("%u bytes", "%u octets"), (unsigned)sizeBytes);
+    if (_c2Valid) {
+      int packets = (_c2Bytes + VOICE_MESH_PAYLOAD - 1) / VOICE_MESH_PAYLOAD;
+      snprintf(c2, sizeof(c2), MECK_TR("%u B, %d packet%s", "%u o, %d paquet%s"), (unsigned)_c2Bytes, packets, packets == 1 ? "" : "s");
+    } else {
+      snprintf(c2, sizeof(c2), "%s", MECK_TR("encode failed", "\xC3\xA9" "chec"));
+    }
+    c.textFit(PAD, BODY_Y + 22, SCREEN_W - 2 * PAD, _reviewFilename, UI2_F_LABEL);
+    int16_t y = BODY_Y + 34;
+    Ui2List::kvRow(c, y, MECK_TR("Duration", "Dur\xC3\xA9" "e"), dur);  y += 20;
+    Ui2List::kvRow(c, y, MECK_TR("WAV size", "Taille WAV"), size);    y += 20;
+    Ui2List::kvRow(c, y, MECK_TR("Codec2 (mesh)", "Codec2 (mesh)"), c2);
+    if (_reviewPlaying) {
+      const Ui2Key keys[] = { ui2Key("Q", MECK_TR("Stop", "Arr\xC3\xAAt")) };
+      Ui2Chrome::footer(c, keys, 1);
+    } else if (_c2Valid) {
+      const Ui2Key keys[] = {
+        ui2Key("S", MECK_TR("Send", "Envoyer")),
+        ui2KeyIcon(UI2_IC_ENTER, MECK_TR("Play", "Lire")),
+        ui2KeyIcon(UI2_IC_MIC, MECK_TR("Redo", "Refaire")),
+        ui2Key("Q", MECK_TR("List", "Liste")),
+      };
+      Ui2Chrome::footer(c, keys, 4);
+    } else {
+      const Ui2Key keys[] = {
+        ui2KeyIcon(UI2_IC_ENTER, MECK_TR("Play", "Lire")),
+        ui2KeyIcon(UI2_IC_MIC, MECK_TR("Redo", "Refaire")),
+        ui2Key("D", MECK_TR("Delete", "Suppr.")),
+        ui2Key("Q", MECK_TR("List", "Liste")),
+      };
+      Ui2Chrome::footer(c, keys, 4);
+    }
+  }
+
+  void renderContactPickV2(DisplayDriver& display) {
+    using namespace ui2;
+    Ui2Canvas c(display);
+    Ui2Chrome::statusHeader(c);
+    const int total = (int)_pickList.size();
+    char right[16];
+    Ui2List::pageLabel(right, sizeof(right), _pickSelected, total, ROWS_PER_PAGE);
+    Ui2Chrome::titleBar(c, MECK_TR("Send voice to", "Envoyer le vocal \xC3\xA0"), right);
+    if (total == 0) {
+      Ui2List::emptyState(c, BODY_Y, FOOTER_Y, UI2_IC_CONTACT, MECK_TR("No contacts", "Aucun contact"),
+                          MECK_TR("Voice messages need a contact with a direct path.",
+                                  "Un vocal exige un contact avec chemin direct."));
+    } else {
+      const int start = Ui2List::pageStart(_pickSelected, ROWS_PER_PAGE);
+      for (int i = start; i < total && i < start + ROWS_PER_PAGE; i++) {
+        Ui2Row r;
+        r.icon = ui2NodeIcon(_pickList[i].type);
+        r.title = _pickList[i].name;
+        r.sub = _pickList[i].hasDirect ? MECK_TR("Direct path", "Chemin direct") : MECK_TR("No direct path", "Pas de chemin direct");
+        r.disabled = !_pickList[i].hasDirect;
+        r.selected = (i == _pickSelected);
+        Ui2List::drawRow(c, BODY_Y + (i - start) * ROW_H, r);
+      }
+    }
+    const Ui2Key keys[] = {
+      ui2KeyIcon(UI2_IC_ENTER, MECK_TR("Send", "Envoyer")),
+      ui2Key("W/S", MECK_TR("Move", "D\xC3\xA9placer"), true),
+      ui2Key("Sh+Del", MECK_TR("Cancel", "Annuler")),
+    };
+    if (total) Ui2Chrome::footer(c, keys, 3);
+    else Ui2Chrome::footer(c, keys + 2, 1);
+    // RAW_CUSTOM voice packets are direct-route only; the next key dismisses this
+    if (_pickNoPathMsg) {
+      Ui2List::toast(c, MECK_TR("No direct path to this contact.\nSet one in Contacts (P).",
+                                "Pas de chemin direct.\nD\xC3\xA9" "finissez-en un (Contacts, P)."), UI2_IC_WARN);
+    }
+  }
+#endif
+
   // ---------------------------------------------------------------------------
   // Rendering
   // ---------------------------------------------------------------------------
@@ -1616,10 +1793,17 @@ public:
 
   int render(DisplayDriver& display) override {
     switch (_mode) {
+#ifdef MECK_UI_V2
+      case MESSAGE_LIST:  renderMessageListV2(display);  break;
+      case RECORDING:     renderRecordingV2(display);    break;
+      case REVIEW:        renderReviewV2(display);       break;
+      case CONTACT_PICK:  renderContactPickV2(display);  break;
+#else
       case MESSAGE_LIST:  renderMessageList(display);  break;
       case RECORDING:     renderRecording(display);    break;
       case REVIEW:        renderReview(display);       break;
       case CONTACT_PICK:  renderContactPick(display);  break;
+#endif
     }
     return 0;
   }
