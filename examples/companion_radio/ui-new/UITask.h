@@ -282,6 +282,10 @@ public:
 #endif
   uint8_t getChannelScreenViewIdx() const;
 
+#ifdef MECK_UI_V2
+  // Refresh ui2Status (UI v2 status header data) before a frame is drawn
+  void updateUi2Status();
+#endif
   void toggleBuzzer();
   bool getGPSState();
   void toggleGPS();

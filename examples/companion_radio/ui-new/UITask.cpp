@@ -27,6 +27,9 @@
 #if defined(MECK_AUDIO_VARIANT) || defined(LilyGo_TDeck_Pro)
   #include "HomeIcons.h"
 #endif
+#ifdef MECK_UI_V2
+  #include "ui2/Ui2Chrome.h"
+#endif
 #if defined(WIFI_SSID) || defined(MECK_WIFI_COMPANION)
   #include <WiFi.h>
 #endif
@@ -2070,6 +2073,38 @@ void UITask::userLedHandler() {
 #define EINK_FAST_FULL_EVERY 20
 #endif
 
+#ifdef MECK_UI_V2
+// Snapshot of the device status for the UI v2 status header (Ui2Chrome)
+void UITask::updateUi2Status() {
+  Ui2Status& st = ui2Status;
+  st.nodeName = _node_prefs ? _node_prefs->node_name : "";
+  uint32_t now = rtc_clock.getCurrentTime();
+  st.clockValid = now > 1700000000;   // same validity test as the home clock
+  if (st.clockValid) {
+    int32_t local = (int32_t)now + ((int32_t)(_node_prefs ? _node_prefs->utc_offset_hours : 0) * 3600);
+    int hrs = (local / 3600) % 24;
+    int mins = (local / 60) % 60;
+    st.hour = (uint8_t)(hrs < 0 ? hrs + 24 : hrs);
+    st.minute = (uint8_t)(mins < 0 ? mins + 60 : mins);
+  }
+#if HAS_BQ27220
+  st.batteryPct = getBatteryPercent();
+#endif
+  st.unread = getUnreadMsgCount() > 0;
+#if defined(BLE_PIN_CODE)
+  st.bleConnected = hasConnection();
+#endif
+  st.gpsOn = getGPSState();
+#ifdef MECK_AUDIO_VARIANT
+  AlarmScreen* alarms = (AlarmScreen*)alarm_screen;
+  st.alarmOn = alarms && alarms->enabledCount() > 0;
+  st.audioPlaying = isAudioPlayingInBackground();
+#endif
+  st.silent = _node_prefs && _node_prefs->buzzer_quiet;
+  st.externalAntenna = _node_prefs && _node_prefs->lora_antenna;
+}
+#endif
+
 void UITask::setCurrScreen(UIScreen* c) {
 #if defined(LilyGo_TDeck_Pro) && defined(EINK_FASTLUT_EXPERIMENT)
   // Fast-waveform housekeeping: the register waveform pushes every pixel on
@@ -2359,6 +2394,9 @@ if (curr) curr->poll();
       if (_node_prefs && display.getFontStyle() != _node_prefs->ui_font_style) {
         display.setFontStyle(_node_prefs->ui_font_style);
       }
+#endif
+#ifdef MECK_UI_V2
+      updateUi2Status();
 #endif
       _display->startFrame();
       int delay_millis = curr->render(*_display);

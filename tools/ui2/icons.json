@@ -382,5 +382,9 @@
  "sig4": {
   "stroke": "",
   "fill": "M1 11H3.5V15H1ZM5 8H7.5V15H5ZM9 5H11.5V15H9ZM13 2H15.5V15H13Z"
+ },
+ "ble": {
+  "stroke": "M4.5 5L11 11L8 13.5V2.5L11 5L4.5 11",
+  "fill": ""
  }
 }
