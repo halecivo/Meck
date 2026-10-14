@@ -56,9 +56,39 @@ public:
 
 #include "DisplayDriver.h"
 
+#ifdef MECK_UI_SCREENDUMP
+// Debug aid: GxEPD2_BW keeps its frame buffer private, so this subclass
+// mirrors every pixel written into a shadow copy that can be dumped over
+// serial (see GxEPDDisplay::dumpScreen). Costs WIDTH*HEIGHT/8 bytes of RAM.
+template<typename GxEPD2_Type, const uint16_t page_height>
+class GxEPD2_BW_Shadow : public GxEPD2_BW<GxEPD2_Type, page_height> {
+public:
+  using GxEPD2_BW<GxEPD2_Type, page_height>::GxEPD2_BW;
+  static const uint16_t SW = GxEPD2_Type::WIDTH, SH = GxEPD2_Type::HEIGHT;
+  uint8_t shadow[(SW / 8) * SH];
+  void drawPixel(int16_t x, int16_t y, uint16_t color) {
+    GxEPD2_BW<GxEPD2_Type, page_height>::drawPixel(x, y, color);
+    if (x < 0 || y < 0 || x >= (int16_t)SW || y >= (int16_t)SH) return;
+    uint32_t i = x / 8 + (uint32_t)y * (SW / 8);
+    if (color) shadow[i] |= (0x80 >> (x & 7));
+    else       shadow[i] &= ~(0x80 >> (x & 7));
+  }
+  void fillScreen(uint16_t color) {
+    GxEPD2_BW<GxEPD2_Type, page_height>::fillScreen(color);
+    memset(shadow, color ? 0xFF : 0x00, sizeof(shadow));
+  }
+};
+#endif
+
 class GxEPDDisplay : public DisplayDriver {
 
-#if defined(EINK_DISPLAY_MODEL)
+#if defined(EINK_DISPLAY_MODEL) && defined(MECK_UI_SCREENDUMP)
+  GxEPD2_BW_Shadow<EINK_DISPLAY_MODEL, EINK_DISPLAY_MODEL::HEIGHT> display;
+  const float scale_x  = EINK_SCALE_X;
+  const float scale_y  = EINK_SCALE_Y;
+  const float offset_x = EINK_X_OFFSET;
+  const float offset_y = EINK_Y_OFFSET;
+#elif defined(EINK_DISPLAY_MODEL)
   GxEPD2_BW<EINK_DISPLAY_MODEL, EINK_DISPLAY_MODEL::HEIGHT> display;
   const float scale_x  = EINK_SCALE_X; 
   const float scale_y  = EINK_SCALE_Y;
@@ -186,6 +216,20 @@ public:
   int16_t drawTextFontRaw(int16_t x, int16_t baseline, const char* utf8, const GFXfont* font, bool ink = true, int maxBytes = -1);
   // Advance width of (a prefix of) a string in a GFXfont, in pixels
   static int16_t measureTextFontRaw(const char* utf8, const GFXfont* font, int maxBytes = -1);
+
+#ifdef MECK_UI_SCREENDUMP
+  // Write the last drawn frame as text: "SCREENDUMP <w> <h>", one line of
+  // hex per pixel row (MSB first, 1 = white), then "END".
+  void dumpScreen(Print& out) {
+    const uint16_t bpr = display.SW / 8;
+    out.printf("SCREENDUMP %u %u\n", display.SW, display.SH);
+    for (uint16_t y = 0; y < display.SH; y++) {
+      for (uint16_t b = 0; b < bpr; b++) out.printf("%02X", display.shadow[y * bpr + b]);
+      out.print('\n');
+    }
+    out.print("END\n");
+  }
+#endif
 
   // Force endFrame() to push to display even if CRC unchanged
   // (needed because drawPixelRaw bypasses CRC tracking)

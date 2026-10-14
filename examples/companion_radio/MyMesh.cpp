@@ -3857,6 +3857,12 @@ void MyMesh::checkCLIRescueCmd() {
       // Bare "clock sync" without a value — show usage
       Serial.println("  Usage: clock sync <unix_epoch>");
       Serial.println("  Hint:  clock sync $(date +%s)");
+#ifdef MECK_UI_SCREENDUMP
+    } else if (strcmp(cli_command, "screendump") == 0) {
+      // Debug: print the last drawn frame (read by tools/ui2/grab_screen.py)
+      extern void meckScreenDump();
+      meckScreenDump();
+#endif
     } else if (strcmp(cli_command, "clock") == 0) {
       uint32_t t = getRTCClock()->getCurrentTime();
       if (t > 1704067200UL) {
