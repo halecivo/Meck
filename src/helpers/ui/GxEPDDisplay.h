@@ -112,7 +112,6 @@ class GxEPDDisplay : public DisplayDriver {
   bool _windowNext = false;               // Next endFrame() refreshes only a window
   int16_t _wx = 0, _wy = 0, _ww = 0, _wh = 0;   // that window, physical pixels
   uint8_t _currentTextScale = 1;          // Track glyph scale factor
-  uint16_t _partialsSinceFull = 0;        // partial refreshes since the last full one (UI v2)
 
   // Render one glyph from the current 8b font at the display's cursor position
   void drawGlyphAtCursor(uint16_t cp);
