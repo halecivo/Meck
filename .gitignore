@@ -16,3 +16,6 @@ cmake-*
 compile_commands.json
 .venv/
 venv/
+
+# UI v2 font sources (downloaded, see tools/ui2/gen_fonts.py)
+tools/ui2/fonts/*.ttf
