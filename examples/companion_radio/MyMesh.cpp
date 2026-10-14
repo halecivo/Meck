@@ -3875,6 +3875,10 @@ void MyMesh::checkCLIRescueCmd() {
       // Debug: add a local test message to the Public channel history
       extern void meckDebugAddMsg(const char* arg);
       meckDebugAddMsg(&cli_command[6]);
+    } else if (memcmp(cli_command, "uigo ", 5) == 0) {
+      // Debug: open a screen directly, e.g. "uigo rxlog", "uigo pathed 3"
+      extern void meckDebugGoto(const char* arg);
+      meckDebugGoto(&cli_command[5]);
     } else if (memcmp(cli_command, "uialarm ", 8) == 0) {
       // Debug: ring alarm slot 1-5 at the next alarm check (within ~10 s)
       extern void meckDebugFireAlarm(int slot);

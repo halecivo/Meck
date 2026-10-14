@@ -888,6 +888,28 @@ static uint32_t _atoi(const char* sp) {
   // Serial "screendump" command: print the last drawn frame
   void meckScreenDump() { display.dumpScreen(Serial); }
 
+  // Serial "uigo <screen> [contact idx]" command: open a screen directly.
+  // Only screens that do not transmit when opened (no discovery, no admin login).
+  void meckDebugGoto(const char* arg) {
+    char name[16] = "";
+    int idx = -1;
+    sscanf(arg, "%15s %d", name, &idx);
+    if      (strcmp(name, "home") == 0)     ui_task.gotoHomeScreen();
+    else if (strcmp(name, "settings") == 0) ui_task.gotoSettingsScreen();
+    else if (strcmp(name, "rxlog") == 0)    ui_task.gotoRxLogScreen();
+    else if (strcmp(name, "trace") == 0)    ui_task.gotoTraceScreen();
+    else if (strcmp(name, "pathed") == 0)   ui_task.gotoPathEditor(idx);
+    else if (strcmp(name, "admin") == 0)    ui_task.gotoRepeaterAdmin(idx);
+#if HAS_GPS
+    else if (strcmp(name, "map") == 0)      ui_task.gotoMapScreen();
+#endif
+#ifdef MECK_WEB_READER
+    else if (strcmp(name, "web") == 0)      ui_task.gotoWebReader();
+#endif
+    else { Serial.printf("uigo: unknown screen '%s'\n", name); return; }
+    ui_task.forceRefresh();
+  }
+
   // Serial "uialarm <slot>" command: fire alarm slot 1-5 at the next alarm check
   static volatile int meckDebugAlarmSlot = -1;
   void meckDebugFireAlarm(int slot) { meckDebugAlarmSlot = slot - 1; }
