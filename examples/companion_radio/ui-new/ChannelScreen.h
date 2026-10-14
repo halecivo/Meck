@@ -717,6 +717,94 @@ public:
   // Rendering
   // -----------------------------------------------------------------------
 
+  // One row of the DM inbox: a conversation partner and its messages
+  #define DM_INBOX_MAX 20
+    struct DMInboxEntry {
+      uint32_t hash;
+      char name[32];
+      int msgCount;
+      int unreadCount;
+      uint32_t newestTs;
+    };
+
+  // Collect the DM conversations (grouped by peer, newest first) with
+  // their message and unread counts. Returns the number of entries.
+  int collectDMInbox(DMInboxEntry* inbox) {
+    int inboxCount = 0;
+
+    // Scan all DMs and group by peer hash
+    for (int i = 0; i < _msgCount && i < CHANNEL_MSG_HISTORY_SIZE; i++) {
+      int idx = _newestIdx - i;
+      while (idx < 0) idx += CHANNEL_MSG_HISTORY_SIZE;
+      idx = idx % CHANNEL_MSG_HISTORY_SIZE;
+      if (!_messages[idx].valid || _messages[idx].channel_idx != 0xFF) continue;
+      if (_messages[idx].dm_peer_hash == 0) continue;
+
+      uint32_t h = _messages[idx].dm_peer_hash;
+
+      // Find existing entry by hash
+      int found = -1;
+      for (int j = 0; j < inboxCount; j++) {
+        if (inbox[j].hash == h) { found = j; break; }
+      }
+      if (found < 0 && inboxCount < DM_INBOX_MAX) {
+        found = inboxCount++;
+        inbox[found].hash = h;
+        inbox[found].name[0] = '\0';
+        inbox[found].msgCount = 0;
+        inbox[found].unreadCount = 0;
+        inbox[found].newestTs = 0;
+
+        // Look up name from contacts by matching peer hash
+        uint32_t numC = the_mesh.getNumContacts();
+        ContactInfo ci;
+        for (uint32_t c = 0; c < numC; c++) {
+          if (the_mesh.getContactByIdx(c, ci) && peerHash(ci.name) == h) {
+            strncpy(inbox[found].name, ci.name, 31);
+            inbox[found].name[31] = '\0';
+            break;
+          }
+        }
+        // Fallback: extract from text if contact not found
+        if (inbox[found].name[0] == '\0') {
+          extractSenderName(_messages[idx].text, inbox[found].name, sizeof(inbox[found].name));
+        }
+      }
+      if (found >= 0) {
+        inbox[found].msgCount++;
+        if (_messages[idx].timestamp > inbox[found].newestTs)
+          inbox[found].newestTs = _messages[idx].timestamp;
+      }
+    }
+
+    // Look up unread counts from per-contact array
+    if (_dmUnreadPtr) {
+      for (int e = 0; e < inboxCount; e++) {
+        uint32_t numC = the_mesh.getNumContacts();
+        ContactInfo ci;
+        for (uint32_t c = 0; c < numC; c++) {
+          if (the_mesh.getContactByIdx(c, ci) && peerHash(ci.name) == inbox[e].hash) {
+            inbox[e].unreadCount = _dmUnreadPtr[c];
+            break;
+          }
+        }
+      }
+    }
+
+    // Sort by newest timestamp descending (insertion sort)
+    for (int i = 1; i < inboxCount; i++) {
+      DMInboxEntry tmp2 = inbox[i];
+      int j = i - 1;
+      while (j >= 0 && inbox[j].newestTs < tmp2.newestTs) {
+        inbox[j + 1] = inbox[j];
+        j--;
+      }
+      inbox[j + 1] = tmp2;
+    }
+
+    return inboxCount;
+  }
+
   int render(DisplayDriver& display) override {
     char tmp[40];
     
@@ -774,86 +862,8 @@ public:
 
     // === DM Inbox mode: show list of contacts with DMs ===
     if (_viewChannelIdx == 0xFF && _dmInboxMode) {
-      #define DM_INBOX_MAX 20
-      struct DMInboxEntry {
-        uint32_t hash;
-        char name[32];
-        int msgCount;
-        int unreadCount;
-        uint32_t newestTs;
-      };
       DMInboxEntry inbox[DM_INBOX_MAX];
-      int inboxCount = 0;
-
-      // Scan all DMs and group by peer hash
-      for (int i = 0; i < _msgCount && i < CHANNEL_MSG_HISTORY_SIZE; i++) {
-        int idx = _newestIdx - i;
-        while (idx < 0) idx += CHANNEL_MSG_HISTORY_SIZE;
-        idx = idx % CHANNEL_MSG_HISTORY_SIZE;
-        if (!_messages[idx].valid || _messages[idx].channel_idx != 0xFF) continue;
-        if (_messages[idx].dm_peer_hash == 0) continue;
-
-        uint32_t h = _messages[idx].dm_peer_hash;
-
-        // Find existing entry by hash
-        int found = -1;
-        for (int j = 0; j < inboxCount; j++) {
-          if (inbox[j].hash == h) { found = j; break; }
-        }
-        if (found < 0 && inboxCount < DM_INBOX_MAX) {
-          found = inboxCount++;
-          inbox[found].hash = h;
-          inbox[found].name[0] = '\0';
-          inbox[found].msgCount = 0;
-          inbox[found].unreadCount = 0;
-          inbox[found].newestTs = 0;
-
-          // Look up name from contacts by matching peer hash
-          uint32_t numC = the_mesh.getNumContacts();
-          ContactInfo ci;
-          for (uint32_t c = 0; c < numC; c++) {
-            if (the_mesh.getContactByIdx(c, ci) && peerHash(ci.name) == h) {
-              strncpy(inbox[found].name, ci.name, 31);
-              inbox[found].name[31] = '\0';
-              break;
-            }
-          }
-          // Fallback: extract from text if contact not found
-          if (inbox[found].name[0] == '\0') {
-            extractSenderName(_messages[idx].text, inbox[found].name, sizeof(inbox[found].name));
-          }
-        }
-        if (found >= 0) {
-          inbox[found].msgCount++;
-          if (_messages[idx].timestamp > inbox[found].newestTs)
-            inbox[found].newestTs = _messages[idx].timestamp;
-        }
-      }
-
-      // Look up unread counts from per-contact array
-      if (_dmUnreadPtr) {
-        for (int e = 0; e < inboxCount; e++) {
-          uint32_t numC = the_mesh.getNumContacts();
-          ContactInfo ci;
-          for (uint32_t c = 0; c < numC; c++) {
-            if (the_mesh.getContactByIdx(c, ci) && peerHash(ci.name) == inbox[e].hash) {
-              inbox[e].unreadCount = _dmUnreadPtr[c];
-              break;
-            }
-          }
-        }
-      }
-
-      // Sort by newest timestamp descending (insertion sort)
-      for (int i = 1; i < inboxCount; i++) {
-        DMInboxEntry tmp2 = inbox[i];
-        int j = i - 1;
-        while (j >= 0 && inbox[j].newestTs < tmp2.newestTs) {
-          inbox[j + 1] = inbox[j];
-          j--;
-        }
-        inbox[j + 1] = tmp2;
-      }
+      int inboxCount = collectDMInbox(inbox);
 
       // Render inbox list
       display.setTextSize(the_mesh.getNodePrefs()->smallTextSize());
