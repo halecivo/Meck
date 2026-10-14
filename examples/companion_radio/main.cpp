@@ -1985,7 +1985,11 @@ static void meckLaunchHomeTile(Ui2Tile t) {
     if (ui_task.isOnPathEditor()) {
       PathEditorScreen* pe = (PathEditorScreen*)ui_task.getPathEditorScreen();
       if (pe) {
+#ifdef MECK_UI_V2
+        int result = pe->selectRowAtPx(y);
+#else
         int result = pe->selectRowAtVY(vy);
+#endif
         if (result == 1) {
           ui_task.forceRefresh();
           return 0;

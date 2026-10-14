@@ -5,6 +5,10 @@
 #include "MeckLang.h"
 #include <MeshCore.h>
 #include <Packet.h>
+#ifdef MECK_UI_V2
+  #include "ui2/Ui2Chrome.h"
+  #include "ui2/Ui2List.h"
+#endif
 
 // Forward declarations
 class UITask;
@@ -226,11 +230,149 @@ public:
   }
 
   int render(DisplayDriver& display) override {
+#ifdef MECK_UI_V2
+    return (_state == STATE_PICK_HOP) ? renderPickerV2(display) : renderMainV2(display);
+#endif
     if (_state == STATE_PICK_HOP) {
       return renderPicker(display);
     }
     return renderMain(display);
   }
+
+#ifdef MECK_UI_V2
+  // Hash of hop `h` as hex ("A3" or "A3F0")
+  void hopHex(int h, char* out, size_t len) const {
+    int o = h * _bytesPerHop;
+    if (_bytesPerHop == 1) snprintf(out, len, "%02X", _pathBuf[o]);
+    else snprintf(out, len, "%02X%02X", _pathBuf[o], _pathBuf[o + 1]);
+  }
+
+  // UI v2: the path as list rows. The title-bar chip shows unsaved changes
+  // or a saved custom path.
+  int renderMainV2(DisplayDriver& display) {
+    using namespace ui2;
+    Ui2Canvas c(display);
+    Ui2Chrome::statusHeader(c);
+    _menuCount = buildMenuCount();
+    if (_dirty) Ui2Chrome::titleBar(c, _contactName, nullptr, MECK_TR("Edited", "Modifi\xC3\xA9"), UI2_IC_EDIT, true);
+    else if (isCustomPathSet()) Ui2Chrome::titleBar(c, _contactName, nullptr, MECK_TR("Custom", "Perso"), UI2_IC_LOCK);
+    else Ui2Chrome::titleBar(c, _contactName);
+
+    const int start = Ui2List::pageStart(_menuSel, ROWS_PER_PAGE);
+    for (int i = start; i < _menuCount && i < start + ROWS_PER_PAGE; i++) {
+      MenuItem item = menuItemAt(i);
+      Ui2Row r;
+      char val[16], sub[32], name[33];
+      switch (item) {
+        case MENU_MODE:
+          r.icon = UI2_IC_HASH;
+          r.title = MECK_TR("Hash size", "Taille du hash");
+          if (_directLocked) {
+            r.right = MECK_TR("Direct", "Direct");
+            r.sub = MECK_TR("No repeaters in between", "Sans r\xC3\xA9p\xC3\xA9teur");
+          } else {
+            snprintf(val, sizeof(val), MECK_TR("%d-byte", "%d octet%s"), _bytesPerHop, _bytesPerHop > 1 ? "s" : "");
+            r.right = val;
+            r.sub = MECK_TR("A/D to change", "A/D pour changer");
+          }
+          break;
+        case MENU_ADD_HOP:
+          r.icon = UI2_IC_PLUS;
+          r.title = MECK_TR("Add hop", "Ajouter un saut");
+          r.chevron = true;
+          break;
+        case MENU_SET_DIRECT:
+          r.icon = UI2_IC_SEND;
+          r.title = MECK_TR("Direct route", "Route directe");
+          r.sub = _directLocked ? MECK_TR("Set", "D\xC3\xA9" "finie") : MECK_TR("No repeaters in between", "Sans r\xC3\xA9p\xC3\xA9teur");
+          r.check = _directLocked;
+          break;
+        case MENU_REMOVE_LAST:
+          r.icon = UI2_IC_MINUS;
+          r.title = MECK_TR("Remove last hop", "Retirer le dernier saut");
+          break;
+        case MENU_CLEAR_PATH:
+          r.icon = UI2_IC_DEL;
+          r.title = MECK_TR("Clear custom path", "Effacer le chemin");
+          r.sub = MECK_TR("Back to automatic routing", "Retour au routage auto");
+          break;
+        case MENU_SAVE_EXIT:
+          r.icon = UI2_IC_CHECK;
+          r.title = MECK_TR("Save and exit", "Enregistrer et quitter");
+          break;
+        default: {
+          int h = item - MENU_HOP_BASE;
+          r.icon = UI2_IC_REPEATER;
+          hopHex(h, val, sizeof(val));
+          r.right = val;
+          snprintf(sub, sizeof(sub), MECK_TR("Hop %d", "Saut %d"), h + 1);
+          if (findNameForHop(h, name, sizeof(name))) { r.title = name; r.sub = sub; }
+          else { r.title = sub; r.sub = MECK_TR("Not in contacts", "Pas dans les contacts"); }
+          break;
+        }
+      }
+      r.selected = (i == _menuSel);
+      Ui2List::drawRow(c, BODY_Y + (i - start) * ROW_H, r);
+    }
+    const Ui2Key keys[] = {
+      ui2KeyIcon(UI2_IC_ENTER, MECK_TR("Select", "Choisir")),
+      ui2Key("W/S", MECK_TR("Move", "D\xC3\xA9placer"), true),
+      ui2Key("Q", _dirty ? MECK_TR("Discard", "Abandonner") : MECK_TR("Back", "Retour")),
+    };
+    Ui2Chrome::footer(c, keys, 3);
+    return 5000;
+  }
+
+  int renderPickerV2(DisplayDriver& display) {
+    using namespace ui2;
+    Ui2Canvas c(display);
+    Ui2Chrome::statusHeader(c);
+    char right[16];
+    Ui2List::pageLabel(right, sizeof(right), _repSel, _repCount, ROWS_PER_PAGE);
+    Ui2Chrome::titleBar(c, MECK_TR("Add hop", "Ajouter un saut"), right);
+    if (_repCount == 0) {
+      Ui2List::emptyState(c, BODY_Y, FOOTER_Y, UI2_IC_REPEATER, MECK_TR("No repeaters in contacts", "Aucun r\xC3\xA9p\xC3\xA9teur connu"),
+                          MECK_TR("Repeaters appear here once they are contacts.", "Ajoutez d'abord des r\xC3\xA9p\xC3\xA9teurs."));
+      const Ui2Key keys[] = { ui2Key("Q", MECK_TR("Back", "Retour")) };
+      Ui2Chrome::footer(c, keys, 1);
+      return 5000;
+    }
+    const int start = Ui2List::pageStart(_repSel, ROWS_PER_PAGE);
+    for (int i = start; i < _repCount && i < start + ROWS_PER_PAGE; i++) {
+      ContactInfo ci;
+      if (!the_mesh.getContactByIdx(_repIdx[i], ci)) continue;
+      char hex[8];
+      if (_bytesPerHop == 1) snprintf(hex, sizeof(hex), "%02X", ci.id.pub_key[0]);
+      else snprintf(hex, sizeof(hex), "%02X%02X", ci.id.pub_key[0], ci.id.pub_key[1]);
+      Ui2Row r;
+      r.icon = UI2_IC_REPEATER;
+      r.title = ci.name;
+      r.right = hex;
+      r.selected = (i == _repSel);
+      Ui2List::drawRow(c, BODY_Y + (i - start) * ROW_H, r);
+    }
+    const Ui2Key keys[] = {
+      ui2KeyIcon(UI2_IC_ENTER, MECK_TR("Add", "Ajouter")),
+      ui2Key("W/S", MECK_TR("Move", "D\xC3\xA9placer"), true),
+      ui2Key("Q", MECK_TR("Back", "Retour")),
+    };
+    Ui2Chrome::footer(c, keys, 3);
+    return 5000;
+  }
+
+  // Touch hit test in physical pixels: 0 = miss, 1 = moved, 2 = tapped current row
+  int selectRowAtPx(int py) {
+    int row = Ui2List::rowAt(py, ui2::BODY_Y, ui2::ROW_H, ui2::ROWS_PER_PAGE);
+    if (row < 0) return 0;
+    int& sel = (_state == STATE_PICK_HOP) ? _repSel : _menuSel;
+    int count = (_state == STATE_PICK_HOP) ? _repCount : _menuCount;
+    int idx = Ui2List::pageStart(sel, ui2::ROWS_PER_PAGE) + row;
+    if (idx >= count) return 0;
+    if (idx == sel) return 2;
+    sel = idx;
+    return 1;
+  }
+#endif
 
   int renderMain(DisplayDriver& display) {
     char tmp[64];
