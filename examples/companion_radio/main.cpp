@@ -1666,7 +1666,11 @@ static void meckLaunchHomeTile(Ui2Tile t) {
     if (ui_task.isOnChannelScreen()) {
       ChannelScreen* cannedTapScr = (ChannelScreen*)ui_task.getChannelScreen();
       if (cannedTapScr && cannedTapScr->isCannedOpen()) {
+#ifdef MECK_UI_V2
+        cannedTapScr->cannedTapAtPx(y);      // row tap queues the send; else closes
+#else
         cannedTapScr->cannedTapAt(vx, vy);   // row tap queues the send; else closes
+#endif
         ui_task.forceRefresh();
         return 0;
       }

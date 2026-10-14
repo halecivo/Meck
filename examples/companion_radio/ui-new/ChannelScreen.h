@@ -7,6 +7,10 @@
 #include <MeshCore.h>
 #include <Packet.h>
 #include "EmojiSprites.h"
+#ifdef MECK_UI_V2
+  #include "ui2/Ui2Chrome.h"
+  #include "ui2/Ui2List.h"
+#endif
 
 // SD card message persistence
 #if defined(HAS_SDCARD) && defined(ESP32)
@@ -805,7 +809,373 @@ public:
     return inboxCount;
   }
 
+#ifdef MECK_UI_V2
+  // ===========================================================================
+  // UI v2 conversation (design B5)
+  // ===========================================================================
+
+  // Message text tokens: UTF-8 characters, single-byte emoji escapes (drawn
+  // as 12 px sprites) and pad bytes (ignored). Returns the token's byte
+  // length and sets *w to its width in the body font.
+  static int v2Token(const char* s, int pos, int len, int16_t* w) {
+    uint8_t b = (uint8_t)s[pos];
+    if (b == EMOJI_PAD_BYTE) { *w = 0; return 1; }
+    bool utf8 = (b >= 0xC2 && pos + 1 < len && ((uint8_t)s[pos + 1] & 0xC0) == 0x80);
+    if (!utf8 && isEmojiEscape(b)) { *w = EMOJI_LG_W + 1; return 1; }
+    int cl = utf8 ? ((b < 0xE0) ? 2 : (b < 0xF0) ? 3 : 4) : 1;
+    if (pos + cl > len) cl = len - pos;
+    *w = Ui2Canvas::textWidth(s + pos, UI2_F_BODY, cl);
+    return cl;
+  }
+
+  struct V2Line { int16_t a, b, w; };
+
+  // Greedy word wrap with hard breaks for over-long words (URLs). Fills up
+  // to maxLines lines; *more tells whether text remains.
+  static int v2Wrap(const char* s, int len, int16_t maxW, V2Line* out, int maxLines, bool* more) {
+    int pos = 0, n = 0;
+    *more = false;
+    while (pos < len && n < maxLines) {
+      while (pos < len && s[pos] == ' ') pos++;
+      if (pos >= len) break;
+      int start = pos, lastSpace = -1, i = pos;
+      int16_t w = 0, wAtSpace = 0;
+      while (i < len) {
+        int16_t tw;
+        int cl = v2Token(s, i, len, &tw);
+        if (w + tw > maxW) break;
+        if (s[i] == ' ') { lastSpace = i; wAtSpace = w; }
+        w += tw;
+        i += cl;
+      }
+      V2Line& L = out[n++];
+      if (i >= len) { L.a = start; L.b = len; L.w = w; pos = len; }
+      else if (lastSpace > start) { L.a = start; L.b = lastSpace; L.w = wAtSpace; pos = lastSpace + 1; }
+      else {
+        if (i == start) { int16_t tw; i += v2Token(s, i, len, &tw); w = tw; }
+        L.a = start; L.b = i; L.w = w; pos = i;
+      }
+    }
+    while (pos < len && s[pos] == ' ') pos++;
+    *more = pos < len;
+    return n;
+  }
+
+  // Draw bytes [a, b) of a message: text runs in the body font, emoji as sprites
+  void v2DrawRange(Ui2Canvas& c, int16_t x, int16_t baseline, const char* s, int a, int b, bool ink) {
+    int i = a, run = a;
+    while (i < b) {
+      int16_t tw;
+      int cl = v2Token(s, i, b, &tw);
+      uint8_t ch = (uint8_t)s[i];
+      bool emoji = (cl == 1 && tw == EMOJI_LG_W + 1);
+      if (emoji || ch == EMOJI_PAD_BYTE) {
+        if (i > run) x = c.text(x, baseline, s + run, UI2_F_BODY, ink, i - run);
+        if (emoji) {
+          const uint8_t* sprite = getEmojiSpriteLg(ch);
+          if (sprite) c.raw().drawXbmRaw(x, baseline - 10, sprite, EMOJI_LG_W, EMOJI_LG_H, c.raw().rawColor(ink));
+          x += EMOJI_LG_W + 1;
+        }
+        run = i + cl;
+      }
+      i += cl;
+    }
+    if (b > run) c.text(x, baseline, s + run, UI2_F_BODY, ink, b - run);
+  }
+
+  // Short local time ("19:58") or age ("14m") of a message
+  void v2MsgTime(uint32_t ts, char* buf, size_t len) {
+    uint32_t now = _rtc->getCurrentTime();
+    if (ts > 1700000000 && now > 1700000000) {
+      int32_t local = (int32_t)ts + (int32_t)the_mesh.getNodePrefs()->utc_offset_hours * 3600;
+      int h = (local / 3600) % 24; if (h < 0) h += 24;
+      int m = (local / 60) % 60;   if (m < 0) m += 60;
+      snprintf(buf, len, "%02d:%02d", h, m);
+    } else {
+      Ui2List::formatAge(buf, len, (int32_t)(now - ts));
+    }
+  }
+
+  // One bubble, laid out but not yet drawn
+  struct V2Bubble {
+    int msgIdx;          // index into _messages
+    int chronoIdx;       // index into the chronological list (reply select)
+    bool own;
+    int16_t h, w;
+    V2Line lines[6];
+    uint8_t nLines;
+    bool more;
+    const char* body;    // message text after "Sender: "
+    int bodyLen;
+    char sender[32];
+  };
+
+  static const int16_t V2_BUBBLE_MAXW = 196;
+  static const int16_t V2_TEXT_PAD = 6;
+
+  void v2Layout(V2Bubble& bb, int idx, int chrono) {
+    ChannelMessage* m = &_messages[idx];
+    bb.msgIdx = idx;
+    bb.chronoIdx = chrono;
+    bb.sender[0] = 0;
+    bb.body = m->text;
+    if (extractSenderName(m->text, bb.sender, sizeof(bb.sender))) {
+      const char* colon = strstr(m->text, ": ");
+      bb.body = colon ? colon + 2 : m->text;
+    }
+    bb.bodyLen = strlen(bb.body);
+    bb.own = (m->path_len == 0 && m->snr == 0 && strcmp(bb.sender, the_mesh.getNodePrefs()->node_name) == 0)
+             || m->dm_status != DM_SEND_NONE;
+    const int16_t textMax = V2_BUBBLE_MAXW - 2 - 2 * V2_TEXT_PAD;
+    bb.nLines = v2Wrap(bb.body, bb.bodyLen, textMax, bb.lines, 6, &bb.more);
+    if (bb.nLines == 0) { bb.lines[0] = {0, 0, 0}; bb.nLines = 1; }
+    int16_t cw = 0;
+    for (int k = 0; k < bb.nLines; k++) if (bb.lines[k].w > cw) cw = bb.lines[k].w;
+    if (bb.more) cw = textMax;
+    int16_t hw = bb.own ? 110 : Ui2Canvas::textWidth(bb.sender, UI2_F_LABEL);
+    if (hw > cw) cw = hw;
+    if (!bb.own && cw < 84) cw = 84;      // room for the time / hops line
+    bb.w = cw + 2 + 2 * V2_TEXT_PAD;
+    if (bb.w > V2_BUBBLE_MAXW) bb.w = V2_BUBBLE_MAXW;
+    bb.h = bb.own ? (14 + 2 + bb.nLines * 15 + 3 + 2) : (2 + 15 + bb.nLines * 15 + 15 + 2);
+  }
+
+  void v2DrawBubble(Ui2Canvas& c, const V2Bubble& bb, int16_t y, bool sel) {
+    using namespace ui2;
+    ChannelMessage* m = &_messages[bb.msgIdx];
+    const int16_t x = bb.own ? (SCREEN_W - PAD - bb.w) : PAD;
+    const int16_t textMax = bb.w - 2 - 2 * V2_TEXT_PAD;
+    c.fill(x, y, bb.w, bb.h, false);
+    c.roundRect(x, y, bb.w, bb.h, 3, true);
+    if (sel) c.roundRect(x + 1, y + 1, bb.w - 2, bb.h - 2, 2, true);
+    char meta[40], t[8];
+    v2MsgTime(m->timestamp, t, sizeof(t));
+    int16_t ty;
+    if (bb.own) {
+      // Filled header tab: "You", delivery state, state icon
+      c.fill(x + 1, y + 1, bb.w - 2, 14, true);
+      c.text(x + V2_TEXT_PAD, Ui2Canvas::boxBaseline(UI2_F_CHIP, y + 1, 14), MECK_TR("You", "Vous"), UI2_F_CHIP, false);
+      Ui2Icon ic = UI2_NO_ICON;
+      if (m->dm_status == DM_SEND_SENDING) {
+        snprintf(meta, sizeof(meta), MECK_TR("sending %d/%d", "envoi %d/%d"), m->dm_attempt, m->dm_total);
+        ic = UI2_IC_CLOCK;
+      } else if (m->dm_status == DM_SEND_DELIVERED) {
+        snprintf(meta, sizeof(meta), MECK_TR("delivered %s", "distribu\xC3\xA9 %s"), t);
+        ic = UI2_IC_CHECK;
+      } else if (m->dm_status == DM_SEND_FAILED) {
+        snprintf(meta, sizeof(meta), "%s", MECK_TR("failed", "\xC3\xA9" "chec"));
+        ic = UI2_IC_WARN;
+      } else {
+        snprintf(meta, sizeof(meta), MECK_TR("sent %s", "envoy\xC3\xA9 %s"), t);
+      }
+      int16_t rx = x + bb.w - V2_TEXT_PAD;
+      if (ic != UI2_NO_ICON) { rx -= 12; c.icon(rx, y + 2, ic, 12, false); rx -= 3; }
+      int16_t mw = Ui2Canvas::textWidth(meta, UI2_F_META);
+      int16_t lx = x + V2_TEXT_PAD + Ui2Canvas::textWidth(MECK_TR("You", "Vous"), UI2_F_CHIP) + 6;
+      if (rx - mw < lx) mw = rx - lx;
+      c.textFit(rx - mw, Ui2Canvas::boxBaseline(UI2_F_META, y + 1, 14), mw, meta, UI2_F_META, false, UI2_RIGHT);
+      ty = y + 16;
+    } else {
+      // Sender line (inverted when the bubble is selected for a reply)
+      if (sel) c.fill(x + 2, y + 2, bb.w - 4, 15, true);
+      c.textFit(x + V2_TEXT_PAD, Ui2Canvas::lineBaseline(UI2_F_LABEL, y + 2, 15), textMax,
+                bb.sender[0] ? bb.sender : "?", UI2_F_LABEL, !sel);
+      ty = y + 17;
+    }
+    for (int k = 0; k < bb.nLines; k++) {
+      int16_t base = Ui2Canvas::lineBaseline(UI2_F_BODY, ty + k * 15, 15);
+      const V2Line& L = bb.lines[k];
+      if (k == bb.nLines - 1 && bb.more) {
+        // Last line with text remaining: cut to leave room for "..."
+        int16_t ellW = Ui2Canvas::textWidth("\xE2\x80\xA6", UI2_F_BODY);
+        int b = L.a; int16_t w = 0;
+        while (b < L.b) {
+          int16_t tw; int cl = v2Token(bb.body, b, L.b, &tw);
+          if (w + tw + ellW > textMax) break;
+          w += tw; b += cl;
+        }
+        v2DrawRange(c, x + V2_TEXT_PAD, base, bb.body, L.a, b, true);
+        c.text(x + V2_TEXT_PAD + w, base, "\xE2\x80\xA6", UI2_F_BODY);
+      } else {
+        v2DrawRange(c, x + V2_TEXT_PAD, base, bb.body, L.a, L.b, true);
+      }
+    }
+    if (!bb.own) {
+      int hops = (m->path_len == 0xFF) ? 0 : (m->path_len & 63);
+      char h[16];
+      if (m->path_len == 0xFF || hops == 0) snprintf(h, sizeof(h), "%s", MECK_TR("direct", "direct"));
+      else if (hops == 1) snprintf(h, sizeof(h), "%s", MECK_TR("1 hop", "1 saut"));
+      else snprintf(h, sizeof(h), MECK_TR("%d hops", "%d sauts"), hops);
+      snprintf(meta, sizeof(meta), "%s \xC2\xB7 %s", t, h);
+      c.textFit(x + V2_TEXT_PAD, Ui2Canvas::lineBaseline(UI2_F_META, ty + bb.nLines * 15 + 1, 12), textMax, meta, UI2_F_META);
+    }
+  }
+
+  int renderV2(DisplayDriver& display) {
+    using namespace ui2;
+    Ui2Canvas c(display);
+    Ui2Chrome::statusHeader(c);
+
+    char title[48];
+    ChannelDetails channel;
+    if (_viewChannelIdx == 0xFF) {
+      if (_dmInboxMode) snprintf(title, sizeof(title), "%s", MECK_TR("Direct messages", "Messages priv\xC3\xA9s"));
+      else snprintf(title, sizeof(title), "%s", _dmFilterName);
+    } else if (the_mesh.getChannel(_viewChannelIdx, channel)) {
+      snprintf(title, sizeof(title), "%s", channel.name);
+    } else {
+      snprintf(title, sizeof(title), MECK_TR("Channel %d", "Canal %d"), _viewChannelIdx);
+    }
+
+    // --- Canned messages: a list of the filled slots, tap a row to send ---
+    if (_cannedOpen) {
+      Ui2Chrome::titleBar(c, title, nullptr, MECK_TR("Quick reply", "R\xC3\xA9ponse rapide"));
+      for (uint8_t r = 0; r < _cannedCount && r < ROWS_PER_PAGE; r++) {
+        char num[4];
+        snprintf(num, sizeof(num), "%u", (unsigned)(_cannedMap[r] + 1));
+        Ui2Row row;
+        row.title = the_mesh.getNodePrefs()->canned_msgs[_cannedMap[r]];
+        row.badge = num;
+        Ui2List::drawRow(c, BODY_Y + r * ROW_H, row);
+      }
+      const Ui2Key keys[] = { ui2Key("Q", MECK_TR("Close", "Fermer")) };
+      Ui2Chrome::footer(c, keys, 1);
+      return 5000;
+    }
+
+    // --- DM inbox: one row per conversation ---
+    if (_viewChannelIdx == 0xFF && _dmInboxMode) {
+      DMInboxEntry inbox[DM_INBOX_MAX];
+      int inboxCount = collectDMInbox(inbox);
+      if (_dmInboxScroll >= inboxCount) _dmInboxScroll = inboxCount > 0 ? inboxCount - 1 : 0;
+      char right[16];
+      Ui2List::pageLabel(right, sizeof(right), _dmInboxScroll, inboxCount, ROWS_PER_PAGE);
+      Ui2Chrome::titleBar(c, title, right);
+      if (inboxCount == 0) {
+        Ui2List::emptyState(c, BODY_Y, FOOTER_Y, UI2_IC_MSG, MECK_TR("No direct messages", "Aucun message priv\xC3\xA9"));
+      } else {
+        const uint32_t now = _rtc->getCurrentTime();
+        const int start = Ui2List::pageStart(_dmInboxScroll, ROWS_PER_PAGE);
+        for (int i = start; i < inboxCount && i < start + ROWS_PER_PAGE; i++) {
+          char sub[24], age[8], badge[6];
+          Ui2Row r;
+          r.icon = UI2_IC_CONTACT;
+          r.title = inbox[i].name;
+          snprintf(sub, sizeof(sub), MECK_TR("%d messages", "%d messages"), inbox[i].msgCount);
+          r.sub = sub;
+          Ui2List::formatAge(age, sizeof(age), (int32_t)(now - inbox[i].newestTs));
+          r.right = age;
+          if (inbox[i].unreadCount > 0) { snprintf(badge, sizeof(badge), "%d", inbox[i].unreadCount); r.badge = badge; }
+          r.rightMax = 40;
+          r.selected = (i == _dmInboxScroll);
+          Ui2List::drawRow(c, BODY_Y + (i - start) * ROW_H, r);
+        }
+      }
+      const Ui2Key keys[] = { ui2KeyIcon(UI2_IC_ENTER, MECK_TR("Open", "Ouvrir")), ui2Key("W/S", MECK_TR("Move", "D\xC3\xA9placer"), true),
+                              ui2Key("Q", MECK_TR("Back", "Retour")) };
+      Ui2Chrome::footer(c, keys, 3);
+      return 5000;
+    }
+
+    // --- Conversation: bubbles, newest at the bottom ---
+    static int chrono[CHANNEL_MSG_HISTORY_SIZE];
+    int n = 0;
+    for (int i = 0; i < _msgCount && n < CHANNEL_MSG_HISTORY_SIZE; i++) {
+      int idx = _newestIdx - i;
+      while (idx < 0) idx += CHANNEL_MSG_HISTORY_SIZE;
+      idx %= CHANNEL_MSG_HISTORY_SIZE;
+      if (msgMatchesView(_messages[idx])) chrono[n++] = idx;
+    }
+    for (int l = 0, r = n - 1; l < r; l++, r--) { int t = chrono[l]; chrono[l] = chrono[r]; chrono[r] = t; }
+    _replyChannelMsgCount = n;
+    _msgsPerPage = 1;   // bubbles have variable height: scroll one message at a time
+
+    char right[12];
+    snprintf(right, sizeof(right), "%d", n);
+    Ui2Chrome::titleBar(c, title, n ? right : nullptr,
+                        _replySelectMode ? MECK_TR("Reply", "R\xC3\xA9ponse") : nullptr, UI2_NO_ICON, _replySelectMode);
+
+    if (n == 0) {
+      if (_viewChannelIdx == 0xFF) {
+        char line[48];
+        snprintf(line, sizeof(line), MECK_TR("No messages from %s", "Aucun message de %s"), _dmFilterName);
+        Ui2List::emptyState(c, BODY_Y, FOOTER_Y, UI2_IC_MSG, line);
+      } else {
+        Ui2List::emptyState(c, BODY_Y, FOOTER_Y, UI2_IC_MSG, MECK_TR("No messages yet", "Aucun message"),
+                            MECK_TR("Enter writes the first one.", "Entr\xC3\xA9" "e pour \xC3\xA9" "crire le premier."));
+      }
+    } else {
+      if (_scrollPos > n - 1) _scrollPos = n - 1;
+      if (_scrollPos < 0) _scrollPos = 0;
+      // Keep the reply selection on screen: it never sits below the bottom bubble
+      if (_replySelectMode && _replySelectPos >= 0 && _replySelectPos > n - 1 - _scrollPos) _scrollPos = n - 1 - _replySelectPos;
+
+      static V2Bubble bubbles[8];
+      int16_t ys[8];
+      int count = 0;
+      for (int pass = 0; pass < 2; pass++) {
+        count = 0;
+        int16_t y = FOOTER_Y - 6;
+        for (int k = n - 1 - _scrollPos; k >= 0 && count < 8; k--) {
+          V2Bubble& bb = bubbles[count];
+          v2Layout(bb, chrono[k], k);
+          if (y - bb.h < BODY_Y + 4 && count > 0) break;
+          y -= bb.h;
+          ys[count++] = y;
+          y -= 6;
+        }
+        // Selection above the top bubble: anchor it at the bottom and lay out again
+        if (_replySelectMode && _replySelectPos >= 0 && count > 0 &&
+            _replySelectPos < bubbles[count - 1].chronoIdx && pass == 0) {
+          _scrollPos = n - 1 - _replySelectPos;
+          continue;
+        }
+        break;
+      }
+      for (int b = count - 1; b >= 0; b--) {
+        int16_t y = ys[b] < BODY_Y + 2 ? BODY_Y + 2 : ys[b];
+        v2DrawBubble(c, bubbles[b], y, _replySelectMode && bubbles[b].chronoIdx == _replySelectPos);
+      }
+      // The title bar is drawn again over a bubble that does not fully fit
+      if (count > 0 && ys[count - 1] < BODY_Y + 2) {
+        c.fill(0, TITLE_Y, SCREEN_W, TITLE_H, false);
+        Ui2Chrome::titleBar(c, title, right, _replySelectMode ? MECK_TR("Reply", "R\xC3\xA9ponse") : nullptr, UI2_NO_ICON, _replySelectMode);
+      }
+    }
+
+    if (_replySelectMode) {
+      const Ui2Key keys[] = { ui2KeyIcon(UI2_IC_ENTER, MECK_TR("Reply", "R\xC3\xA9pondre")), ui2Key("W/S", MECK_TR("Select", "Choisir"), true),
+                              ui2Key("V", MECK_TR("Path", "Chemin")), ui2Key("Q", MECK_TR("Cancel", "Annuler")) };
+      Ui2Chrome::footer(c, keys, 4);
+    } else if (_viewChannelIdx == 0xFF && _dmContactPerms > 0) {
+      const Ui2Key keys[] = { ui2KeyIcon(UI2_IC_ENTER, MECK_TR("Reply", "R\xC3\xA9pondre")), ui2Key("W/S", MECK_TR("Scroll", "D\xC3\xA9" "filer"), true),
+                              ui2Key("L", "Admin"), ui2Key("Q", MECK_TR("Back", "Retour")) };
+      Ui2Chrome::footer(c, keys, 4);
+    } else if (_viewChannelIdx == 0xFF) {
+      const Ui2Key keys[] = { ui2KeyIcon(UI2_IC_ENTER, MECK_TR("Reply", "R\xC3\xA9pondre")), ui2Key("W/S", MECK_TR("Scroll", "D\xC3\xA9" "filer"), true),
+                              ui2Key("Q", MECK_TR("Back", "Retour")) };
+      Ui2Chrome::footer(c, keys, 3);
+    } else {
+      const Ui2Key keys[] = { ui2KeyIcon(UI2_IC_ENTER, MECK_TR("Write", "\xC3\x89" "crire")), ui2Key("R", MECK_TR("Reply", "R\xC3\xA9pondre")),
+                              ui2Key("W/S", MECK_TR("Scroll", "D\xC3\xA9" "filer"), true), ui2Key("Q", MECK_TR("Back", "Retour")) };
+      Ui2Chrome::footer(c, keys, 4);
+    }
+    return 5000;
+  }
+
+  // Canned overlay tap in physical pixels: a row tap queues that slot for
+  // the main loop to send; any other tap just closes the overlay.
+  void cannedTapAtPx(int py) {
+    int row = Ui2List::rowAt(py, ui2::BODY_Y, ui2::ROW_H, ui2::ROWS_PER_PAGE);
+    if (row >= 0 && row < (int)_cannedCount) _cannedPendingSlot = _cannedMap[row];
+    _cannedOpen = false;
+  }
+#endif
+
   int render(DisplayDriver& display) override {
+#ifdef MECK_UI_V2
+    if (!_showPathOverlay) return renderV2(display);   // the path overlay keeps its classic layout
+#endif
     char tmp[40];
     
     // Header - show current channel name
