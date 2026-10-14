@@ -235,6 +235,104 @@ inline WrapResult findLineBreakPixel(const char* buffer, int bufLen, int lineSta
   return result;
 }
 
+#ifdef MECK_UI_V2
+// ============================================================================
+// UI v2 reading layout (physical pixels): full-screen text under the status
+// header, a thin progress line and the position at the bottom. Page indexes
+// built with these numbers are keyed READER_V2_FONT_KEY in the .idx files.
+// ============================================================================
+#define READER_V2_FONT      UI2_F_BODY
+#define READER_V2_X         12
+#define READER_V2_W         (240 - 24)
+#define READER_V2_TOP       30
+#define READER_V2_LINE_H    17
+#define READER_V2_AREA_H    (300 - READER_V2_TOP)
+#define READER_V2_FONT_KEY  0xC1   // classic keys are large_font | (style << 4); bump when v2 wrap changes
+
+// One character of reader text: its byte length and width in the v2 body
+// font (the UTF-8 fonts cover Czech, French etc. directly, unlike CP437).
+// Control characters and bytes that are not valid UTF-8 are zero-width;
+// a tab is as wide as a space.
+inline int readerV2Char(const char* s, int i, int len, int16_t* w) {
+  uint8_t b = (uint8_t)s[i];
+  if (b < 0x80) {
+    *w = (b == '\t') ? Ui2Canvas::textWidth(" ", READER_V2_FONT)
+       : (b >= 32)   ? Ui2Canvas::textWidth(s + i, READER_V2_FONT, 1) : 0;
+    return 1;
+  }
+  int cl = (b >= 0xF0) ? 4 : (b >= 0xE0) ? 3 : (b >= 0xC0) ? 2 : 0;
+  if (cl == 0 || i + cl > len) { *w = 0; return 1; }
+  for (int k = 1; k < cl; k++) {
+    if (((uint8_t)s[i + k] & 0xC0) != 0x80) { *w = 0; return 1; }
+  }
+  *w = Ui2Canvas::textWidth(s + i, READER_V2_FONT, cl);
+  return cl;
+}
+
+// Pixel word wrap in the v2 body font. Same rules as findLineBreak():
+// newlines end a line, breaks at spaces or after hyphens, long words are
+// broken mid-word. Used by both the indexer and the renderer.
+inline WrapResult findLineBreakV2(const char* buffer, int bufLen, int lineStart) {
+  WrapResult result;
+  result.lineEnd = lineStart;
+  result.nextStart = lineStart;
+  if (lineStart >= bufLen) return result;
+
+  int16_t w = 0;
+  int lastBreakPoint = -1;
+  bool inWord = false;
+  int i = lineStart;
+  while (i < bufLen) {
+    char c = buffer[i];
+    if (c == '\n' || c == '\r') {
+      result.lineEnd = i;
+      result.nextStart = i + 1;
+      char pair = (c == '\n') ? '\r' : '\n';
+      if (result.nextStart < bufLen && buffer[result.nextStart] == pair) result.nextStart++;
+      return result;
+    }
+    int16_t cw;
+    int cl = readerV2Char(buffer, i, bufLen, &cw);
+    if (w > 0 && w + cw > READER_V2_W) {
+      if (c == ' ' || c == '\t') {
+        result.lineEnd = i;                      // overflowing space: break here
+      } else if (lastBreakPoint > lineStart) {
+        result.lineEnd = lastBreakPoint;
+      } else {
+        result.lineEnd = i;                      // no break point: mid-word
+        result.nextStart = i;
+        return result;
+      }
+      result.nextStart = result.lineEnd;
+      while (result.nextStart < bufLen &&
+             (buffer[result.nextStart] == ' ' || buffer[result.nextStart] == '\t'))
+        result.nextStart++;
+      // Only spaces were left before the newline: the newline ends this line
+      // too, otherwise it would show up as an extra blank line
+      if (result.nextStart < bufLen && (buffer[result.nextStart] == '\n' || buffer[result.nextStart] == '\r')) {
+        char nl = buffer[result.nextStart++];
+        char pair = (nl == '\n') ? '\r' : '\n';
+        if (result.nextStart < bufLen && buffer[result.nextStart] == pair) result.nextStart++;
+      }
+      return result;
+    }
+    w += cw;
+    if (c == ' ' || c == '\t') {
+      if (inWord) { lastBreakPoint = i; inWord = false; }
+    } else if (c == '-') {
+      if (inWord) lastBreakPoint = i + 1;
+      inWord = true;
+    } else if (cw > 0) {
+      inWord = true;
+    }
+    i += cl;
+  }
+  result.lineEnd = bufLen;
+  result.nextStart = bufLen;
+  return result;
+}
+#endif
+
 // ============================================================================
 // Page Indexer (word-wrap aware, matches display rendering)
 // When textAreaHeight and lineHeight are provided (both > 0), uses height-based
@@ -268,10 +366,15 @@ inline int indexPagesWordWrap(File& file, long startPos,
     int pos = 0;
     while (pos < bufLen) {
       int lineStart = pos;
+#ifdef MECK_UI_V2
+      // UI v2: pixel wrap in the v2 body font, the same as renderPageV2()
+      WrapResult wrap = findLineBreakV2(buffer, bufLen, pos);
+#else
       // Pixel-based wrapping for proportional fonts; char-count for monospaced
       WrapResult wrap = pixelDisplay
         ? findLineBreakPixel(buffer, bufLen, pos, pixelDisplay, charsPerLine)
         : findLineBreak(buffer, bufLen, pos, charsPerLine);
+#endif
       if (wrap.nextStart <= pos && wrap.lineEnd >= bufLen) break;
 
       // Blank line = newline at line start (no printable content before it)
@@ -632,8 +735,26 @@ private:
     uint8_t savedFontKey = 0;
     idxFile.read(&savedFontKey, 1);
     if (savedFontKey != _fontKey) {
+#ifdef MECK_UI_V2
+      // Index from another layout (the classic reader): keep the reading
+      // position as a byte offset, then re-index and resume at that text
+      long resumeOffset = -1;
+      unsigned long oldCount = 0;
+      int oldLast = 0;
+      idxFile.seek(1 + 1 + 4);
+      idxFile.read((uint8_t*)&oldCount, 4);
+      idxFile.seek(1 + 1 + 4 + 4 + 1);
+      idxFile.read((uint8_t*)&oldLast, 4);
+      if (oldLast > 0 && (unsigned long)oldLast < oldCount) {
+        idxFile.seek(15 + (unsigned long)oldLast * 4);
+        idxFile.read((uint8_t*)&resumeOffset, 4);
+      }
+#endif
       idxFile.close();
       SD.remove(idxPath.c_str());
+#ifdef MECK_UI_V2
+      if (resumeOffset > 0) return migrateIndex(filename, cache, resumeOffset);
+#endif
       return false;
     }
 
@@ -675,6 +796,37 @@ private:
     idxFile.close();
     return true;
   }
+
+#ifdef MECK_UI_V2
+  // Re-index a book in the v2 layout and resume on the page that contains
+  // byte `resumeOffset` (the start of the page last read in the old layout).
+  // Runs once per book that had a reading position.
+  bool migrateIndex(const String& filename, FileCache& cache, long resumeOffset) {
+    String fullPath = _currentPath + "/" + filename;
+    File txtFile = SD.open(fullPath.c_str(), FILE_READ);
+    if (!txtFile) txtFile = SD.open((String("/books/.epub_cache/") + filename).c_str(), FILE_READ);
+    if (!txtFile) return false;
+    drawSplash(MECK_TR("Indexing...", "Indexation..."), MECK_TR("Keeping your page", "Position conserv\xC3\xA9" "e"),
+               filename.c_str());
+    std::vector<long> pages;
+    pages.push_back(0);
+    indexPagesWordWrap(txtFile, 0, pages, _linesPerPage, _charsPerLine, 0,
+                       _textAreaHeight, _lineHeight, nullptr);
+    unsigned long size = txtFile.size();
+    txtFile.close();
+    int page = 0;
+    while (page + 1 < (int)pages.size() && pages[page + 1] <= resumeOffset) page++;
+    cache.filename = filename;
+    cache.fileSize = size;
+    cache.fullyIndexed = true;
+    cache.lastReadPage = page;
+    cache.pagePositions = pages;
+    saveIndex(filename, pages, size, true, page);
+    Serial.printf("TextReader: %s re-indexed for UI v2, offset %ld -> page %d/%d\n",
+                  filename.c_str(), resumeOffset, page + 1, (int)pages.size());
+    return true;
+  }
+#endif
 
   bool saveIndex(const String& filename, const std::vector<long>& pages,
                  unsigned long fileSize, bool fullyIndexed, int lastReadPage) {
@@ -1246,6 +1398,68 @@ private:
 
 #endif
 
+#ifdef MECK_UI_V2
+  // Draw bytes [a, b) of a reader line: text runs in the v2 body font, tabs
+  // as spaces, zero-width bytes skipped (same widths as readerV2Char)
+  static void drawReaderLineV2(Ui2Canvas& c, int16_t x, int16_t baseline, const char* s, int a, int b) {
+    int i = a, run = a;
+    while (i < b) {
+      int16_t w;
+      int cl = readerV2Char(s, i, b, &w);
+      bool plain = (w > 0 && s[i] != '\t');
+      if (!plain) {
+        if (i > run) x = c.text(x, baseline, s + run, READER_V2_FONT, true, i - run);
+        x += w;
+        run = i + cl;
+      }
+      i += cl;
+    }
+    if (b > run) c.text(x, baseline, s + run, READER_V2_FONT, true, b - run);
+  }
+
+  // UI v2 reading view: full-screen text with the line breaks of the v2
+  // indexer, a thin progress line, the title and the page position
+  void renderPageV2(DisplayDriver& display) {
+    using namespace ui2;
+    Ui2Canvas c(display);
+    Ui2Chrome::statusHeader(c);
+
+    const int blankH = max(2, READER_V2_LINE_H * 2 / 5);   // as in the indexer
+    const int16_t asc = Ui2Canvas::capHeight(READER_V2_FONT) + 4;
+    int y = 0, pos = 0;
+    while (pos < _pageBufLen) {
+      WrapResult wrap = findLineBreakV2(_pageBuf, _pageBufLen, pos);
+      if (wrap.nextStart <= pos && wrap.lineEnd >= _pageBufLen) break;
+      bool blank = (wrap.lineEnd == pos);
+      int thisH = blank ? blankH : READER_V2_LINE_H;
+      if (y > 0 && y + thisH > READER_V2_AREA_H) break;
+      if (!blank) drawReaderLineV2(c, READER_V2_X, READER_V2_TOP + y + asc, _pageBuf, pos, wrap.lineEnd);
+      y += thisH;
+      pos = wrap.nextStart;
+    }
+
+    // Bottom: progress line, title and "page / pages · percent"
+    int pct = _totalPages > 1 ? (_currentPage * 100) / (_totalPages - 1) : 100;
+    c.hline(0, SCREEN_H - 17, SCREEN_W);
+    c.fill(0, SCREEN_H - 18, (int16_t)((long)SCREEN_W * pct / 100), 3);
+    String title = _currentFile;
+    int dot = title.lastIndexOf('.');
+    if (dot > 0) title = title.substring(0, dot);
+    char posText[40];
+    snprintf(posText, sizeof(posText), "%d / %d  \xC2\xB7  %d %%", _currentPage + 1, _totalPages, pct);
+    int16_t pw = Ui2Canvas::textWidth(posText, UI2_F_META);
+    c.text(SCREEN_W - READER_V2_X - pw, SCREEN_H - 4, posText, UI2_F_META);
+    c.textFit(READER_V2_X, SCREEN_H - 4, SCREEN_W - 2 * READER_V2_X - pw - 12, title.c_str(), UI2_F_META);
+
+    if (_gotoMode) {
+      char t[40];
+      snprintf(t, sizeof(t), MECK_TR("Go to page: %.*s_  (1-%d)", "Aller \xC3\xA0 la page : %.*s_  (1-%d)"),
+               _gotoBufLen, _gotoBuf, _totalPages);
+      Ui2List::toast(c, t);
+    }
+  }
+#endif
+
   void renderPage(DisplayDriver& display) {
     // Use tiny font for maximum text density
     display.setTextSize(_prefs->smallTextSize());
@@ -1453,6 +1667,15 @@ public:
     _linesPerPage = _textAreaHeight / _lineHeight;
     if (_linesPerPage < 5) _linesPerPage = 5;
     if (_linesPerPage > 40) _linesPerPage = 40;
+
+#ifdef MECK_UI_V2
+    // UI v2 pages are laid out in physical pixels in the v2 body font,
+    // whatever the classic font preference is
+    _lineHeight = READER_V2_LINE_H;
+    _textAreaHeight = READER_V2_AREA_H;
+    _linesPerPage = READER_V2_AREA_H / READER_V2_LINE_H;
+    _fontKey = READER_V2_FONT_KEY;
+#endif
 
     display.setTextSize(1);  // Restore
     _initialized = true;
@@ -1846,7 +2069,11 @@ public:
       renderFileList(display);
 #endif
     } else if (_mode == READING) {
+#ifdef MECK_UI_V2
+      renderPageV2(display);
+#else
       renderPage(display);
+#endif
     }
 
     return 5000;  // E-ink refresh interval
