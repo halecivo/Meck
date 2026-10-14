@@ -1467,6 +1467,58 @@ static void openMapScreen() {
 }
 #endif  // HAS_GPS
 
+// Screen openers shared by the keyboard shortcuts, the home tiles and touch.
+// The audio screens are created on first use (Audio buffers are large).
+#if (!defined(HAS_4G_MODEM) || defined(MECK_AUDIO_VARIANT)) && !defined(MECK_40MHZ_TEST)
+static void openAudiobookPlayer() {
+  Serial.println("Opening audiobook player");
+  if (!ui_task.getAudiobookScreen()) {
+    Serial.printf("Audiobook: lazy init - free heap: %d, largest block: %d\n",
+                   ESP.getFreeHeap(), ESP.getMaxAllocHeap());
+    audio = new Audio();
+    AudiobookPlayerScreen* abScreen = new AudiobookPlayerScreen(&ui_task, audio, the_mesh.getNodePrefs());
+    abScreen->setSDReady(sdCardReady);
+    ui_task.setAudiobookScreen(abScreen);
+    Serial.printf("Audiobook: init complete - free heap: %d\n", ESP.getFreeHeap());
+  }
+  ui_task.gotoAudiobookPlayer();
+}
+#endif
+
+#if defined(MECK_AUDIO_VARIANT) && !defined(MECK_40MHZ_TEST)
+static void openAlarmClock() {
+  // Screen created at boot; just ensure Audio* is available
+  Serial.println("Opening alarm clock");
+  if (!audio) {
+    Serial.printf("Alarm: lazy init Audio - free heap: %d, largest block: %d\n",
+                   ESP.getFreeHeap(), ESP.getMaxAllocHeap());
+    audio = new Audio();
+  }
+  AlarmScreen* alarmScr = (AlarmScreen*)ui_task.getAlarmScreen();
+  if (alarmScr) alarmScr->setAudio(audio);
+  ui_task.gotoAlarmScreen();
+}
+
+static void openVoiceNotes() {
+  Serial.println("Opening voice message screen");
+  if (!ui_task.getVoiceScreen()) {
+    Serial.printf("Voice: lazy init - free heap: %d, largest block: %d\n",
+                   ESP.getFreeHeap(), ESP.getMaxAllocHeap());
+    if (!audio) audio = new Audio();
+    VoiceMessageScreen* voiceScr = new VoiceMessageScreen(&ui_task, audio);
+    voiceScr->setSDReady(sdCardReady);
+    ui_task.setVoiceScreen(voiceScr);
+    Serial.printf("Voice: init complete - free heap: %d\n", ESP.getFreeHeap());
+  } else {
+    // Ensure Audio* is shared (may have been created by audiobook/alarm)
+    VoiceMessageScreen* voiceScr = (VoiceMessageScreen*)ui_task.getVoiceScreen();
+    if (!audio) audio = new Audio();
+    voiceScr->setAudio(audio);
+  }
+  ui_task.gotoVoiceScreen();
+}
+#endif
+
 #ifdef MECK_TOUCH_ENABLED
   #if defined(LilyGo_TDeck_Pro_Max)
   // T-Deck Pro MAX: the three capacitive pads below the screen are CST328 keys,
@@ -1609,27 +1661,12 @@ static void openMapScreen() {
           case 7: ui_task.gotoTextReader(); return 0;
           case 8:
   #if (!defined(HAS_4G_MODEM) || defined(MECK_AUDIO_VARIANT)) && !defined(MECK_40MHZ_TEST)
-            // Audiobooks: lazy-init Audio + screen on first use (mirrors 'p' key handler)
-            if (!ui_task.getAudiobookScreen()) {
-              audio = new Audio();
-              AudiobookPlayerScreen* abScreen = new AudiobookPlayerScreen(&ui_task, audio, the_mesh.getNodePrefs());
-              abScreen->setSDReady(sdCardReady);
-              ui_task.setAudiobookScreen(abScreen);
-            }
-            ui_task.gotoAudiobookPlayer();
+            openAudiobookPlayer();
   #endif
             return 0;
           case 9:
   #if defined(MECK_AUDIO_VARIANT) && !defined(MECK_40MHZ_TEST)
-            // Alarm: ensure Audio* exists (mirrors 'k' key handler)
-            if (!audio) {
-              audio = new Audio();
-            }
-            {
-              AlarmScreen* alarmScr = (AlarmScreen*)ui_task.getAlarmScreen();
-              if (alarmScr) alarmScr->setAudio(audio);
-            }
-            ui_task.gotoAlarmScreen();
+            openAlarmClock();
   #endif
             return 0;
           case 10:
@@ -4838,22 +4875,7 @@ void handleKeyboardInput() {
   // Mic key press from any non-modal screen — open voice message screen
   #if defined(MECK_AUDIO_VARIANT) && !defined(MECK_40MHZ_TEST)
   if (key == KB_KEY_MIC) {
-    Serial.println("Opening voice message screen (mic key)");
-    if (!ui_task.getVoiceScreen()) {
-      Serial.printf("Voice: lazy init - free heap: %d, largest block: %d\n",
-                     ESP.getFreeHeap(), ESP.getMaxAllocHeap());
-      if (!audio) audio = new Audio();
-      VoiceMessageScreen* voiceScr = new VoiceMessageScreen(&ui_task, audio);
-      voiceScr->setSDReady(sdCardReady);
-      ui_task.setVoiceScreen(voiceScr);
-      Serial.printf("Voice: init complete - free heap: %d\n", ESP.getFreeHeap());
-    } else {
-      // Ensure Audio* is shared (may have been created by audiobook/alarm)
-      VoiceMessageScreen* voiceScr = (VoiceMessageScreen*)ui_task.getVoiceScreen();
-      if (!audio) audio = new Audio();
-      voiceScr->setAudio(audio);
-    }
-    ui_task.gotoVoiceScreen();
+    openVoiceNotes();
     // Don't start recording here — user tapped mic to navigate.
     // Recording starts on mic press when already on voice screen.
     return;
@@ -5006,35 +5028,14 @@ void handleKeyboardInput() {
         break;
       }
     #if (!defined(HAS_4G_MODEM) || defined(MECK_AUDIO_VARIANT)) && !defined(MECK_40MHZ_TEST)
-      // Otherwise: open audiobook player - lazy-init Audio + screen on first use
-      Serial.println("Opening audiobook player");
-      if (!ui_task.getAudiobookScreen()) {
-        Serial.printf("Audiobook: lazy init - free heap: %d, largest block: %d\n",
-                       ESP.getFreeHeap(), ESP.getMaxAllocHeap());
-        audio = new Audio();
-        AudiobookPlayerScreen* abScreen = new AudiobookPlayerScreen(&ui_task, audio, the_mesh.getNodePrefs());
-        abScreen->setSDReady(sdCardReady);
-        ui_task.setAudiobookScreen(abScreen);
-        Serial.printf("Audiobook: init complete - free heap: %d\n", ESP.getFreeHeap());
-      }
-      ui_task.gotoAudiobookPlayer();
+      // Otherwise: open audiobook player
+      openAudiobookPlayer();
     #endif
       break;
 
     #if defined(MECK_AUDIO_VARIANT) && !defined(MECK_40MHZ_TEST)
     case 'k':
-      // Open alarm clock (screen created at boot; just ensure Audio* is available)
-      Serial.println("Opening alarm clock");
-      if (!audio) {
-        Serial.printf("Alarm: lazy init Audio - free heap: %d, largest block: %d\n",
-                       ESP.getFreeHeap(), ESP.getMaxAllocHeap());
-        audio = new Audio();
-      }
-      {
-        AlarmScreen* alarmScr = (AlarmScreen*)ui_task.getAlarmScreen();
-        if (alarmScr) alarmScr->setAudio(audio);
-      }
-      ui_task.gotoAlarmScreen();
+      openAlarmClock();
       break;
     #endif
 
