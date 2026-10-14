@@ -3869,6 +3869,10 @@ void MyMesh::checkCLIRescueCmd() {
       char kc = (strcmp(k, "enter") == 0) ? '\r' : (strcmp(k, "esc") == 0) ? 27
               : (strcmp(k, "bs") == 0) ? '\b' : (strcmp(k, "space") == 0) ? ' ' : k[0];
       meckDebugKey(kc);
+    } else if (memcmp(cli_command, "uimsg ", 6) == 0) {
+      // Debug: add a local test message to the Public channel history
+      extern void meckDebugAddMsg(const char* arg);
+      meckDebugAddMsg(&cli_command[6]);
 #endif
     } else if (strcmp(cli_command, "clock") == 0) {
       uint32_t t = getRTCClock()->getCurrentTime();

@@ -887,6 +887,38 @@ static uint32_t _atoi(const char* sp) {
   #ifdef MECK_UI_SCREENDUMP
   // Serial "screendump" command: print the last drawn frame
   void meckScreenDump() { display.dumpScreen(Serial); }
+
+  // Serial "uimsg <hops> <sender>|<text>" command: add a test message to the
+  // Public channel history on this device only (nothing is transmitted).
+  // "{XX}" in the text inserts the byte 0xXX (emoji escapes). hops -1 adds
+  // it as a message sent from this device.
+  void meckDebugAddMsg(const char* arg) {
+    int hops = atoi(arg);
+    const char* sp = strchr(arg, ' ');
+    const char* bar = sp ? strchr(sp + 1, '|') : nullptr;
+    if (!sp || !bar) { Serial.println("  usage: uimsg <hops> <sender>|<text>"); return; }
+    char sender[32];
+    int sl = bar - (sp + 1);
+    if (sl > 31) sl = 31;
+    memcpy(sender, sp + 1, sl);
+    sender[sl] = 0;
+    char text[CHANNEL_MSG_TEXT_LEN];
+    int n = snprintf(text, sizeof(text), "%s: ", sender);
+    for (const char* t = bar + 1; *t && n < (int)sizeof(text) - 1; t++) {
+      if (t[0] == '{' && t[1] && t[2] && t[3] == '}') {
+        char hx[3] = { t[1], t[2], 0 };
+        text[n++] = (char)strtol(hx, nullptr, 16);
+        t += 3;
+      } else {
+        text[n++] = *t;
+      }
+    }
+    text[n] = 0;
+    ChannelScreen* cs = (ChannelScreen*)ui_task.getChannelScreen();
+    if (cs && hops < 0) cs->addMessage(0, 0, sender, text, nullptr, 0, nullptr, true);   // local, as sent
+    else if (cs) cs->addMessage(0, hops > 0 ? (uint8_t)hops : 0xFF, sender, text, nullptr, 24, nullptr, true);
+    ui_task.forceRefresh();
+  }
   #endif
   #ifdef MECK_WIFI_COMPANION
   // Lets the Settings WiFi setup (which only forward-declares UITask) show
