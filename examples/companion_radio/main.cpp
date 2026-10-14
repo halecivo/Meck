@@ -5564,9 +5564,12 @@ void handleKeyboardInput() {
       break;
 
     case 'x':
-      // Zoom out on map screen, or export contacts on contacts screen
+      // Zoom out on map screen, export contacts on contacts screen, or
+      // delete the highlighted channel's history on the channel picker
       if (ui_task.isOnMapScreen()) {
         ui_task.injectKey('x');
+      } else if (ui_task.isOnChannelPickerScreen()) {
+        ui_task.injectKey('x');   // opens the "Delete message history?" confirmation
       } else if (ui_task.isOnContactsScreen()) {
         // Normal mode: export ALL as JSON + binary backup
         Serial.println("Contacts: Exporting all to SD...");
@@ -5793,8 +5796,14 @@ void handleKeyboardInput() {
         ui_task.gotoHomeScreen();
         break;
       }
-      // Channel picker: Shift+Del goes back to home
+      // Channel picker: Q / Shift+Del cancels the delete confirmation if it
+      // is showing, otherwise goes back to home
       if (ui_task.isOnChannelPickerScreen()) {
+        ChannelPickerScreen* pickq = (ChannelPickerScreen*)ui_task.getChannelPickerScreen();
+        if (pickq && pickq->isConfirmingDelete()) {
+          ui_task.injectKey(KEY_CANCEL);
+          break;
+        }
         Serial.println("Nav: ChannelPicker -> Home");
         ui_task.gotoHomeScreen();
         break;

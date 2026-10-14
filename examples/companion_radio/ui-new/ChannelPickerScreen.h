@@ -123,6 +123,8 @@ public:
     _wantExit = false;
   }
 
+  bool isConfirmingDelete() const { return _confirmDelete; }
+
   uint8_t getSelectedChannel() const {
     if (_cursor >= 0 && _cursor < _itemCount) return _items[_cursor];
     return 0xFF;
