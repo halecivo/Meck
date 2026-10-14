@@ -11,6 +11,10 @@
 #include <helpers/ui/UIScreen.h>
 #include <helpers/ui/DisplayDriver.h>
 #include "MeckLang.h"
+#ifdef MECK_UI_V2
+  #include "ui2/Ui2Chrome.h"
+  #include "ui2/Ui2List.h"
+#endif
 
 // Forward declarations
 class UITask;
@@ -106,9 +110,51 @@ public:
     }
   }
 
+#ifdef MECK_UI_V2
+  // UI v2: one row per game with its short description
+  int renderV2(DisplayDriver& display) {
+    using namespace ui2;
+    Ui2Canvas c(display);
+    Ui2Chrome::statusHeader(c);
+    Ui2Chrome::titleBar(c, MECK_TR("Games", "Jeux"));
+    for (int i = 0; i < NUM_GAMES; i++) {
+      Ui2Row r;
+      r.icon = UI2_IC_GAMES;
+      r.title = MECK_TR(getGames()[i].name, getGames()[i].name_fr);
+      r.sub = getGames()[i].description;
+      r.chevron = true;
+      r.selected = (i == _cursor);
+      Ui2List::drawRow(c, BODY_Y + i * ROW_H, r);
+    }
+    const Ui2Key keys[] = {
+      ui2KeyIcon(UI2_IC_ENTER, MECK_TR("Play", "Jouer")),
+      ui2Key("W/S", MECK_TR("Move", "D\xC3\xA9placer"), true),
+      ui2Key("Q", MECK_TR("Back", "Retour")),
+    };
+    Ui2Chrome::footer(c, keys, 3);
+    return 5000;
+  }
+
+  // Touch hit test in physical pixels: 0 = miss, 1 = moved, 2 = launch
+  int selectRowAtPx(int py) {
+    int row = Ui2List::rowAt(py, ui2::BODY_Y, ui2::ROW_H, ui2::ROWS_PER_PAGE);
+    if (row < 0 || row >= NUM_GAMES) return 0;
+    if (row == _cursor) {
+      _selectedGame = getGames()[_cursor].id;
+      _wantsLaunch = true;
+      return 2;
+    }
+    _cursor = row;
+    return 1;
+  }
+#endif
+
   // ------- Render -------
   int render(DisplayDriver& display) override {
     display.startFrame();
+#ifdef MECK_UI_V2
+    return renderV2(display);
+#endif
     display.setTextSize(1);
 
     // --- Header ---

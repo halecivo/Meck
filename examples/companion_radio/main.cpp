@@ -1699,7 +1699,11 @@ static void meckLaunchHomeTile(Ui2Tile t) {
     if (ui_task.isOnGamesMenu()) {
       GamesMenuScreen* gm = (GamesMenuScreen*)ui_task.getGamesMenuScreen();
       if (gm) {
+#ifdef MECK_UI_V2
+        int result = gm->selectRowAtPx(y);
+#else
         int result = gm->selectRowAtVY(vy);
+#endif
         if (result == 2) return '\r';  // Tapped current selection -- launch
       }
       return 0;  // Cursor moved or miss -- just refresh
