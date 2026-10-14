@@ -5923,8 +5923,78 @@ void handleKeyboardInput() {
   }
 }
 
+#if defined(DISPLAY_CLASS) && defined(MECK_UI_V2)
+// UI v2 compose (design B6): recipient in the title bar, text in a framed
+// box with a block cursor (the box shows the last lines when the text is
+// longer), a 20-segment fill bar with the byte counter, keycap footer.
+static void drawComposeScreenV2() {
+  using namespace ui2;
+  ui_task.updateUi2Status();
+  ui2FrameHasChrome = false;
+  display.startFrame();
+  Ui2Canvas c(display);
+  Ui2Chrome::statusHeader(c);
+
+  char title[48];
+  if (composeDM) {
+    snprintf(title, sizeof(title), MECK_TR("To \xC2\xB7 %s", "\xC3\x80 \xC2\xB7 %s"), composeDMName);
+  } else {
+    ChannelDetails channel;
+    if (the_mesh.getChannel(composeChannelIdx, channel)) snprintf(title, sizeof(title), MECK_TR("To \xC2\xB7 %s", "\xC3\x80 \xC2\xB7 %s"), channel.name);
+    else snprintf(title, sizeof(title), MECK_TR("To \xC2\xB7 channel %d", "\xC3\x80 \xC2\xB7 canal %d"), composeChannelIdx);
+  }
+  Ui2Chrome::titleBar(c, title, nullptr, composeDM ? "DM" : nullptr);
+
+  const int maxBytes = (int)sizeof(composeBuffer) - 1;
+  const int16_t boxX = PAD, boxY = BODY_Y + 6, boxW = SCREEN_W - 2 * PAD;
+  const int16_t barY = FOOTER_Y - 6 - 14;
+  const int16_t boxH = barY - 6 - boxY;
+  const int16_t textW = boxW - 12 - 8;   // padding plus room for the cursor
+  const int maxLinesVisible = (boxH - 10) / 15;
+  c.roundRect(boxX, boxY, boxW, boxH, 3);
+
+  // Wrap everything, then show the last lines so the cursor stays visible
+  static Ui2RtLine lines[24];
+  int n = ui2RtWrap(composeBuffer, composePos, textW, UI2_F_BODY, lines, 24, nullptr);
+  int first = n > maxLinesVisible ? n - maxLinesVisible : 0;
+  int16_t cx = boxX + 6, cy = boxY + 5;
+  for (int k = first; k < n; k++) {
+    int16_t base = Ui2Canvas::lineBaseline(UI2_F_BODY, boxY + 5 + (k - first) * 15, 15);
+    cx = ui2RtDraw(c, boxX + 6, base, composeBuffer, lines[k].a, lines[k].b, UI2_F_BODY);
+    cy = boxY + 5 + (k - first) * 15;
+  }
+  // A trailing space is not part of the wrapped line: move the cursor past it
+  if (composePos > 0 && composeBuffer[composePos - 1] == ' ' && n > 0) cx += Ui2Canvas::textWidth(" ", UI2_F_BODY);
+  c.fill(cx + 1, cy + 1, 6, 13, true);   // block cursor
+
+  // Fill bar and counter; the counter inverts in the last 10 bytes
+  char cnt[16];
+  snprintf(cnt, sizeof(cnt), "%d / %d", composePos, maxBytes);
+  int16_t cw = Ui2Canvas::textWidth(cnt, UI2_F_LABEL) + 8;
+  bool nearFull = composePos >= maxBytes - 10;
+  if (nearFull) c.fillRoundRect(SCREEN_W - PAD - cw, barY, cw, 14, 3, true);
+  c.text(SCREEN_W - PAD - cw + 4, Ui2Canvas::boxBaseline(UI2_F_LABEL, barY, 14), cnt, UI2_F_LABEL, !nearFull);
+  c.segBar(PAD, barY + 4, SCREEN_W - 2 * PAD - cw - 6, 6, (composePos * 20 + maxBytes - 1) / maxBytes, 20);
+
+  if (composePos == 0) {
+    const Ui2Key keys[] = { ui2Key("A/D", MECK_TR("Channel", "Canal")), ui2Key("$", "Emoji"),
+                            ui2Key("Sh+Del", MECK_TR("Cancel", "Annuler")) };
+    Ui2Chrome::footer(c, keys, 3);
+  } else {
+    const Ui2Key keys[] = { ui2KeyIcon(UI2_IC_ENTER, MECK_TR("Send", "Envoyer")), ui2Key("$", "Emoji"),
+                            ui2Key("Sh+Del", MECK_TR("Cancel", "Annuler")) };
+    Ui2Chrome::footer(c, keys, 3);
+  }
+  display.endFrame();
+}
+#endif
+
 void drawComposeScreen() {
   #ifdef DISPLAY_CLASS
+  #ifdef MECK_UI_V2
+  drawComposeScreenV2();
+  return;
+  #endif
   display.startFrame();
   display.setTextSize(1);
   display.setColor(DisplayDriver::GREEN);
