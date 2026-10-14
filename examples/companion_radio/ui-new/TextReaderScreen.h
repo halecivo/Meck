@@ -8,6 +8,10 @@
 #include "Utf8CP437.h"
 #include "EpubProcessor.h"
 #include "../NodePrefs.h"
+#ifdef MECK_UI_V2
+  #include "ui2/Ui2Chrome.h"
+  #include "ui2/Ui2List.h"
+#endif
 
 // Forward declarations
 class UITask;
@@ -1171,6 +1175,77 @@ private:
     display.print(right);
   }
 
+#ifdef MECK_UI_V2
+  // UI v2 library: folders and books as list rows, resume position on the
+  // right. Only the list is restyled; the reading view keeps its pagination
+  // so saved page indexes stay valid.
+  void renderFileListV2(DisplayDriver& display) {
+    using namespace ui2;
+    Ui2Canvas c(display);
+    Ui2Chrome::statusHeader(c);
+    const int total = totalListItems();
+    char right[16];
+    Ui2List::pageLabel(right, sizeof(right), _selectedFile, total, ROWS_PER_PAGE);
+    String folder;
+    if (!isAtBooksRoot()) {
+      int lastSlash = _currentPath.lastIndexOf('/');
+      folder = (lastSlash >= 0) ? _currentPath.substring(lastSlash + 1) : _currentPath;
+    }
+    Ui2Chrome::titleBar(c, isAtBooksRoot() ? MECK_TR("Reader", "Lecteur") : folder.c_str(), right);
+
+    if (total == 0) {
+      Ui2List::emptyState(c, BODY_Y, FOOTER_Y, UI2_IC_BOOK, MECK_TR("No books yet", "Aucun livre"),
+                          MECK_TR("Add .txt or .epub files to /books/ on the SD card.",
+                                  "Ajoutez des .txt ou .epub dans /books/ sur la SD."));
+    } else {
+      const int start = Ui2List::pageStart(_selectedFile, ROWS_PER_PAGE);
+      for (int i = start; i < total && i < start + ROWS_PER_PAGE; i++) {
+        Ui2Row r;
+        char pos[16] = "";
+        String name, ext;
+        int type = itemTypeAt(i);
+        if (type == 0) {
+          r.icon = UI2_IC_BACK;
+          r.title = MECK_TR("Up one folder", "Dossier parent");
+        } else if (type == 1) {
+          r.icon = UI2_IC_FOLDER;
+          r.title = dirNameAt(i).c_str();
+          r.chevron = true;
+        } else {
+          int fi = fileIndexAt(i);
+          name = _fileList[fi];
+          int dot = name.lastIndexOf('.');
+          if (dot > 0) { ext = name.substring(dot + 1); ext.toUpperCase(); name = name.substring(0, dot); }
+          r.icon = UI2_IC_BOOK;
+          r.title = name.c_str();
+          r.sub = ext.length() ? ext.c_str() : nullptr;
+          if (fi < (int)_fileCache.size() && _fileCache[fi].filename == _fileList[fi] &&
+              _fileCache[fi].lastReadPage > 0) {
+            const FileCache& fc = _fileCache[fi];
+            if (fc.fullyIndexed && fc.pagePositions.size() > 0)
+              snprintf(pos, sizeof(pos), "%d / %d", fc.lastReadPage + 1, (int)fc.pagePositions.size());
+            else
+              snprintf(pos, sizeof(pos), MECK_TR("p. %d", "p. %d"), fc.lastReadPage + 1);
+            r.right = pos;
+            r.right2 = MECK_TR("resume", "reprendre");
+            r.rightMax = 72;
+          }
+        }
+        r.selected = (i == _selectedFile);
+        Ui2List::drawRow(c, BODY_Y + (i - start) * ROW_H, r);
+      }
+    }
+    const Ui2Key keys[] = {
+      ui2KeyIcon(UI2_IC_ENTER, MECK_TR("Open", "Ouvrir")),
+      ui2Key("W/S", MECK_TR("Move", "D\xC3\xA9placer"), true),
+      ui2Key("Q", MECK_TR("Back", "Retour")),
+    };
+    if (total == 0) Ui2Chrome::footer(c, keys + 2, 1);
+    else Ui2Chrome::footer(c, keys, 3);
+  }
+
+#endif
+
   void renderPage(DisplayDriver& display) {
     // Use tiny font for maximum text density
     display.setTextSize(_prefs->smallTextSize());
@@ -1704,6 +1779,22 @@ public:
 
   // Tap-to-select: given virtual Y, select file list row.
   // Returns: 0=miss, 1=moved, 2=tapped current row.
+#ifdef MECK_UI_V2
+  // Touch hit test in physical pixels: 0 = miss, 1 = moved, 2 = tapped current row
+  int selectRowAtPx(int py) {
+    if (_mode != FILE_LIST) return 0;
+    int total = totalListItems();
+    if (total == 0) return 0;
+    int row = Ui2List::rowAt(py, ui2::BODY_Y, ui2::ROW_H, ui2::ROWS_PER_PAGE);
+    if (row < 0) return 0;
+    int idx = Ui2List::pageStart(_selectedFile, ui2::ROWS_PER_PAGE) + row;
+    if (idx >= total) return 0;
+    if (idx == _selectedFile) return 2;
+    _selectedFile = idx;
+    return 1;
+  }
+#endif
+
   int selectRowAtVY(int vy) {
     if (_mode != FILE_LIST) return 0;
     const int startY = 14, footerH = 14;
@@ -1729,6 +1820,16 @@ public:
 
   int render(DisplayDriver& display) override {
     if (!_sdReady) {
+#ifdef MECK_UI_V2
+      Ui2Canvas c(display);
+      Ui2Chrome::statusHeader(c);
+      Ui2Chrome::titleBar(c, MECK_TR("Reader", "Lecteur"));
+      Ui2List::emptyState(c, ui2::BODY_Y, ui2::FOOTER_Y, UI2_IC_SD, MECK_TR("SD card not found", "Carte SD introuvable"),
+                          MECK_TR("Insert an SD card with a /books/ folder.", "Ins\xC3\xA9rez une SD avec un dossier /books/."));
+      const Ui2Key keys[] = { ui2Key("Q", MECK_TR("Back", "Retour")) };
+      Ui2Chrome::footer(c, keys, 1);
+      return 5000;
+#endif
       display.setCursor(0, 20);
       display.setTextSize(1);
       display.setColor(DisplayDriver::LIGHT);
@@ -1739,7 +1840,11 @@ public:
     }
 
     if (_mode == FILE_LIST) {
+#ifdef MECK_UI_V2
+      renderFileListV2(display);
+#else
       renderFileList(display);
+#endif
     } else if (_mode == READING) {
       renderPage(display);
     }

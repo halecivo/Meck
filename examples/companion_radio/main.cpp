@@ -1837,7 +1837,11 @@ static void meckLaunchHomeTile(Ui2Tile t) {
       }
       // File list: tap-to-select, double-tap to open
       if (reader && reader->isInFileList()) {
+#ifdef MECK_UI_V2
+        int result = reader->selectRowAtPx(y);
+#else
         int result = reader->selectRowAtVY(vy);
+#endif
         if (result == 1) {
           ui_task.forceRefresh();
           return 0;  // Moved selection
