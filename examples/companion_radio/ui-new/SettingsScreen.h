@@ -8,6 +8,11 @@
 #include "../NodePrefs.h"
 #include "MeckFonts.h"
 #include "MeckLang.h"
+#ifdef MECK_UI_V2
+  #include "ui2/Ui2Chrome.h"
+  #include "ui2/Ui2List.h"
+  #include "ui2/Ui2TextCapture.h"
+#endif
 #if defined(MECK_AUDIO_VARIANT) || defined(HAS_4G_MODEM)
 #include "NotifSounds.h"
 #endif
@@ -2516,7 +2521,193 @@ public:
     }
   }
 
+#ifdef MECK_UI_V2
+  // ===========================================================================
+  // UI v2 (designs E1, E2). Rows reuse drawRowContent() through a text
+  // capture: "Label: value" becomes a label with the value on the right,
+  // ON/OFF values become toggles, "X >>" rows get a chevron, "--- X ---"
+  // rows become section headers. Pages instead of scrolling. The flows with
+  // their own full-screen overlays (WiFi, OTA, file manager, sound picker,
+  // share picker, delete all contacts) keep the classic layout for now.
+  // ===========================================================================
+
+  bool v2Handles() const {
+    return _editMode == EDIT_NONE || _editMode == EDIT_TEXT || _editMode == EDIT_CANNED ||
+           _editMode == EDIT_PICKER || _editMode == EDIT_NUMBER || _editMode == EDIT_CONFIRM;
+  }
+
+  bool v2IsHeader(int i) const {
+    SettingsRowType t = _rows[i].type;
+    return t == ROW_CH_HEADER || t == ROW_INFO_HEADER || t == ROW_CONTACT_HEADER;
+  }
+  int16_t v2RowH(int i) const { return v2IsHeader(i) ? ui2::SECTION_H : ui2::ROW_H; }
+
+  // Rows [start, end) of the page holding row `target`, its index and the page count
+  void v2Page(int target, int& start, int& end, int& page, int& pages) const {
+    start = 0; end = _numRows; page = 0;
+    int s = 0, p = 0;
+    while (s < _numRows) {
+      int h = 0, e = s;
+      while (e < _numRows && h + v2RowH(e) <= ui2::BODY_H) { h += v2RowH(e); e++; }
+      if (e == s) e = s + 1;
+      if (target >= s && target < e) { start = s; end = e; page = p; }
+      s = e;
+      p++;
+    }
+    pages = p;
+  }
+
+  static bool v2EndsWith(const char* s, const char* suffix) {
+    size_t a = strlen(s), b = strlen(suffix);
+    return a >= b && strcmp(s + a - b, suffix) == 0;
+  }
+
+  void v2DrawRow(Ui2Canvas& c, int i, int16_t y) {
+    const bool selected = (i == _cursor);
+    const bool editing = selected && (_editMode != EDIT_NONE) && (_editMode != EDIT_CONFIRM);
+    Ui2TextCapture cap;
+    drawRowContent(cap, i, selected, editing, 0, 0);
+
+    char text[112];
+    const char* src = cap.left();
+    while (*src == ' ') src++;
+    snprintf(text, sizeof(text), "%s", src);
+
+    if (v2IsHeader(i)) {
+      // "--- Channels ---" -> "CHANNELS"
+      char* t = text;
+      while (*t == '-' || *t == ' ') t++;
+      size_t n = strlen(t);
+      while (n > 0 && (t[n - 1] == '-' || t[n - 1] == ' ')) t[--n] = 0;
+      for (char* p = t; *p; p++) if (*p >= 'a' && *p <= 'z') *p -= 32;
+      c.sectionHeader(y, t);
+      return;
+    }
+
+    Ui2Row r;
+    r.selected = selected;
+    r.pending = editing;   // dashed outline while the value is being edited
+    if (v2EndsWith(text, " >>")) { text[strlen(text) - 3] = 0; r.chevron = true; }
+    char* title = text;
+    if (strncmp(title, ">> ", 3) == 0) title += 3;
+    // Split "Label: value" (French puts a space before the colon)
+    char* colon = strstr(title, ": ");
+    if (colon && colon != title) {
+      *colon = 0;
+      char* value = colon + 2;
+      size_t n = strlen(title);
+      while (n > 0 && title[n - 1] == ' ') title[--n] = 0;
+      if (!editing && (!strcmp(value, "ON") || !strcmp(value, "OUI"))) r.toggle = 1;
+      else if (!editing && (!strcmp(value, "OFF") || !strcmp(value, "NON"))) r.toggle = 0;
+      else r.right = value;
+    }
+    r.title = title;
+    if (cap.right()[0]) r.sub = cap.right();   // right-aligned hint of the classic row
+    r.rightMax = 112;
+    Ui2List::drawRow(c, y, r);
+  }
+
+  int renderV2(DisplayDriver& display) {
+    using namespace ui2;
+    Ui2Canvas c(display);
+    Ui2Chrome::statusHeader(c);
+
+    const char* title = MECK_TR("Settings", "R\xC3\xA9glages");
+    if (_onboarding) title = MECK_TR("Setup", "Configuration");
+    else if (_subScreen == SUB_CONTACTS) title = MECK_TR("Settings \xC2\xB7 Contacts", "R\xC3\xA9glages \xC2\xB7 Contacts");
+    else if (_subScreen == SUB_CHANNELS) title = MECK_TR("Settings \xC2\xB7 Channels", "R\xC3\xA9glages \xC2\xB7 Canaux");
+    else if (_subScreen == SUB_CANNED) title = MECK_TR("Canned messages", "Messages pr\xC3\xA9" "d\xC3\xA9" "finis");
+  #ifdef MECK_OTA_UPDATE
+    else if (_subScreen == SUB_OTA_TOOLS) title = MECK_TR("Settings \xC2\xB7 OTA tools", "R\xC3\xA9glages \xC2\xB7 Outils OTA");
+  #endif
+  #ifdef HAS_SDCARD
+    else if (_subScreen == SUB_EXPORT_IMPORT || _subScreen == SUB_EXPORT_FLAGS) title = MECK_TR("Export / import", "Exporter / importer");
+  #endif
+    else if (_subScreen == SUB_EXPERIMENTAL) title = MECK_TR("Experimental", "Exp\xC3\xA9rimental");
+
+    int start, end, page, pages;
+    v2Page(_cursor, start, end, page, pages);
+    char right[16] = "";
+    if (pages > 1) snprintf(right, sizeof(right), "%d / %d", page + 1, pages);
+    Ui2Chrome::titleBar(c, title, right);
+
+    _tickerActive = false;
+    int16_t y = BODY_Y;
+    for (int i = start; i < end; i++) {
+      v2DrawRow(c, i, y);
+      y += v2RowH(i);
+    }
+    _tickerCh = -1;
+
+    if (_editMode == EDIT_CONFIRM) {
+      char t[64];
+      if (_confirmAction == 1) {
+        ChannelDetails ch;
+        the_mesh.getChannel(_rows[_cursor].param, ch);
+        snprintf(t, sizeof(t), MECK_TR("Delete %s?", "Supprimer %s ?"), ch.name);
+        Ui2List::dialog(c, UI2_IC_DEL, t, nullptr, MECK_TR("Cancel", "Annuler"), MECK_TR("Delete", "Supprimer"));
+      } else if (_confirmAction == 2) {
+        Ui2List::dialog(c, UI2_IC_RADIO, MECK_TR("Apply radio changes?", "Appliquer les r\xC3\xA9glages radio ?"),
+                        MECK_TR("Nodes on other settings will no longer hear you.", "Les n\xC5\x93uds aux autres r\xC3\xA9glages ne vous entendront plus."),
+                        MECK_TR("Cancel", "Annuler"), MECK_TR("Apply", "Appliquer"));
+      } else if (_confirmAction == 3) {
+        Ui2List::dialog(c, UI2_IC_WARN, MECK_TR("Region not set", "R\xC3\xA9gion non d\xC3\xA9" "finie"),
+                        MECK_TR("Leave it unset?", "La laisser non d\xC3\xA9" "finie ?"),
+                        MECK_TR("Set it", "La d\xC3\xA9" "finir"), MECK_TR("Leave", "Laisser"));
+      } else if (_confirmAction == 4) {
+        Ui2List::dialog(c, UI2_IC_ANTEXT, MECK_TR("Switch to external antenna?", "Passer \xC3\xA0 l'antenne externe ?"),
+                        MECK_TR("External antenna must be connected. Transmitting without it can damage the radio.",
+                                "L'antenne externe doit \xC3\xAAtre branch\xC3\xA9" "e. \xC3\x89mettre sans elle peut endommager la radio."),
+                        MECK_TR("Cancel", "Annuler"), MECK_TR("Switch", "Basculer"));
+      }
+      const Ui2Key keys[] = { ui2KeyIcon(UI2_IC_ENTER, MECK_TR("Confirm", "Valider")), ui2Key("Q", MECK_TR("Cancel", "Annuler")) };
+      Ui2Chrome::footer(c, keys, 2);
+    } else if (_editMode == EDIT_TEXT || _editMode == EDIT_CANNED) {
+      const Ui2Key keys[] = { ui2KeyIcon(UI2_IC_ENTER, MECK_TR("Save", "Enregistrer")), ui2Key("Sh+Del", MECK_TR("Cancel", "Annuler")) };
+      Ui2Chrome::footer(c, keys, 2);
+    } else if (_editMode == EDIT_PICKER) {
+      const Ui2Key keys[] = { ui2Key("A/D", MECK_TR("Choose", "Choisir")), ui2KeyIcon(UI2_IC_ENTER, "OK") };
+      Ui2Chrome::footer(c, keys, 2);
+    } else if (_editMode == EDIT_NUMBER) {
+      const Ui2Key keys[] = { ui2Key("W/S", MECK_TR("Adjust", "R\xC3\xA9gler")), ui2KeyIcon(UI2_IC_ENTER, "OK"),
+                              ui2Key("Q", MECK_TR("Cancel", "Annuler")) };
+      Ui2Chrome::footer(c, keys, 3);
+    } else if (_subScreen == SUB_CHANNELS) {
+      const Ui2Key keys[] = { ui2KeyIcon(UI2_IC_ENTER, MECK_TR("Change", "Modifier")), ui2Key("W/S", MECK_TR("Move", "D\xC3\xA9placer"), true),
+                              ui2Key("C", MECK_TR("Share", "Partager")), ui2Key("Q", MECK_TR("Back", "Retour")) };
+      Ui2Chrome::footer(c, keys, 4);
+    } else {
+      const Ui2Key keys[] = { ui2KeyIcon(UI2_IC_ENTER, MECK_TR("Change", "Modifier")), ui2Key("W/S", MECK_TR("Move", "D\xC3\xA9placer"), true),
+                              ui2Key("Q", MECK_TR("Back", "Retour")) };
+      Ui2Chrome::footer(c, keys, 3);
+    }
+    return _editMode != EDIT_NONE ? 700 : 1000;
+  }
+
+  // Touch hit test in physical pixels: 0 = miss, 1 = moved, 2 = tapped current row
+  int selectRowAtPx(int py) {
+    if (_editMode != EDIT_NONE) return 0;
+    int start, end, page, pages;
+    v2Page(_cursor, start, end, page, pages);
+    int16_t y = ui2::BODY_Y;
+    for (int i = start; i < end; i++) {
+      int16_t h = v2RowH(i);
+      if (py >= y && py < y + h) {
+        if (!isSelectable(i)) return 0;
+        if (i == _cursor) return 2;
+        _cursor = i;
+        return 1;
+      }
+      y += h;
+    }
+    return 0;
+  }
+#endif
+
   int render(DisplayDriver& display) override {
+#ifdef MECK_UI_V2
+    if (v2Handles()) return renderV2(display);
+#endif
     char tmp[64];
 
     // === Header ===

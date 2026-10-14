@@ -1965,7 +1965,11 @@ static void meckLaunchHomeTile(Ui2Tile t) {
     if (ui_task.isOnSettingsScreen()) {
       SettingsScreen* ss = (SettingsScreen*)ui_task.getSettingsScreen();
       if (ss && !ss->isEditing()) {
+#ifdef MECK_UI_V2
+        int result = ss->selectRowAtPx(y);
+#else
         int result = ss->selectRowAtVY(vy);
+#endif
         if (result == 1) {
           ui_task.forceRefresh();
           return 0;  // Moved cursor — just refresh, don't activate
