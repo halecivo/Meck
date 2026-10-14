@@ -828,6 +828,7 @@ void GxEPDDisplay::endFrame() {
     // nothing changed, to clear partial-update ghosting.
     _fullNext = false;
     _windowNext = false;
+    _partialsSinceFull = 0;
     display.display(false);
     last_display_crc_value = crc;
     return;
@@ -842,6 +843,15 @@ void GxEPDDisplay::endFrame() {
   if (crc != last_display_crc_value) {
 #ifdef EINK_FULL_REFRESH_ONLY
     display.display(false);  // Full refresh (SSD1681 doesn't support partial)
+#elif defined(MECK_UI_V2) && defined(EINK_LIMIT_FASTREFRESH) && EINK_LIMIT_FASTREFRESH > 0
+    // UI v2: a full refresh after every EINK_LIMIT_FASTREFRESH partial ones
+    // clears the ghosting that partial refreshes leave behind.
+    if (++_partialsSinceFull >= EINK_LIMIT_FASTREFRESH) {
+      _partialsSinceFull = 0;
+      display.display(false);
+    } else {
+      display.display(true);
+    }
 #else
     display.display(true);   // Partial refresh
 #endif
