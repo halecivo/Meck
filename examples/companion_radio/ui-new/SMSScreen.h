@@ -1018,9 +1018,9 @@ public:
         return true;
 
       case 'q':
-      case KEY_CANCEL:  // Back to app menu
+      case KEY_CANCEL:  // Back to app menu, on the Call log item
         _view = APP_MENU;
-        _menuCursor = 2;
+        _menuCursor = 1;
         return true;
 
       default:
@@ -2081,9 +2081,9 @@ public:
         return true;
 
       case 'q':
-      case KEY_CANCEL:  // Back to app menu
+      case KEY_CANCEL:  // Back to app menu, on the SMS inbox item
         _view = APP_MENU;
-        _menuCursor = 0;
+        _menuCursor = 3;
         return true;
 
       default:
