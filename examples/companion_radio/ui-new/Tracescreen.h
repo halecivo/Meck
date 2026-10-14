@@ -5,6 +5,11 @@
 #include "MeckLang.h"
 #include <MeshCore.h>
 #include <Packet.h>
+#ifdef MECK_UI_V2
+  #include "ui2/Ui2Chrome.h"
+  #include "ui2/Ui2List.h"
+  #include "ui2/Ui2Mesh.h"
+#endif
 
 // Forward declarations
 class UITask;
@@ -366,6 +371,9 @@ public:
 
   // --- Render ---
   int render(DisplayDriver& display) override {
+#ifdef MECK_UI_V2
+    return renderV2(display);
+#endif
     // Header
     display.setCursor(0, 0);
     display.setTextSize(1);
@@ -385,6 +393,243 @@ public:
   }
 
 private:
+#ifdef MECK_UI_V2
+  // Hash of hop `i` in `buf` as hex ("A3" or "A3F0")
+  void hopHex(const uint8_t* buf, int i, char* out, size_t len) const {
+    if (_bytesPerHop == 1) snprintf(out, len, "%02X", buf[i]);
+    else snprintf(out, len, "%04X", ((uint16_t)buf[i * 2] << 8) | buf[i * 2 + 1]);
+  }
+
+  // Current path as "A3F0, 11B2"
+  void pathText(char* out, size_t len) const {
+    size_t pos = 0;
+    out[0] = '\0';
+    for (int i = 0; i < _hopCount && pos + 8 < len; i++) {
+      char h[8];
+      hopHex(_pathBuf, i, h, sizeof(h));
+      pos += snprintf(out + pos, len - pos, i ? ", %s" : "%s", h);
+    }
+  }
+
+  int renderV2(DisplayDriver& display) {
+    Ui2Canvas c(display);
+    Ui2Chrome::statusHeader(c);
+    switch (_state) {
+      case STATE_BUILD:    return renderBuildV2(c);
+      case STATE_PICK_HOP: return renderPickerV2(c);
+      case STATE_RUNNING:  return renderRunningV2(c);
+      default:             return renderResultsV2(c);
+    }
+  }
+
+  int renderBuildV2(Ui2Canvas& c) {
+    using namespace ui2;
+    const int count = buildMenuCount();
+    char right[16];
+    Ui2List::pageLabel(right, sizeof(right), _menuSel, count, ROWS_PER_PAGE);
+    Ui2Chrome::titleBar(c, MECK_TR("Trace path", "Tracer un chemin"), right);
+
+    const int start = Ui2List::pageStart(_menuSel, ROWS_PER_PAGE);
+    for (int i = start; i < count && i < start + ROWS_PER_PAGE; i++) {
+      MenuItem item = menuItemAt(i);
+      Ui2Row r;
+      char val[16], sub[TRACE_EDIT_BUF + 4], name[33];
+      switch (item) {
+        case MENU_PATH_SIZE:
+          r.icon = UI2_IC_HASH;
+          r.title = MECK_TR("Hash size", "Taille du hash");
+          snprintf(val, sizeof(val), MECK_TR("%d-byte", "%d octet%s"), _bytesPerHop, _bytesPerHop > 1 ? "s" : "");
+          r.right = val;
+          r.sub = MECK_TR("A/D to change", "A/D pour changer");
+          break;
+        case MENU_TYPE_PATH:
+          r.icon = UI2_IC_EDIT;
+          r.title = MECK_TR("Type path", "Saisir le chemin");
+          if (_editing) {
+            snprintf(sub, sizeof(sub), "%s_", _editBuf);
+            r.pending = true;
+          } else if (_hopCount > 0) {
+            pathText(sub, sizeof(sub));
+          } else {
+            snprintf(sub, sizeof(sub), "%s", MECK_TR("Hex hashes, comma separated", "Hashs hexa, s\xC3\xA9par\xC3\xA9s par virgule"));
+          }
+          r.sub = sub;
+          break;
+        case MENU_ADD_HOP:
+          r.icon = UI2_IC_PLUS;
+          r.title = MECK_TR("Add repeater", "Ajouter un r\xC3\xA9p\xC3\xA9teur");
+          r.chevron = true;
+          break;
+        case MENU_REMOVE_LAST:
+          r.icon = UI2_IC_MINUS;
+          r.title = MECK_TR("Remove last hop", "Retirer le dernier saut");
+          break;
+        case MENU_RUN_TRACE:
+          r.icon = UI2_IC_TRACE;
+          r.title = MECK_TR("Run trace", "Lancer le tra\xC3\xA7" "age");
+          r.sub = MECK_TR("Sends a trace packet", "Envoie un paquet de tra\xC3\xA7" "age");
+          break;
+        case MENU_EXIT:
+          r.icon = UI2_IC_BACK;
+          r.title = MECK_TR("Exit", "Quitter");
+          break;
+        default: {
+          int h = item - MENU_HOP_BASE;
+          r.icon = UI2_IC_REPEATER;
+          hopHex(_pathBuf, h, val, sizeof(val));
+          r.right = val;
+          snprintf(sub, sizeof(sub), MECK_TR("Hop %d", "Saut %d"), h + 1);
+          if (findNameForHash(&_pathBuf[h * _bytesPerHop], _bytesPerHop, name, sizeof(name))) {
+            r.title = name;
+            r.sub = sub;
+          } else {
+            r.title = sub;
+            r.sub = MECK_TR("Not in contacts", "Pas dans les contacts");
+          }
+          break;
+        }
+      }
+      r.selected = (i == _menuSel);
+      Ui2List::drawRow(c, BODY_Y + (i - start) * ROW_H, r);
+    }
+
+    if (_editing) {
+      const Ui2Key keys[] = {
+        ui2KeyIcon(UI2_IC_ENTER, MECK_TR("Apply", "Appliquer")),
+        ui2Key("0-F", MECK_TR("Hash", "Hash")),
+        ui2Key("Sh+Del", MECK_TR("Cancel", "Annuler")),
+      };
+      Ui2Chrome::footer(c, keys, 3);
+    } else {
+      const Ui2Key keys[] = {
+        ui2KeyIcon(UI2_IC_ENTER, MECK_TR("Select", "Choisir")),
+        ui2Key("W/S", MECK_TR("Move", "D\xC3\xA9placer"), true),
+        ui2Key("Q", MECK_TR("Exit", "Quitter")),
+      };
+      Ui2Chrome::footer(c, keys, 3);
+    }
+    return 5000;
+  }
+
+  int renderPickerV2(Ui2Canvas& c) {
+    using namespace ui2;
+    char right[16];
+    Ui2List::pageLabel(right, sizeof(right), _repSel, _repCount, ROWS_PER_PAGE);
+    Ui2Chrome::titleBar(c, MECK_TR("Add repeater", "Ajouter un r\xC3\xA9p\xC3\xA9teur"), right);
+    if (_repCount == 0) {
+      Ui2List::emptyState(c, BODY_Y, FOOTER_Y, UI2_IC_REPEATER, MECK_TR("No repeaters in contacts", "Aucun r\xC3\xA9p\xC3\xA9teur connu"),
+                          MECK_TR("Type the path as hex hashes instead.", "Saisissez le chemin en hexa."));
+      const Ui2Key keys[] = { ui2Key("Q", MECK_TR("Back", "Retour")) };
+      Ui2Chrome::footer(c, keys, 1);
+      return 5000;
+    }
+    if (_repSel >= _repCount) _repSel = _repCount - 1;
+    if (_repSel < 0) _repSel = 0;
+    const int start = Ui2List::pageStart(_repSel, ROWS_PER_PAGE);
+    for (int i = start; i < _repCount && i < start + ROWS_PER_PAGE; i++) {
+      ContactInfo ci;
+      if (!the_mesh.getContactByIdx(_repIdx[i], ci)) continue;
+      char hex[8];
+      if (_bytesPerHop == 1) snprintf(hex, sizeof(hex), "%02X", ci.id.pub_key[0]);
+      else snprintf(hex, sizeof(hex), "%02X%02X", ci.id.pub_key[0], ci.id.pub_key[1]);
+      Ui2Row r;
+      r.icon = UI2_IC_REPEATER;
+      r.title = ci.name;
+      r.right = hex;
+      r.selected = (i == _repSel);
+      Ui2List::drawRow(c, BODY_Y + (i - start) * ROW_H, r);
+    }
+    const Ui2Key keys[] = {
+      ui2KeyIcon(UI2_IC_ENTER, MECK_TR("Add", "Ajouter")),
+      ui2Key("W/S", MECK_TR("Move", "D\xC3\xA9placer"), true),
+      ui2Key("Q", MECK_TR("Back", "Retour")),
+    };
+    Ui2Chrome::footer(c, keys, 3);
+    return 5000;
+  }
+
+  int renderRunningV2(Ui2Canvas& c) {
+    using namespace ui2;
+    Ui2Chrome::titleBar(c, MECK_TR("Trace path", "Tracer un chemin"));
+    unsigned long elapsed = millis() - _traceSentAt;
+    c.icon((SCREEN_W - 32) / 2, 80, UI2_IC_TRACE, 32);
+    c.textFit(PAD, 140, SCREEN_W - 2 * PAD, MECK_TR("Tracing\xE2\x80\xA6", "Tra\xC3\xA7" "age\xE2\x80\xA6"), UI2_F_TITLE, true, UI2_CENTER);
+    char tmp[48];
+    snprintf(tmp, sizeof(tmp), MECK_TR("%d hops \xC2\xB7 %d-byte hashes", "%d sauts \xC2\xB7 hash %d o"), _hopCount, _bytesPerHop);
+    c.textFit(PAD, 162, SCREEN_W - 2 * PAD, tmp, UI2_F_BODY, true, UI2_CENTER);
+    snprintf(tmp, sizeof(tmp), "%lu.%lu s", elapsed / 1000, (elapsed / 100) % 10);
+    c.textFit(PAD, 196, SCREEN_W - 2 * PAD, tmp, UI2_F_NUM16, true, UI2_CENTER);
+    const int16_t barX = 16, barW = SCREEN_W - 32;
+    c.rect(barX, 212, barW, 8);
+    int fill = (int)((unsigned long)(barW - 4) * elapsed / TRACE_TIMEOUT_MS);
+    if (fill > barW - 4) fill = barW - 4;
+    if (fill > 0) c.fill(barX + 2, 214, fill, 4);
+    snprintf(tmp, sizeof(tmp), MECK_TR("Gives up after %d s", "Abandon apr\xC3\xA8s %d s"), TRACE_TIMEOUT_MS / 1000);
+    c.textFit(PAD, 238, SCREEN_W - 2 * PAD, tmp, UI2_F_META, true, UI2_CENTER);
+
+    if (elapsed >= TRACE_TIMEOUT_MS) {
+      _state = STATE_RESULTS;
+      _result.valid = false;
+      _result.duration_ms = TRACE_TIMEOUT_MS;
+      Serial.println("[Trace] Timeout");
+    }
+    const Ui2Key keys[] = { ui2Key("Sh+Del", MECK_TR("Cancel", "Annuler")) };
+    Ui2Chrome::footer(c, keys, 1);
+    return 1000;  // elapsed counter; e-ink refreshes stay coarse
+  }
+
+  int renderResultsV2(Ui2Canvas& c) {
+    using namespace ui2;
+    if (!_result.valid) {
+      Ui2Chrome::titleBar(c, MECK_TR("Trace result", "R\xC3\xA9sultat"));
+      char tmp[48];
+      snprintf(tmp, sizeof(tmp), MECK_TR("No response after %d s.", "Pas de r\xC3\xA9ponse apr\xC3\xA8s %d s."), TRACE_TIMEOUT_MS / 1000);
+      Ui2List::emptyState(c, BODY_Y, FOOTER_Y, UI2_IC_WARN, MECK_TR("Trace timed out", "D\xC3\xA9lai d\xC3\xA9pass\xC3\xA9"), tmp);
+    } else {
+      char right[16];
+      snprintf(right, sizeof(right), "%d ms", (int)_result.duration_ms);
+      Ui2Chrome::titleBar(c, MECK_TR("Trace result", "R\xC3\xA9sultat"), right);
+      const int total = _result.hopCount + 1;   // hops + return SNR
+      if (_resultScroll > total - ROWS_PER_PAGE) _resultScroll = total - ROWS_PER_PAGE;
+      if (_resultScroll < 0) _resultScroll = 0;
+      for (int i = _resultScroll; i < total && i < _resultScroll + ROWS_PER_PAGE; i++) {
+        Ui2Row r;
+        char name[33], snr[16], sub[24];
+        int8_t snr4 = (i < _result.hopCount) ? _result.snrs[i] : _result.final_snr;
+        snprintf(snr, sizeof(snr), "%.1f dB", snr4 / 4.0f);
+        r.right = snr;
+        r.sig = ui2SignalIcon(snr4 / 4.0f);
+        if (i < _result.hopCount) {
+          r.icon = UI2_IC_REPEATER;
+          char hex[8];
+          hopHex(_result.hashes, i, hex, sizeof(hex));
+          if (findNameForHash(&_result.hashes[i * _bytesPerHop], _bytesPerHop, name, sizeof(name))) {
+            r.title = name;
+            snprintf(sub, sizeof(sub), MECK_TR("Hop %d \xC2\xB7 %s", "Saut %d \xC2\xB7 %s"), i + 1, hex);
+          } else {
+            snprintf(name, sizeof(name), MECK_TR("Hop %d", "Saut %d"), i + 1);
+            r.title = name;
+            snprintf(sub, sizeof(sub), "%s", hex);
+          }
+          r.sub = sub;
+        } else {
+          r.icon = UI2_IC_DOWN;
+          r.title = MECK_TR("Return to this node", "Retour \xC3\xA0 ce n\xC5\x93ud");
+          r.sub = MECK_TR("Signal of the reply", "Signal de la r\xC3\xA9ponse");
+        }
+        Ui2List::drawRow(c, BODY_Y + (i - _resultScroll) * ROW_H, r);
+      }
+    }
+    const Ui2Key keys[] = {
+      ui2KeyIcon(UI2_IC_ENTER, MECK_TR("Trace again", "Relancer")),
+      ui2Key("W/S", MECK_TR("Scroll", "D\xC3\xA9" "filer"), true),
+      ui2Key("Q", MECK_TR("Back", "Retour")),
+    };
+    Ui2Chrome::footer(c, keys, 3);
+    return 5000;
+  }
+#endif
+
   int renderBuild(DisplayDriver& display) {
     char tmp[TRACE_EDIT_BUF + 16];
     int y = 14;
