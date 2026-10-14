@@ -56,17 +56,30 @@ FACES = [
 ]
 
 
-def render_glyph(font, ch):
-    """Return (bits rows, width, height, xOffset, yOffset, xAdvance)."""
+def render_glyph(font, ch, antialias=False):
+    """Return (bits rows, width, height, xOffset, yOffset, xAdvance).
+
+    Monochrome hinting suits the hinted Noto Sans; Montserrat's outlines
+    collapse under it at small sizes (the 11 px clock read "14:1B"), so those
+    faces are rendered anti-aliased and thresholded at 50 % instead.
+    """
     adv = int(round(font.getlength(ch)))
     x0, y0, x1, y1 = font.getbbox(ch, anchor="ls")
     if x1 <= x0 or y1 <= y0:
         return [], 0, 0, 0, 0, adv
     pad = 4
-    img = Image.new("1", (x1 - x0 + 2 * pad, y1 - y0 + 2 * pad), 0)
-    d = ImageDraw.Draw(img)
-    d.fontmode = "1"
-    d.text((pad - x0, pad - y0), ch, font=font, fill=1, anchor="ls")
+    size = (x1 - x0 + 2 * pad, y1 - y0 + 2 * pad)
+    if antialias:
+        grey = Image.new("L", size, 0)
+        d = ImageDraw.Draw(grey)
+        d.fontmode = "L"
+        d.text((pad - x0, pad - y0), ch, font=font, fill=255, anchor="ls")
+        img = grey.point(lambda v: 255 if v >= 128 else 0).convert("1")
+    else:
+        img = Image.new("1", size, 0)
+        d = ImageDraw.Draw(img)
+        d.fontmode = "1"
+        d.text((pad - x0, pad - y0), ch, font=font, fill=1, anchor="ls")
     box = img.getbbox()
     if not box:
         return [], 0, 0, 0, 0, adv
@@ -87,7 +100,7 @@ def build(name, ttf, size, rng, subset):
         if (0x7F <= cp <= 0x9F) or (subset is not None and ch not in subset):
             glyphs.append((len(bitmap), 0, 0, 0, 0, 0, cp))
             continue
-        rows, w, h, xo, yo, adv = render_glyph(font, ch)
+        rows, w, h, xo, yo, adv = render_glyph(font, ch, antialias=ttf.startswith("Montserrat"))
         offset = len(bitmap)
         acc, nbits = 0, 0
         for r in rows:
