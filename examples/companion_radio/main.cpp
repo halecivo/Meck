@@ -4955,6 +4955,14 @@ void handleKeyboardInput() {
       } else {
         // Non-compose views (inbox, conversation, contacts): use normal inject
         ui_task.injectKey(key);
+        if (smsScr->isComposing()) {
+          // The key opened the compose view (C / reply). The UITask loop is
+          // suppressed while composing, so schedule its first render here,
+          // otherwise the old view stays on screen until the next keystroke.
+          composeNeedsRefresh = true;
+          lastComposeKeystroke = 0;
+          lastComposeRefresh = 0;
+        }
       }
       return;
     }
