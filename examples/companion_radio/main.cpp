@@ -1642,7 +1642,13 @@ static void meckLaunchHomeTile(Ui2Tile t) {
 
     // --- Status bar tap (top ~18 virtual units) → go home from any non-home screen ---
     // Exception: text reader reading mode uses full screen for content (no header)
-    if (vy < 18 && !ui_task.isOnHomeScreen()) {
+#ifdef MECK_UI_V2
+    // Redesigned screens: only the 24 px status header goes home
+    const bool headerTap = ui2FrameHasChrome ? (y < ui2::HDR_H) : (vy < 18);
+#else
+    const bool headerTap = (vy < 18);
+#endif
+    if (headerTap && !ui_task.isOnHomeScreen()) {
       if (ui_task.isOnTextReader()) {
         TextReaderScreen* reader = (TextReaderScreen*)ui_task.getTextReaderScreen();
         if (reader && reader->isReading()) {
@@ -1861,7 +1867,11 @@ static void meckLaunchHomeTile(Ui2Tile t) {
     if (ui_task.isOnChannelPickerScreen()) {
       ChannelPickerScreen* pick = (ChannelPickerScreen*)ui_task.getChannelPickerScreen();
       if (pick) {
+#ifdef MECK_UI_V2
+        int result = pick->selectAtPx(x, y);
+#else
         int result = pick->selectAtVxVy(vx, vy);
+#endif
         if (result == 1) {
           ui_task.forceRefresh();
           return 0;  // Moved cursor

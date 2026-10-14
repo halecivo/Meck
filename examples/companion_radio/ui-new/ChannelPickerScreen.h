@@ -6,6 +6,10 @@
 #include <helpers/ChannelDetails.h>
 #include <MeshCore.h>
 #include "ChannelScreen.h"
+#ifdef MECK_UI_V2
+  #include "ui2/Ui2Chrome.h"
+  #include "ui2/Ui2List.h"
+#endif
 
 #ifndef MAX_GROUP_CHANNELS
   #define MAX_GROUP_CHANNELS 20
@@ -133,8 +137,81 @@ public:
   // -----------------------------------------------------------------------
   // Render
   // -----------------------------------------------------------------------
+#ifdef MECK_UI_V2
+  // UI v2 (design B4): one 40 px row per channel with the newest message as
+  // preview, its age and the unread count; pages of 6 instead of scrolling.
+  int renderV2(DisplayDriver& display) {
+    using namespace ui2;
+    Ui2Canvas c(display);
+    Ui2Chrome::statusHeader(c);
+    char right[16];
+    Ui2List::pageLabel(right, sizeof(right), _cursor, _itemCount, ROWS_PER_PAGE);
+    Ui2Chrome::titleBar(c, MECK_TR("Channels", "Canaux"), right);
+
+    const uint32_t now = the_mesh.getRTCClock()->getCurrentTime();
+    const int start = Ui2List::pageStart(_cursor, ROWS_PER_PAGE);
+    for (int i = start; i < _itemCount && i < start + ROWS_PER_PAGE; i++) {
+      char name[32], age[8], badge[6];
+      getItemName(i, name, sizeof(name));
+      Ui2Row r;
+      r.icon = (_items[i] == 0xFF) ? UI2_IC_MSG : UI2_IC_HASH;
+      r.title = name;
+      const ChannelScreen::ChannelMessage* m =
+          _channelScreen ? _channelScreen->getChannelMsgByRecency(_items[i], 0) : nullptr;
+      r.sub = m ? m->text : MECK_TR("No messages yet", "Aucun message");
+      if (m && m->timestamp > 1700000000 && now >= m->timestamp) {
+        Ui2List::formatAge(age, sizeof(age), (int32_t)(now - m->timestamp));
+        r.right = age;
+      }
+      int unread = getItemUnread(i);
+      if (unread > 0) {
+        if (unread > 99) strcpy(badge, "99+"); else snprintf(badge, sizeof(badge), "%d", unread);
+        r.badge = badge;
+      }
+      r.rightMax = 40;
+      r.selected = (i == _cursor);
+      Ui2List::drawRow(c, BODY_Y + (i - start) * ROW_H, r);
+    }
+
+    if (_confirmDelete) {
+      char name[32];
+      getItemName(_cursor, name, sizeof(name));
+      Ui2List::dialog(c, UI2_IC_DEL, MECK_TR("Delete message history?", "Supprimer l'historique ?"), name,
+                      MECK_TR("Cancel", "Annuler"), MECK_TR("Delete", "Supprimer"));
+      const Ui2Key keys[] = { ui2KeyIcon(UI2_IC_ENTER, MECK_TR("Delete", "Supprimer")), ui2Key("Q", MECK_TR("Cancel", "Annuler")) };
+      Ui2Chrome::footer(c, keys, 2);
+    } else {
+      const Ui2Key keys[] = {
+        ui2KeyIcon(UI2_IC_ENTER, MECK_TR("Open", "Ouvrir")),
+        ui2Key("W/S", MECK_TR("Move", "D\xC3\xA9placer"), true),
+        ui2Key("X", MECK_TR("Clear", "Vider")),
+        ui2Key("Q", MECK_TR("Back", "Retour")),
+      };
+      Ui2Chrome::footer(c, keys, 4);
+    }
+    return 5000;
+  }
+
+  // Touch hit test in physical pixels. Returns 0 = miss, 1 = cursor moved,
+  // 2 = activate (tap on the selected row), like selectAtVxVy().
+  int selectAtPx(int px, int py) {
+    (void)px;
+    if (_confirmDelete) { _confirmDelete = false; return 1; }
+    int row = Ui2List::rowAt(py, ui2::BODY_Y, ui2::ROW_H, ui2::ROWS_PER_PAGE);
+    if (row < 0) return 0;
+    int idx = Ui2List::pageStart(_cursor, ui2::ROWS_PER_PAGE) + row;
+    if (idx >= _itemCount) return 0;
+    if (idx == _cursor) return 2;
+    _cursor = idx;
+    return 1;
+  }
+#endif
+
   int render(DisplayDriver& display) override {
     rebuildItems();
+#ifdef MECK_UI_V2
+    return renderV2(display);
+#endif
 
     // === Header ===
     display.setCursor(0, 0);

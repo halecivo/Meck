@@ -28,6 +28,9 @@ struct Ui2Status {
   bool externalAntenna = false;
 };
 extern Ui2Status ui2Status;
+// True when the last frame drew the v2 status header (the screen on show is
+// a redesigned one). Touch handling uses it to pick the header tap band.
+extern bool ui2FrameHasChrome;
 
 // One footer hint: a keycap (key text or icon) and a one-word label
 struct Ui2Key {

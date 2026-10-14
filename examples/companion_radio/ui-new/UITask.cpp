@@ -2885,6 +2885,7 @@ if (curr) curr->poll();
 #endif
 #ifdef MECK_UI_V2
       updateUi2Status();
+      ui2FrameHasChrome = false;   // set again by Ui2Chrome::statusHeader()
 #endif
       _display->startFrame();
       int delay_millis = curr->render(*_display);

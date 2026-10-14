@@ -9,6 +9,7 @@
 #include <helpers/sensors/LPPDataHelpers.h>
 #ifdef MECK_UI_V2
 #include "ui2/Ui2HomeTiles.h"
+#include "ui2/Ui2Chrome.h"
 #endif
 
 #ifndef LED_STATE_ON

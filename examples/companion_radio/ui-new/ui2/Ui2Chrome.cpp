@@ -6,11 +6,13 @@
 using namespace ui2;
 
 Ui2Status ui2Status;
+bool ui2FrameHasChrome = false;
 
 namespace Ui2Chrome {
 
 void statusHeader(Ui2Canvas& c) {
   const Ui2Status& st = ui2Status;
+  ui2FrameHasChrome = true;
 
   // Node name, 11B, at most 90 px
   c.textFit(6, Ui2Canvas::boxBaseline(UI2_F_NODE, 0, HDR_H - 1), HDR_NODE_MAX_W,
