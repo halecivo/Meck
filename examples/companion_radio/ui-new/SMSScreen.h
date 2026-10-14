@@ -597,6 +597,258 @@ public:
     return 5000;
   }
 
+  // --- Conversation: received bubbles left, sent ones right (pattern B5) ---
+  int renderConversationV2(DisplayDriver& display) {
+    using namespace ui2;
+    Ui2Canvas c(display);
+    char title[SMS_CONTACT_NAME_LEN];
+    smsContacts.displayName(_activePhone, title, sizeof(title));
+    v2Frame(c, title);
+    if (_msgCount == 0) {
+      Ui2List::emptyState(c, BODY_Y, FOOTER_Y, UI2_IC_SMS, MECK_TR("No messages", "Aucun message"), nullptr,
+                          "C", MECK_TR("Write", "\xC3\x89" "crire"));
+    } else {
+      int16_t y = BODY_Y + 6;
+      const int16_t maxW = 196, pad = 6, textMax = maxW - 2 - 2 * pad;
+      for (int i = _msgScrollPos; i < _msgCount; i++) {
+        SMSMessage& m = _msgs[i];
+        if (!m.valid) continue;
+        Ui2RtLine lines[6];
+        bool more = false;
+        int len = strlen(m.body);
+        int n = ui2RtWrap(m.body, len, textMax, UI2_F_BODY, lines, 6, &more);
+        if (n == 0) { lines[0] = {0, 0, 0}; n = 1; }
+        int16_t cw = 0;
+        for (int k = 0; k < n; k++) if (lines[k].w > cw) cw = lines[k].w;
+        if (more) cw = textMax;
+        if (cw < 90) cw = 90;
+        const int16_t w = cw + 2 + 2 * pad;
+        const int16_t h = 14 + 2 + n * 15 + 3 + 2;
+        if (y + h > FOOTER_Y - 4 && i > _msgScrollPos) break;
+        const int16_t x = m.isSent ? SCREEN_W - PAD - w : PAD;
+        // Header tab: filled for sent messages, outlined for received ones
+        char meta[24], t[8];
+        time_t now = time(nullptr);
+        if (now > 1700000000 && m.timestamp > 1700000000) {
+          int32_t local = (int32_t)m.timestamp + (int32_t)_prefs->utc_offset_hours * 3600;
+          int hh = (local / 3600) % 24; if (hh < 0) hh += 24;
+          int mm = (local / 60) % 60;   if (mm < 0) mm += 60;
+          snprintf(t, sizeof(t), "%02d:%02d", hh, mm);
+        } else {
+          snprintf(t, sizeof(t), "--:--");
+        }
+        c.roundRect(x, y, w, h, 3, true);
+        if (m.isSent) {
+          c.fill(x + 1, y + 1, w - 2, 14, true);
+          c.text(x + pad, Ui2Canvas::boxBaseline(UI2_F_CHIP, y + 1, 14), MECK_TR("You", "Vous"), UI2_F_CHIP, false);
+          snprintf(meta, sizeof(meta), MECK_TR("sent %s", "envoy\xC3\xA9 %s"), t);
+          c.textFit(x + 40, Ui2Canvas::boxBaseline(UI2_F_META, y + 1, 14), w - 40 - pad, meta, UI2_F_META, false, UI2_RIGHT);
+        } else {
+          c.hline(x + 1, y + 15, w - 2);
+          c.textFit(x + pad, Ui2Canvas::boxBaseline(UI2_F_META, y + 1, 14), w - 2 * pad, t, UI2_F_META);
+        }
+        for (int k = 0; k < n; k++) {
+          int16_t base = Ui2Canvas::lineBaseline(UI2_F_BODY, y + 16 + k * 15, 15);
+          if (k == n - 1 && more) {
+            c.textFit(x + pad, base, textMax, m.body + lines[k].a, UI2_F_BODY, true, UI2_LEFT, len - lines[k].a);
+          } else {
+            ui2RtDraw(c, x + pad, base, m.body, lines[k].a, lines[k].b, UI2_F_BODY);
+          }
+        }
+        y += h + 6;
+      }
+    }
+    const Ui2Key keys[] = { ui2Key("C", MECK_TR("Reply", "R\xC3\xA9pondre")), ui2Key("W/S", MECK_TR("Scroll", "D\xC3\xA9" "filer"), true),
+                            ui2Key("A", MECK_TR("Add contact", "+Contact")), ui2Key("Q", MECK_TR("Back", "Retour")) };
+    Ui2Chrome::footer(c, keys, 4);
+    return 5000;
+  }
+
+  // --- Compose SMS: recipient number entry, then the message box ---
+  int renderComposeV2(DisplayDriver& display) {
+    using namespace ui2;
+    Ui2Canvas c(display);
+    if (_enteringPhone) {
+      v2Frame(c, MECK_TR("New SMS", "Nouveau SMS"));
+      c.text(PAD, BODY_Y + 22, MECK_TR("To", "\xC3\x80"), UI2_F_LABEL);
+      const int16_t fy = BODY_Y + 30;
+      c.roundRect(PAD, fy, SCREEN_W - 2 * PAD, 40, 3);
+      int16_t ex = c.textFit(PAD + 8, Ui2Canvas::boxBaseline(UI2_F_HEAD18, fy, 40), SCREEN_W - 2 * PAD - 24,
+                             _phoneInputBuf, UI2_F_HEAD18);
+      c.fill(PAD + 8 + ex + 2, fy + 8, 2, 24, true);
+      const Ui2Key keys[] = { ui2KeyIcon(UI2_IC_ENTER, MECK_TR("Next", "Suivant")), ui2Key("Sh+Del", MECK_TR("Cancel", "Annuler")) };
+      Ui2Chrome::footer(c, keys, 2);
+      return 2000;
+    }
+    char name[SMS_CONTACT_NAME_LEN], title[SMS_CONTACT_NAME_LEN + 8];
+    smsContacts.displayName(_composePhone, name, sizeof(name));
+    snprintf(title, sizeof(title), MECK_TR("To \xC2\xB7 %s", "\xC3\x80 \xC2\xB7 %s"), name);
+    v2Frame(c, title);
+    const int16_t boxY = BODY_Y + 6, barY = FOOTER_Y - 6 - 14, boxH = barY - 6 - boxY;
+    const int16_t textW = SCREEN_W - 2 * PAD - 20;
+    const int maxVisible = (boxH - 10) / 15;
+    c.roundRect(PAD, boxY, SCREEN_W - 2 * PAD, boxH, 3);
+    static Ui2RtLine lines[24];
+    int n = ui2RtWrap(_composeBuf, _composePos, textW, UI2_F_BODY, lines, 24, nullptr);
+    int first = n > maxVisible ? n - maxVisible : 0;
+    int16_t cx = PAD + 6, cy = boxY + 5;
+    for (int k = first; k < n; k++) {
+      cy = boxY + 5 + (k - first) * 15;
+      cx = ui2RtDraw(c, PAD + 6, Ui2Canvas::lineBaseline(UI2_F_BODY, cy, 15), _composeBuf, lines[k].a, lines[k].b, UI2_F_BODY);
+    }
+    if (_composePos > 0 && _composeBuf[_composePos - 1] == ' ' && n > 0) cx += Ui2Canvas::textWidth(" ", UI2_F_BODY);
+    c.fill(cx + 1, cy + 1, 6, 13, true);
+    char cnt[16];
+    snprintf(cnt, sizeof(cnt), "%d / %d", _composePos, SMS_COMPOSE_MAX);
+    int16_t cw = Ui2Canvas::textWidth(cnt, UI2_F_LABEL) + 8;
+    bool nearFull = _composePos >= SMS_COMPOSE_MAX - 10;
+    if (nearFull) c.fillRoundRect(SCREEN_W - PAD - cw, barY, cw, 14, 3, true);
+    c.text(SCREEN_W - PAD - cw + 4, Ui2Canvas::boxBaseline(UI2_F_LABEL, barY, 14), cnt, UI2_F_LABEL, !nearFull);
+    c.segBar(PAD, barY + 4, SCREEN_W - 2 * PAD - cw - 6, 6, (_composePos * 20 + SMS_COMPOSE_MAX - 1) / SMS_COMPOSE_MAX, 20);
+    const Ui2Key keys[] = { ui2KeyIcon(UI2_IC_ENTER, MECK_TR("Send", "Envoyer")), ui2Key("Sh+Del", MECK_TR("Cancel", "Annuler")) };
+    Ui2Chrome::footer(c, keys, 2);
+    return 2000;
+  }
+
+  // --- Dialer (design B10): number field, 3 x 5 keypad ---
+  static const int16_t V2_KP_TOP = ui2::BODY_Y + 48 + 6;
+  static const int16_t V2_KP_GAP = 4;
+  static int16_t v2KpRowH() { return (ui2::FOOTER_Y - 6 - V2_KP_TOP - (NUMPAD_ROWS - 1) * V2_KP_GAP) / NUMPAD_ROWS; }
+  static int16_t v2KpColW() { return (ui2::SCREEN_W - 2 * ui2::PAD - (NUMPAD_COLS - 1) * V2_KP_GAP) / NUMPAD_COLS; }
+
+  int renderPhoneDialerV2(DisplayDriver& display) {
+    using namespace ui2;
+    Ui2Canvas c(display);
+    Ui2Chrome::statusHeader(c);
+    const char* op = modemManager.getOperator();
+    Ui2Chrome::titleBar(c, MECK_TR("Dialer", "Num\xC3\xA9roteur"), op[0] ? op : nullptr, nullptr, v2SignalIcon());
+
+    // Number, right-aligned; when too long the start is cut (last digits stay)
+    const int16_t fy = BODY_Y;
+    const char* num = _phoneInputBuf;
+    while (*num && Ui2Canvas::textWidth(num, UI2_F_HEAD18) > SCREEN_W - 2 * PAD - 6) num++;
+    int16_t nw = Ui2Canvas::textWidth(num, UI2_F_HEAD18);
+    c.text(SCREEN_W - PAD - 4 - nw, Ui2Canvas::boxBaseline(UI2_F_HEAD18, fy, 48), num, UI2_F_HEAD18);
+    c.fill(SCREEN_W - PAD - 2, fy + 12, 2, 24, true);
+    c.hline(0, fy + 47, SCREEN_W);
+
+    static const char* letters[4][3] = { {"", "ABC", "DEF"}, {"GHI", "JKL", "MNO"}, {"PQRS", "TUV", "WXYZ"}, {"", "+", ""} };
+    const int16_t rowH = v2KpRowH(), colW = v2KpColW();
+    for (int row = 0; row < NUMPAD_ROWS; row++) {
+      for (int col = 0; col < NUMPAD_COLS; col++) {
+        const int16_t x = PAD + col * (colW + V2_KP_GAP), y = V2_KP_TOP + row * (rowH + V2_KP_GAP);
+        const bool call = (row == 4 && col == 2);
+        const bool callActive = call && _phoneInputPos > 0;
+        if (callActive) c.fillRoundRect(x, y, colW, rowH, 3, true);
+        else c.roundRect(x, y, colW, rowH, 3, true);
+        if (row < 4) {
+          const char* d = numpadLabel(row, col);
+          const char* l = letters[row][col];
+          int16_t dw = Ui2Canvas::textWidth(d, UI2_F_HEAD18), lw = l[0] ? Ui2Canvas::textWidth(l, UI2_F_KEY) + 5 : 0;
+          int16_t sx = x + (colW - dw - lw) / 2, base = Ui2Canvas::boxBaseline(UI2_F_HEAD18, y, rowH);
+          c.text(sx, base, d, UI2_F_HEAD18);
+          if (l[0]) c.text(sx + dw + 5, base, l, UI2_F_KEY);
+        } else {
+          // Bottom row: +, delete, call
+          const Ui2Icon ic = (col == 1) ? UI2_IC_LEFT : (col == 2) ? UI2_IC_PHONE : UI2_IC_PLUS;
+          c.icon(x + (colW - 16) / 2, y + (rowH - 16) / 2, ic, 16, !callActive);
+        }
+      }
+    }
+    const Ui2Key keys[] = { ui2KeyIcon(UI2_IC_ENTER, MECK_TR("Call", "Appeler")), ui2Key("Bksp", MECK_TR("Delete", "Effacer")),
+                            ui2Key("Sh+Del", MECK_TR("Back", "Retour")) };
+    Ui2Chrome::footer(c, keys, 3);
+    return 2000;
+  }
+
+  // Shared layout of the dialing / incoming screens (design B11)
+  void v2CallHeader(Ui2Canvas& c, Ui2Icon icon, const char* label) {
+    using namespace ui2;
+    Ui2Chrome::statusHeader(c);
+    char name[SMS_CONTACT_NAME_LEN];
+    smsContacts.displayName(_callPhone, name, sizeof(name));
+    int16_t y = HDR_H + 20;
+    c.icon((SCREEN_W - 32) / 2, y, icon, 32);
+    y += 32 + 8;
+    int16_t lw = Ui2Canvas::textWidth(label, UI2_F_CHIP) + (int16_t)strlen(label);
+    c.textTracked((SCREEN_W - lw) / 2, y + 10, label, UI2_F_CHIP, 1);
+    y += 18;
+    c.wrap(PAD, Ui2Canvas::lineBaseline(UI2_F_HEAD18, y, 22), SCREEN_W - 2 * PAD, 22, 2, name, UI2_F_HEAD18,
+           true, true, nullptr, UI2_CENTER);
+    if (strcmp(name, _callPhone) != 0) {
+      int lines = c.wrap(PAD, 0, SCREEN_W - 2 * PAD, 22, 2, name, UI2_F_HEAD18, true, false);
+      c.textFit(PAD, Ui2Canvas::lineBaseline(UI2_F_LABEL, y + lines * 22 + 2, 15), SCREEN_W - 2 * PAD, _callPhone,
+                UI2_F_LABEL, true, UI2_CENTER);
+    }
+  }
+
+  // Big action button at the bottom of the call screens
+  void v2CallButton(Ui2Canvas& c, int16_t x, int16_t w, Ui2Icon icon, const char* label, bool filled) {
+    using namespace ui2;
+    const int16_t y = FOOTER_Y - 8 - 48;
+    if (filled) c.fillRoundRect(x, y, w, 48, 3, true);
+    else { c.roundRect(x, y, w, 48, 3, true); c.roundRect(x + 1, y + 1, w - 2, 46, 2, true); }
+    int16_t tw = Ui2Canvas::textWidth(label, UI2_F_TITLE);
+    int16_t sx = x + (w - 16 - 6 - tw) / 2;
+    c.icon(sx, y + 16, icon, 16, !filled);
+    c.text(sx + 22, Ui2Canvas::boxBaseline(UI2_F_TITLE, y, 48), label, UI2_F_TITLE, !filled);
+  }
+
+  int renderDialingOutV2(DisplayDriver& display) {
+    using namespace ui2;
+    Ui2Canvas c(display);
+    v2CallHeader(c, UI2_IC_PHONE, MECK_TR("CALLING", "APPEL EN COURS"));
+    v2CallButton(c, PAD, SCREEN_W - 2 * PAD, UI2_IC_ENDCALL, MECK_TR("Hang up", "Raccrocher"), true);
+    const Ui2Key keys[] = { ui2KeyIcon(UI2_IC_ENTER, MECK_TR("Hang up", "Raccrocher")) };
+    Ui2Chrome::footer(c, keys, 1);
+    return 2000;
+  }
+
+  int renderIncomingCallV2(DisplayDriver& display) {
+    using namespace ui2;
+    Ui2Canvas c(display);
+    v2CallHeader(c, UI2_IC_RING, MECK_TR("INCOMING CALL", "APPEL ENTRANT"));
+    const int16_t w = (SCREEN_W - 2 * PAD - 8) / 2;
+    v2CallButton(c, PAD, w, UI2_IC_PHONE, MECK_TR("Answer", "R\xC3\xA9pondre"), true);
+    v2CallButton(c, PAD + w + 8, w, UI2_IC_ENDCALL, MECK_TR("Reject", "Rejeter"), false);
+    const Ui2Key keys[] = { ui2KeyIcon(UI2_IC_ENTER, MECK_TR("Answer", "R\xC3\xA9pondre")), ui2Key("Sh+Del", MECK_TR("Reject", "Rejeter")) };
+    Ui2Chrome::footer(c, keys, 2);
+    return 2000;
+  }
+
+  // Active call (design B12): the timer counts minutes and redraws once a minute
+  int renderInCallV2(DisplayDriver& display) {
+    using namespace ui2;
+    Ui2Canvas c(display);
+    Ui2Chrome::statusHeader(c);
+    char name[SMS_CONTACT_NAME_LEN];
+    smsContacts.displayName(_callPhone, name, sizeof(name));
+    int16_t y = HDR_H + 16;
+    c.textFit(PAD, Ui2Canvas::lineBaseline(UI2_F_HEAD16, y, 20), SCREEN_W - 2 * PAD, name, UI2_F_HEAD16, true, UI2_CENTER);
+    y += 20;
+    if (strcmp(name, _callPhone) != 0) {
+      c.textFit(PAD, Ui2Canvas::lineBaseline(UI2_F_LABEL, y, 15), SCREEN_W - 2 * PAD, _callPhone, UI2_F_LABEL, true, UI2_CENTER);
+    }
+    y += 24;
+    unsigned long secs = _callConnectTime ? (millis() - _callConnectTime) / 1000 : 0;
+    char mins[8];
+    snprintf(mins, sizeof(mins), "%lu", secs / 60);
+    int16_t nw = Ui2Canvas::textWidth(mins, UI2_F_NUM40), uw = Ui2Canvas::textWidth("min", UI2_F_TITLE);
+    int16_t sx = (SCREEN_W - nw - 6 - uw) / 2;
+    c.text(sx, y + 40, mins, UI2_F_NUM40);
+    c.text(sx + nw + 6, y + 40, "min", UI2_F_TITLE);
+    y += 56;
+    // Volume as a 5-segment bar (W/S)
+    c.textFit(PAD, Ui2Canvas::lineBaseline(UI2_F_META, y, 12), 60, MECK_TR("Volume", "Volume"), UI2_F_META);
+    c.segBar(PAD + 64, y + 2, SCREEN_W - 2 * PAD - 64, 8, _callVolume, 5, 2);
+    v2CallButton(c, PAD, SCREEN_W - 2 * PAD, UI2_IC_ENDCALL, MECK_TR("End call", "Raccrocher"), true);
+    const Ui2Key keys[] = { ui2KeyIcon(UI2_IC_ENTER, MECK_TR("End", "Fin")), ui2Key("W/S", MECK_TR("Volume", "Volume")),
+                            ui2Key("0-9", "DTMF") };
+    Ui2Chrome::footer(c, keys, 3);
+    // Next redraw at the next whole minute of the call
+    return (int)(60000 - ((millis() - _callConnectTime) % 60000)) + 50;
+  }
+
   int renderEditContactV2(DisplayDriver& display) {
     using namespace ui2;
     Ui2Canvas c(display);
@@ -623,7 +875,12 @@ public:
       case CONTACTS:      return renderContactsV2(display);
       case CONTACT_PAGE:  return renderContactPageV2(display);
       case EDIT_CONTACT:  return renderEditContactV2(display);
-      default: break;     // conversation, compose, dialer and calls: classic for now
+      case CONVERSATION:  return renderConversationV2(display);
+      case COMPOSE:       return renderComposeV2(display);
+      case PHONE_DIALER:  return renderPhoneDialerV2(display);
+      case DIALING_OUT:   return renderDialingOutV2(display);
+      case INCOMING_CALL: return renderIncomingCallV2(display);
+      case IN_CALL:       return renderInCallV2(display);
     }
 #endif
 
@@ -1984,6 +2241,15 @@ public:
 
     if (_view != PHONE_DIALER) return false;
 
+#ifdef MECK_UI_V2
+    // v2 keypad: physical-pixel grid (must match renderPhoneDialerV2)
+    if (px < ui2::PAD || py < V2_KP_TOP) return false;
+    int col = (px - ui2::PAD) / (v2KpColW() + V2_KP_GAP);
+    int row = (py - V2_KP_TOP) / (v2KpRowH() + V2_KP_GAP);
+    if (col >= NUMPAD_COLS || row >= NUMPAD_ROWS) return false;
+    int x = px, y = py;
+    (void)dispW; (void)dispH; (void)physW; (void)physH;
+#else
     // Map physical touch coordinates to virtual display coordinates
     int x = (int)px * dispW / physW;
     int y = (int)py * dispH / physH;
@@ -2006,6 +2272,7 @@ public:
     int row = (y - numpadTop) / rowH;
 
     if (col < 0 || col >= NUMPAD_COLS || row < 0 || row >= NUMPAD_ROWS) return false;
+#endif
 
     char c = numpadChar(row, col);
     bool changed = false;
