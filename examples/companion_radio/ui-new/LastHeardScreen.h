@@ -5,6 +5,10 @@
 #include "MeckLang.h"
 #include <helpers/AdvertDataHelpers.h>
 #include <MeshCore.h>
+#ifdef MECK_UI_V2
+  #include "ui2/Ui2Chrome.h"
+  #include "ui2/Ui2Mesh.h"
+#endif
 
 extern MyMesh the_mesh;
 
@@ -91,6 +95,63 @@ public:
     return 1;
   }
 
+#ifdef MECK_UI_V2
+  // UI v2: node rows with type, age and hops; a star for favourites and a
+  // check for nodes already in contacts (Enter adds or removes).
+  int renderV2(DisplayDriver& display, uint32_t now) {
+    using namespace ui2;
+    Ui2Canvas c(display);
+    Ui2Chrome::statusHeader(c);
+    char right[16];
+    Ui2List::pageLabel(right, sizeof(right), _scrollPos, _count, ROWS_PER_PAGE);
+    Ui2Chrome::titleBar(c, MECK_TR("Last heard", "Entendus"), right);
+
+    if (_count == 0) {
+      Ui2List::emptyState(c, BODY_Y, FOOTER_Y, UI2_IC_RADIO, MECK_TR("No adverts received yet", "Aucune annonce re\xC3\xA7ue"),
+                          MECK_TR("Nodes appear here as their adverts arrive.", "Les n\xC5\x93uds apparaissent ici d\xC3\xA8s leur annonce."));
+    } else {
+      const int start = Ui2List::pageStart(_scrollPos, ROWS_PER_PAGE);
+      for (int i = start; i < _count && i < start + ROWS_PER_PAGE; i++) {
+        const AdvertPath& e = _entries[i];
+        char age[8], hops[16];
+        Ui2Row r;
+        r.icon = ui2NodeIcon(e.type);
+        r.title = e.name;
+        r.sub = ui2NodeTypeLabel(e.type);
+        formatAge(now, e.recv_timestamp, age, sizeof(age));
+        r.right = age;
+        ui2HopsLabel(hops, sizeof(hops), e.path_len & 63);
+        r.right2 = hops;
+        ContactInfo* ci = the_mesh.lookupContactByPubKey(e.pubkey_prefix, 8);
+        r.star = ci && (ci->flags & 0x01);
+        r.check = ci && !r.star;
+        r.rightMax = 64;
+        r.selected = (i == _scrollPos);
+        Ui2List::drawRow(c, BODY_Y + (i - start) * ROW_H, r);
+      }
+    }
+    const Ui2Key keys[] = {
+      ui2KeyIcon(UI2_IC_ENTER, MECK_TR("Add/remove", "Ajout/suppr.")),
+      ui2Key("W/S", MECK_TR("Move", "D\xC3\xA9placer"), true),
+      ui2Key("Q", MECK_TR("Back", "Retour")),
+    };
+    Ui2Chrome::footer(c, keys, 3);
+    return 5000;
+  }
+
+  // Touch hit test in physical pixels: 0 = miss, 1 = moved, 2 = tapped current row
+  int selectRowAtPx(int py) {
+    if (_count == 0) return 0;
+    int row = Ui2List::rowAt(py, ui2::BODY_Y, ui2::ROW_H, ui2::ROWS_PER_PAGE);
+    if (row < 0) return 0;
+    int idx = Ui2List::pageStart(_scrollPos, ui2::ROWS_PER_PAGE) + row;
+    if (idx >= _count) return 0;
+    if (idx == _scrollPos) return 2;
+    _scrollPos = idx;
+    return 1;
+  }
+#endif
+
   int render(DisplayDriver& display) override {
     // Refresh sorted list from mesh
     _count = the_mesh.getRecentlyHeard(_entries, LAST_HEARD_DISPLAY_SIZE);
@@ -106,6 +167,9 @@ public:
     if (_scrollPos >= _count) _scrollPos = max(0, _count - 1);
 
     uint32_t now = _rtc->getCurrentTime();
+#ifdef MECK_UI_V2
+    return renderV2(display, now);
+#endif
 
     // === Header ===
     display.setTextSize(1);

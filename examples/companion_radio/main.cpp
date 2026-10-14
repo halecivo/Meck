@@ -1886,7 +1886,11 @@ static void meckLaunchHomeTile(Ui2Tile t) {
     if (ui_task.isOnContactsScreen()) {
       ContactsScreen* cs = (ContactsScreen*)ui_task.getContactsScreen();
       if (cs) {
+#ifdef MECK_UI_V2
+        int result = cs->selectRowAtPx(y);
+#else
         int result = cs->selectRowAtVY(vy);
+#endif
         if (result == 1) {
           ui_task.forceRefresh();
           return 0;  // Moved cursor
@@ -1922,7 +1926,11 @@ static void meckLaunchHomeTile(Ui2Tile t) {
     if (ui_task.isOnDiscoveryScreen()) {
       DiscoveryScreen* ds = (DiscoveryScreen*)ui_task.getDiscoveryScreen();
       if (ds) {
+#ifdef MECK_UI_V2
+        int result = ds->selectRowAtPx(y);
+#else
         int result = ds->selectRowAtVY(vy);
+#endif
         if (result == 1) {
           ui_task.forceRefresh();
           return 0;
@@ -1936,7 +1944,11 @@ static void meckLaunchHomeTile(Ui2Tile t) {
     if (ui_task.isOnLastHeardScreen()) {
       LastHeardScreen* lh = (LastHeardScreen*)ui_task.getLastHeardScreen();
       if (lh) {
+#ifdef MECK_UI_V2
+        int result = lh->selectRowAtPx(y);
+#else
         int result = lh->selectRowAtVY(vy);
+#endif
         if (result == 1) {
           ui_task.forceRefresh();
           return 0;

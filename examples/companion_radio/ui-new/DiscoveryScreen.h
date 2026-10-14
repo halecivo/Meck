@@ -5,6 +5,10 @@
 #include "MeckLang.h"
 #include <helpers/AdvertDataHelpers.h>
 #include <MeshCore.h>
+#ifdef MECK_UI_V2
+  #include "ui2/Ui2Chrome.h"
+  #include "ui2/Ui2Mesh.h"
+#endif
 
 // Forward declarations
 class UITask;
@@ -67,7 +71,81 @@ public:
     return 1;
   }
 
+#ifdef MECK_UI_V2
+  // UI v2 (design B9): node rows with signal bars and SNR, a check for nodes
+  // already in contacts. No spinner: the list redraws as results arrive.
+  int renderV2(DisplayDriver& display) {
+    using namespace ui2;
+    const int count = the_mesh.getDiscoveredCount();
+    const bool active = the_mesh.isDiscoveryActive();
+    Ui2Canvas c(display);
+    Ui2Chrome::statusHeader(c);
+    char right[24];
+    if (count > 0) snprintf(right, sizeof(right), MECK_TR("%d found", "%d trouv\xC3\xA9(s)"), count);
+    else right[0] = 0;
+    Ui2Chrome::titleBar(c, MECK_TR("Discover", "Recherche"), right,
+                        active ? MECK_TR("Scanning", "Recherche") : nullptr, UI2_NO_ICON, active);
+    _rowsPerPage = ROWS_PER_PAGE;
+
+    if (count == 0) {
+      if (active) Ui2List::emptyState(c, BODY_Y, FOOTER_Y, UI2_IC_SEARCH, MECK_TR("Listening for adverts\xE2\x80\xA6", "\xC3\x89" "coute des annonces\xE2\x80\xA6"));
+      else Ui2List::emptyState(c, BODY_Y, FOOTER_Y, UI2_IC_SEARCH, MECK_TR("No nodes found", "Aucun n\xC5\x93ud trouv\xC3\xA9"),
+                               nullptr, "F", MECK_TR("Scan again", "Relancer"));
+    } else {
+      const int start = Ui2List::pageStart(_scrollPos, ROWS_PER_PAGE);
+      for (int i = start; i < count && i < start + ROWS_PER_PAGE; i++) {
+        const DiscoveredNode& node = the_mesh.getDiscovered(i);
+        char sub[40], snr[16], hops[16];
+        Ui2Row r;
+        r.icon = ui2NodeIcon(node.contact.type);
+        r.title = node.contact.name;
+        if (node.already_in_contacts) {
+          snprintf(sub, sizeof(sub), "%s", MECK_TR("Already in contacts", "D\xC3\xA9j\xC3\xA0 dans les contacts"));
+          r.check = true;
+        } else {
+          ui2HopsLabel(hops, sizeof(hops), node.path_len & 63);
+          snprintf(sub, sizeof(sub), "%s \xC2\xB7 %s", ui2NodeTypeLabel(node.contact.type), hops);
+        }
+        r.sub = sub;
+        if (node.snr != 0) {
+          // Active discovery result: SNR is x4
+          snprintf(snr, sizeof(snr), "SNR %+.1f", node.snr / 4.0f);
+          r.right = snr;
+          r.sig = ui2SignalIcon(node.snr / 4);
+        }
+        r.rightMax = 64;
+        r.selected = (i == _scrollPos);
+        Ui2List::drawRow(c, BODY_Y + (i - start) * ROW_H, r);
+      }
+    }
+    const Ui2Key keys[] = {
+      ui2KeyIcon(UI2_IC_ENTER, MECK_TR("Add", "Ajouter")),
+      ui2Key("W/S", MECK_TR("Move", "D\xC3\xA9placer"), true),
+      ui2Key("F", MECK_TR("Rescan", "Relancer")),
+      ui2Key("Q", MECK_TR("Back", "Retour")),
+    };
+    Ui2Chrome::footer(c, keys, 4);
+    return active ? 1000 : 5000;
+  }
+
+  // Touch hit test in physical pixels: 0 = miss, 1 = moved, 2 = tapped current row
+  int selectRowAtPx(int py) {
+    int count = the_mesh.getDiscoveredCount();
+    if (count == 0) return 0;
+    int row = Ui2List::rowAt(py, ui2::BODY_Y, ui2::ROW_H, ui2::ROWS_PER_PAGE);
+    if (row < 0) return 0;
+    int idx = Ui2List::pageStart(_scrollPos, ui2::ROWS_PER_PAGE) + row;
+    if (idx >= count) return 0;
+    if (idx == _scrollPos) return 2;
+    _scrollPos = idx;
+    return 1;
+  }
+#endif
+
   int render(DisplayDriver& display) override {
+#ifdef MECK_UI_V2
+    return renderV2(display);
+#endif
     int count = the_mesh.getDiscoveredCount();
     bool active = the_mesh.isDiscoveryActive();
 

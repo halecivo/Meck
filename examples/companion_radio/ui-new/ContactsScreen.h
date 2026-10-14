@@ -4,6 +4,10 @@
 #include <helpers/ui/DisplayDriver.h>
 #include "MeckLang.h"
 #include <MeshCore.h>
+#ifdef MECK_UI_V2
+  #include "ui2/Ui2Chrome.h"
+  #include "ui2/Ui2Mesh.h"
+#endif
 
 
 // Timestamps before this (Jan 1 2026 UTC) are treated as invalid/unsynced
@@ -148,6 +152,41 @@ private:
     }
   }
 
+  // Hop count shown for a contact: "D" direct, "3" hops on the known path,
+  // "~3" / "~D" flood estimate from the recent advert cache, "?" unknown;
+  // a trailing "*" marks a custom (locked) path.
+  void hopString(const ContactInfo& contact, char* hopStr, size_t len) const {
+    if (contact.out_path_len == 0xFF) {
+      // No confirmed direct path — look up flood hop estimate from recent advert cache
+      snprintf(hopStr, len, "?");  // default
+      for (int h = 0; h < _hopBufCount; h++) {
+        if (memcmp(contact.id.pub_key, _hopBuf[h].pubkey_prefix, 7) == 0) {
+          uint8_t bph = (_hopBuf[h].path_len >> 6) + 1;
+          uint8_t hops = _hopBuf[h].path_len & 0x3F;
+          uint8_t max_hops = 64 / bph;  // sanity cap based on path encoding
+          if (hops <= max_hops) {
+            if (hops == 0)
+              snprintf(hopStr, len, "~D");
+            else
+              snprintf(hopStr, len, "~%d", (int)hops);
+          }
+          break;
+        }
+      }
+    } else if (contact.out_path_len == 0) {
+      bool customDirect = (contact.flags & CONTACT_FLAG_CUSTOM_PATH) != 0;
+      snprintf(hopStr, len, "%s", customDirect ? "D*" : "D");
+    } else {
+      int hops = contact.out_path_len & 0x3F;  // lower 6 bits = hop count
+      bool customPath = (contact.flags & CONTACT_FLAG_CUSTOM_PATH) != 0;
+      if (customPath) {
+        snprintf(hopStr, len, "%d*", hops);  // asterisk = custom/locked path
+      } else {
+        snprintf(hopStr, len, "%d", hops);
+      }
+    }
+  }
+
   // --- Bitfield helpers ---
   bool isSelectedRaw(int rawIdx) const {
     if (rawIdx < 0 || rawIdx >= MAX_CONTACTS) return false;
@@ -288,8 +327,96 @@ public:
   }
 
 
+#ifdef MECK_UI_V2
+  // UI v2 (design B7): icon by node type, name, type line, age and hops on
+  // the right, star for favourites, DM unread badge; check marks in select
+  // mode. Pages of 6 rows.
+  int renderV2(DisplayDriver& display) {
+    using namespace ui2;
+    Ui2Canvas c(display);
+    Ui2Chrome::statusHeader(c);
+    char title[32], right[16];
+    if (_selectMode) snprintf(title, sizeof(title), MECK_TR("%d selected", "%d s\xC3\xA9lectionn\xC3\xA9(s)"), getSelectedCount());
+    else snprintf(title, sizeof(title), "Contacts");
+    Ui2List::pageLabel(right, sizeof(right), _scrollPos, _filteredCount, ROWS_PER_PAGE);
+    Ui2Chrome::titleBar(c, title, right, (_filter != FILTER_ALL) ? filterLabel(_filter) : nullptr);
+    _rowsPerPage = ROWS_PER_PAGE;
+
+    if (_filteredCount == 0) {
+      Ui2List::emptyState(c, BODY_Y, FOOTER_Y, UI2_IC_CONTACT, MECK_TR("No contacts", "Aucun contact"),
+                          (_filter != FILTER_ALL) ? MECK_TR("A/D changes the filter.", "A/D change le filtre.") : nullptr);
+    } else {
+      const uint32_t now = _rtc->getCurrentTime();
+      const int start = Ui2List::pageStart(_scrollPos, ROWS_PER_PAGE);
+      for (int i = start; i < _filteredCount && i < start + ROWS_PER_PAGE; i++) {
+        ContactInfo contact;
+        if (!the_mesh.getContactByIdx(_filteredIdx[i], contact)) continue;
+        char age[8], hops[20], badge[6], hopStr[6];
+        Ui2Row r;
+        r.icon = ui2NodeIcon(contact.type);
+        r.title = contact.name;
+        r.sub = ui2NodeTypeLabel(contact.type);
+        formatAge(age, sizeof(age), now, contact.lastmod);
+        r.right = age;
+        hopString(contact, hopStr, sizeof(hopStr));
+        const bool approx = hopStr[0] == '~';
+        const char* h = approx ? hopStr + 1 : hopStr;
+        if (*h == '?') {
+          hops[0] = 0;
+        } else {
+          char lbl[16];
+          ui2HopsLabel(lbl, sizeof(lbl), (*h == 'D') ? 0 : atoi(h));
+          snprintf(hops, sizeof(hops), "%s%s%s", approx ? "~" : "", lbl, strchr(h, '*') ? " *" : "");
+        }
+        if (hops[0]) r.right2 = hops;
+        int dm = (_dmUnread && _filteredIdx[i] < MAX_CONTACTS) ? _dmUnread[_filteredIdx[i]] : 0;
+        if (dm > 0) { snprintf(badge, sizeof(badge), "%d", dm > 99 ? 99 : dm); r.badge = badge; }
+        r.star = (contact.flags & 0x01) != 0;
+        r.check = _selectMode && isSelectedRaw(_filteredIdx[i]);
+        r.rightMax = 64;
+        r.selected = (i == _scrollPos);
+        Ui2List::drawRow(c, BODY_Y + (i - start) * ROW_H, r);
+      }
+    }
+
+    if (_selectMode) {
+      const Ui2Key keys[] = {
+        ui2KeyIcon(UI2_IC_ENTER, MECK_TR("Toggle", "Cocher")),
+        ui2Key("A/D", MECK_TR("All/none", "Tout/rien")),
+        ui2Key("X", MECK_TR("Export", "Exporter")),
+        ui2Key("Q", MECK_TR("Done", "OK")),
+      };
+      Ui2Chrome::footer(c, keys, 4);
+    } else {
+      const Ui2Key keys[] = {
+        ui2KeyIcon(UI2_IC_ENTER, MECK_TR("Open", "Ouvrir")),
+        ui2Key("W/S", MECK_TR("Move", "D\xC3\xA9placer"), true),
+        ui2Key("A/D", MECK_TR("Filter", "Filtre")),
+        ui2Key("P", MECK_TR("Path", "Chemin")),
+      };
+      Ui2Chrome::footer(c, keys, 4);
+    }
+    return 5000;
+  }
+
+  // Touch hit test in physical pixels: 0 = miss, 1 = moved, 2 = tapped current row
+  int selectRowAtPx(int py) {
+    if (_filteredCount == 0) return 0;
+    int row = Ui2List::rowAt(py, ui2::BODY_Y, ui2::ROW_H, ui2::ROWS_PER_PAGE);
+    if (row < 0) return 0;
+    int idx = Ui2List::pageStart(_scrollPos, ui2::ROWS_PER_PAGE) + row;
+    if (idx >= _filteredCount) return 0;
+    if (idx == _scrollPos) return 2;
+    _scrollPos = idx;
+    return 1;
+  }
+#endif
+
   int render(DisplayDriver& display) override {
     if (!_cacheValid) rebuildCache();
+#ifdef MECK_UI_V2
+    return renderV2(display);
+#endif
 
     char tmp[48];
 
@@ -380,35 +507,7 @@ public:
 
         // Reserve space for hops + age on right side
         char hopStr[6];
-        if (contact.out_path_len == 0xFF) {
-          // No confirmed direct path — look up flood hop estimate from recent advert cache
-          hopStr[0] = '?'; hopStr[1] = '\0';  // default
-          for (int h = 0; h < _hopBufCount; h++) {
-            if (memcmp(contact.id.pub_key, _hopBuf[h].pubkey_prefix, 7) == 0) {
-              uint8_t bph = (_hopBuf[h].path_len >> 6) + 1;
-              uint8_t hops = _hopBuf[h].path_len & 0x3F;
-              uint8_t max_hops = 64 / bph;  // sanity cap based on path encoding
-              if (hops <= max_hops) {
-                if (hops == 0)
-                  strcpy(hopStr, "~D");
-                else
-                  snprintf(hopStr, sizeof(hopStr), "~%d", (int)hops);
-              }
-              break;
-            }
-          }
-        } else if (contact.out_path_len == 0) {
-          bool customDirect = (contact.flags & CONTACT_FLAG_CUSTOM_PATH) != 0;
-          strcpy(hopStr, customDirect ? "D*" : "D");
-        } else {
-          int hops = contact.out_path_len & 0x3F;  // lower 6 bits = hop count
-          bool customPath = (contact.flags & CONTACT_FLAG_CUSTOM_PATH) != 0;
-          if (customPath) {
-            snprintf(hopStr, sizeof(hopStr), "%d*", hops);  // asterisk = custom/locked path
-          } else {
-            snprintf(hopStr, sizeof(hopStr), "%d", hops);
-          }
-        }
+        hopString(contact, hopStr, sizeof(hopStr));
 
         char ageStr[6];
         formatAge(ageStr, sizeof(ageStr), now, contact.lastmod);
