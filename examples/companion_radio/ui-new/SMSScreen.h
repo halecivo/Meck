@@ -38,6 +38,11 @@
 #include "SMSStore.h"
 #include "SMSContacts.h"
 #include "../NodePrefs.h"
+#ifdef MECK_UI_V2
+  #include "ui2/Ui2Chrome.h"
+  #include "ui2/Ui2List.h"
+  #include "ui2/Ui2RichText.h"
+#endif
 
 // Limits
 #define SMS_INBOX_PAGE_SIZE     4
@@ -372,8 +377,255 @@ public:
   // RENDER
   // =========================================================================
 
+#ifdef MECK_UI_V2
+  // ===========================================================================
+  // UI v2 (designs B10-B12 and the list pattern). Behaviour and keys are the
+  // classic ones; only the drawing differs.
+  // ===========================================================================
+
+  static Ui2Icon v2SignalIcon() {
+    int bars = modemManager.getSignalBars();   // 0-5
+    if (bars > 4) bars = 4;
+    static const Ui2Icon icons[5] = { UI2_IC_SIG0, UI2_IC_SIG1, UI2_IC_SIG2, UI2_IC_SIG3, UI2_IC_SIG4 };
+    return icons[bars < 0 ? 0 : bars];
+  }
+
+  // Status header and title bar with the cellular signal as an icon chip
+  void v2Frame(Ui2Canvas& c, const char* title, const char* right = nullptr) {
+    Ui2Chrome::statusHeader(c);
+    Ui2Chrome::titleBar(c, title, right, nullptr, v2SignalIcon());
+  }
+
+  // Modem state banner above the footer while the modem is not ready
+  void v2ModemBanner(Ui2Canvas& c) {
+    using namespace ui2;
+    ModemState ms = modemManager.getState();
+    if (ms == ModemState::READY || ms == ModemState::SENDING_SMS) return;
+    char buf[48];
+    snprintf(buf, sizeof(buf), MECK_TR("Modem: %s", "Modem : %s"), ModemManager::stateToString(ms));
+    const int16_t y = FOOTER_Y - 26;
+    c.fill(PAD, y, SCREEN_W - 2 * PAD, 20, false);
+    c.rect(PAD, y, SCREEN_W - 2 * PAD, 20);
+    c.icon(PAD + 6, y + 4, UI2_IC_SIM, 12);
+    c.textFit(PAD + 24, Ui2Canvas::boxBaseline(UI2_F_SMALL, y, 20), SCREEN_W - 2 * PAD - 30, buf, UI2_F_SMALL);
+  }
+
+  static void v2Badge(char* buf, size_t len, int n) {
+    if (n > 99) snprintf(buf, len, "99+"); else snprintf(buf, len, "%d", n);
+  }
+
+  int renderAppMenuV2(DisplayDriver& display) {
+    using namespace ui2;
+    Ui2Canvas c(display);
+    v2Frame(c, MECK_TR("Phone & SMS", "T\xC3\xA9l\xC3\xA9phone et SMS"));
+    int unread = 0;
+    for (int i = 0; i < _convCount; i++) unread += _conversations[i].unreadCount;
+    char bMissed[6], bUnread[6];
+    v2Badge(bMissed, sizeof(bMissed), _unseenMissed);
+    v2Badge(bUnread, sizeof(bUnread), unread);
+    struct Item { Ui2Icon icon; const char* title; const char* badge; };
+    const Item items[4] = {
+      { UI2_IC_PHONE,   MECK_TR("Dial", "Composer"), nullptr },
+      { UI2_IC_CLOCK,   MECK_TR("Call log", "Journal d'appels"), _unseenMissed > 0 ? bMissed : nullptr },
+      { UI2_IC_CONTACT, "Contacts", nullptr },
+      { UI2_IC_SMS,     MECK_TR("SMS inbox", "SMS re\xC3\xA7us"), unread > 0 ? bUnread : nullptr },
+    };
+    for (int i = 0; i < 4; i++) {
+      Ui2Row r;
+      r.icon = items[i].icon;
+      r.title = items[i].title;
+      r.badge = items[i].badge;
+      r.chevron = true;
+      r.selected = (i == _menuCursor);
+      Ui2List::drawRow(c, BODY_Y + i * ROW_H, r);
+    }
+    v2ModemBanner(c);
+    const Ui2Key keys[] = { ui2KeyIcon(UI2_IC_ENTER, MECK_TR("Open", "Ouvrir")), ui2Key("W/S", MECK_TR("Move", "D\xC3\xA9placer"), true),
+                            ui2Key("Q", MECK_TR("Back", "Retour")) };
+    Ui2Chrome::footer(c, keys, 3);
+    ModemState ms = modemManager.getState();
+    return (ms != ModemState::READY && ms != ModemState::SENDING_SMS) ? 1000 : 5000;
+  }
+
+  int renderCallLogV2(DisplayDriver& display) {
+    using namespace ui2;
+    Ui2Canvas c(display);
+    char right[16];
+    Ui2List::pageLabel(right, sizeof(right), _callLogCursor, _callLogCount, ROWS_PER_PAGE);
+    v2Frame(c, MECK_TR("Call log", "Journal d'appels"), right);
+    if (_callLogCount == 0) {
+      Ui2List::emptyState(c, BODY_Y, FOOTER_Y, UI2_IC_PHONE, MECK_TR("No calls", "Aucun appel"));
+    } else {
+      const int start = Ui2List::pageStart(_callLogCursor, ROWS_PER_PAGE);
+      for (int i = start; i < _callLogCount && i < start + ROWS_PER_PAGE; i++) {
+        CallLogRecord& e = _callLog[i];
+        char name[SMS_CONTACT_NAME_LEN], sub[32], hm[8], dm[8];
+        if (e.phone[0]) smsContacts.displayName(e.phone, name, sizeof(name));
+        else snprintf(name, sizeof(name), "%s", MECK_TR("Unknown", "Inconnu"));
+        const bool missed = e.type == CALL_LOG_MISSED;
+        const char* typeStr = missed ? MECK_TR("Missed", "Manqu\xC3\xA9")
+                            : (e.type == CALL_LOG_INCOMING) ? MECK_TR("Incoming", "Re\xC3\xA7u") : MECK_TR("Outgoing", "\xC3\x89mis");
+        if (!missed && e.duration > 0) snprintf(sub, sizeof(sub), "%s \xC2\xB7 %lu:%02lu", typeStr,
+                                                (unsigned long)(e.duration / 60), (unsigned long)(e.duration % 60));
+        else snprintf(sub, sizeof(sub), "%s", typeStr);
+        int32_t local = (int32_t)e.timestamp + ((int32_t)_prefs->utc_offset_hours * 3600);
+        time_t lt = (time_t)local;
+        struct tm tmv;
+        gmtime_r(&lt, &tmv);
+        snprintf(hm, sizeof(hm), "%02d:%02d", tmv.tm_hour, tmv.tm_min);
+        snprintf(dm, sizeof(dm), "%02d/%02d", tmv.tm_mday, tmv.tm_mon + 1);
+        Ui2Row r;
+        r.icon = missed ? UI2_IC_RING : (e.type == CALL_LOG_INCOMING) ? UI2_IC_PHONE : UI2_IC_SEND;
+        r.title = name;
+        r.sub = sub;
+        r.right = hm;
+        r.right2 = dm;
+        r.dot = missed && e.seen == 0;
+        r.selected = (i == _callLogCursor);
+        Ui2List::drawRow(c, BODY_Y + (i - start) * ROW_H, r);
+      }
+    }
+    const Ui2Key keys[] = { ui2KeyIcon(UI2_IC_ENTER, MECK_TR("Call", "Appeler")), ui2Key("W/S", MECK_TR("Move", "D\xC3\xA9placer"), true),
+                            ui2Key("D", MECK_TR("Delete", "Suppr.")), ui2Key("Q", MECK_TR("Back", "Retour")) };
+    Ui2Chrome::footer(c, keys, 4);
+    return 5000;
+  }
+
+  int renderInboxV2(DisplayDriver& display) {
+    using namespace ui2;
+    Ui2Canvas c(display);
+    char right[16];
+    if (_inboxCursor >= _convCount) _inboxCursor = _convCount > 0 ? _convCount - 1 : 0;
+    Ui2List::pageLabel(right, sizeof(right), _inboxCursor, _convCount, ROWS_PER_PAGE);
+    v2Frame(c, MECK_TR("SMS inbox", "SMS re\xC3\xA7us"), right);
+    if (_convCount == 0) {
+      Ui2List::emptyState(c, BODY_Y, FOOTER_Y - 28, UI2_IC_SMS, MECK_TR("No conversations", "Aucune conversation"),
+                          nullptr, "C", MECK_TR("New SMS", "Nouveau SMS"));
+    } else {
+      const int start = Ui2List::pageStart(_inboxCursor, ROWS_PER_PAGE);
+      for (int i = start; i < _convCount && i < start + ROWS_PER_PAGE; i++) {
+        SMSConversation& cv = _conversations[i];
+        char name[SMS_CONTACT_NAME_LEN], badge[6], age[8];
+        smsContacts.displayName(cv.phone, name, sizeof(name));
+        Ui2Row r;
+        r.icon = UI2_IC_SMS;
+        r.title = name;
+        r.sub = cv.preview;
+        time_t now = time(nullptr);
+        if (now > 1700000000 && cv.lastTimestamp > 1700000000) {
+          Ui2List::formatAge(age, sizeof(age), (int32_t)(now - cv.lastTimestamp));
+          r.right = age;
+        }
+        if (cv.unreadCount > 0) { v2Badge(badge, sizeof(badge), cv.unreadCount); r.badge = badge; }
+        r.rightMax = 40;
+        r.selected = (i == _inboxCursor);
+        Ui2List::drawRow(c, BODY_Y + (i - start) * ROW_H, r);
+      }
+    }
+    v2ModemBanner(c);
+    const Ui2Key keys[] = { ui2KeyIcon(UI2_IC_ENTER, MECK_TR("Open", "Ouvrir")), ui2Key("C", MECK_TR("New", "Nouveau")),
+                            ui2Key("D", "Contacts"), ui2Key("Q", MECK_TR("Back", "Retour")) };
+    Ui2Chrome::footer(c, keys, 4);
+    return 5000;
+  }
+
+  int renderContactsV2(DisplayDriver& display) {
+    using namespace ui2;
+    Ui2Canvas c(display);
+    int cnt = smsContacts.count();
+    if (_contactsCursor >= cnt) _contactsCursor = cnt - 1;
+    if (_contactsCursor < 0) _contactsCursor = 0;
+    char right[16];
+    Ui2List::pageLabel(right, sizeof(right), _contactsCursor, cnt, ROWS_PER_PAGE);
+    v2Frame(c, MECK_TR("SMS contacts", "Contacts SMS"), right);
+    if (cnt == 0) {
+      Ui2List::emptyState(c, BODY_Y, FOOTER_Y, UI2_IC_CONTACT, MECK_TR("No contacts saved", "Aucun contact enregistr\xC3\xA9"),
+                          nullptr, "A", MECK_TR("Add one", "En ajouter un"));
+    } else {
+      const int start = Ui2List::pageStart(_contactsCursor, ROWS_PER_PAGE);
+      for (int i = start; i < cnt && i < start + ROWS_PER_PAGE; i++) {
+        const SMSContact& ct = smsContacts.get(i);
+        Ui2Row r;
+        r.icon = UI2_IC_CONTACT;
+        r.title = ct.name;
+        r.sub = ct.phone;
+        r.selected = (i == _contactsCursor);
+        Ui2List::drawRow(c, BODY_Y + (i - start) * ROW_H, r);
+      }
+    }
+    const Ui2Key keys[] = { ui2KeyIcon(UI2_IC_ENTER, MECK_TR("Open", "Ouvrir")), ui2Key("W/S", MECK_TR("Move", "D\xC3\xA9placer"), true),
+                            ui2Key("A", MECK_TR("Add", "Ajouter")), ui2Key("Q", MECK_TR("Back", "Retour")) };
+    Ui2Chrome::footer(c, keys, 4);
+    return 5000;
+  }
+
+  int renderContactPageV2(DisplayDriver& display) {
+    using namespace ui2;
+    Ui2Canvas c(display);
+    v2Frame(c, _cpIsNew ? MECK_TR("New contact", "Nouveau contact") : (_cpName[0] ? _cpName : "Contact"));
+    char nameVal[SMS_CONTACT_NAME_LEN + 2], phoneVal[SMS_PHONE_LEN + 2];
+    snprintf(nameVal, sizeof(nameVal), "%s%s", (_cpEditing && _cpCursor == 0) ? _cpEditBuf : _cpName,
+             (_cpEditing && _cpCursor == 0) ? "_" : "");
+    snprintf(phoneVal, sizeof(phoneVal), "%s%s", (_cpEditing && _cpCursor == 1) ? _cpEditBuf : _cpPhone,
+             (_cpEditing && _cpCursor == 1) ? "_" : "");
+    Ui2Row r0; r0.icon = UI2_IC_CONTACT; r0.title = MECK_TR("Name", "Nom"); r0.sub = nameVal;
+    r0.selected = _cpCursor == 0; r0.pending = _cpEditing && _cpCursor == 0;
+    Ui2Row r1; r1.icon = UI2_IC_PHONE; r1.title = MECK_TR("Number", "Num\xC3\xA9ro"); r1.sub = phoneVal;
+    r1.selected = _cpCursor == 1; r1.pending = _cpEditing && _cpCursor == 1;
+    Ui2Row r2; r2.icon = UI2_IC_CHECK; r2.title = MECK_TR("Save", "Enregistrer"); r2.selected = _cpCursor == 2;
+    Ui2List::drawRow(c, BODY_Y, r0);
+    Ui2List::drawRow(c, BODY_Y + ROW_H, r1);
+    Ui2List::drawRow(c, BODY_Y + 2 * ROW_H, r2);
+    if (_cpNeedNumber) {
+      const int16_t y = BODY_Y + 3 * ROW_H + 8;
+      c.icon(PAD, y, UI2_IC_WARN, 16);
+      c.textFit(PAD + 22, Ui2Canvas::boxBaseline(UI2_F_BODY, y, 16), SCREEN_W - 2 * PAD - 22,
+                MECK_TR("A number is required", "Un num\xC3\xA9ro est requis"), UI2_F_BODY);
+    }
+    if (_cpEditing) {
+      const Ui2Key keys[] = { ui2KeyIcon(UI2_IC_ENTER, MECK_TR("Done", "OK")), ui2Key("Sh+Del", MECK_TR("Cancel", "Annuler")) };
+      Ui2Chrome::footer(c, keys, 2);
+    } else if (_cpIsNew) {
+      const Ui2Key keys[] = { ui2KeyIcon(UI2_IC_ENTER, MECK_TR("Select", "Choisir")), ui2Key("W/S", MECK_TR("Move", "D\xC3\xA9placer"), true),
+                              ui2Key("Q", MECK_TR("Back", "Retour")) };
+      Ui2Chrome::footer(c, keys, 3);
+    } else {
+      const Ui2Key keys[] = { ui2KeyIcon(UI2_IC_ENTER, MECK_TR("Select", "Choisir")), ui2Key("F", MECK_TR("Call", "Appeler")),
+                              ui2Key("D", MECK_TR("Delete", "Suppr.")), ui2Key("Q", MECK_TR("Back", "Retour")) };
+      Ui2Chrome::footer(c, keys, 4);
+    }
+    return 5000;
+  }
+
+  int renderEditContactV2(DisplayDriver& display) {
+    using namespace ui2;
+    Ui2Canvas c(display);
+    v2Frame(c, _editIsNew ? MECK_TR("Add contact", "Ajouter un contact") : MECK_TR("Edit contact", "Modifier le contact"));
+    char nameVal[SMS_CONTACT_NAME_LEN + 2];
+    snprintf(nameVal, sizeof(nameVal), "%s_", _editNameBuf);
+    Ui2Row r0; r0.icon = UI2_IC_PHONE; r0.title = MECK_TR("Number", "Num\xC3\xA9ro"); r0.sub = _editPhone;
+    Ui2Row r1; r1.icon = UI2_IC_CONTACT; r1.title = MECK_TR("Name", "Nom"); r1.sub = nameVal; r1.selected = true; r1.pending = true;
+    Ui2List::drawRow(c, BODY_Y, r0);
+    Ui2List::drawRow(c, BODY_Y + ROW_H, r1);
+    const Ui2Key keys[] = { ui2KeyIcon(UI2_IC_ENTER, MECK_TR("Save", "Enregistrer")), ui2Key("Sh+Del", MECK_TR("Cancel", "Annuler")) };
+    Ui2Chrome::footer(c, keys, 2);
+    return 2000;
+  }
+#endif
+
   int render(DisplayDriver& display) override {
     _lastRefresh = millis();
+#ifdef MECK_UI_V2
+    switch (_view) {
+      case APP_MENU:      return renderAppMenuV2(display);
+      case CALL_LOG:      return renderCallLogV2(display);
+      case INBOX:         return renderInboxV2(display);
+      case CONTACTS:      return renderContactsV2(display);
+      case CONTACT_PAGE:  return renderContactPageV2(display);
+      case EDIT_CONTACT:  return renderEditContactV2(display);
+      default: break;     // conversation, compose, dialer and calls: classic for now
+    }
+#endif
 
     switch (_view) {
       case APP_MENU:      return renderAppMenu(display);
@@ -1706,9 +1958,16 @@ public:
                    int physW = 240, int physH = 320) {
     // App menu: first tap highlights a row, tapping the same row again opens it
     if (_view == APP_MENU) {
+#ifdef MECK_UI_V2
+      // v2 menu: 40 px rows from the top of the content area, physical pixels
+      int my = py;
+      const int menuTop   = ui2::BODY_Y;
+      const int menuLineH = ui2::ROW_H;
+#else
       int my = (int)py * dispH / physH;
       const int menuTop   = 24;   // must match renderAppMenu
       const int menuLineH = 16;
+#endif
       for (int i = 0; i < 4; i++) {
         if (my >= menuTop + i * menuLineH && my < menuTop + (i + 1) * menuLineH) {
           if (_menuCursor == i) {
