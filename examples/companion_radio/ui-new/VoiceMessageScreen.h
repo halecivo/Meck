@@ -711,7 +711,12 @@ private:
 #if defined(HAS_ES8311_AUDIO)
     // Restore the hardware I2S clock to the default rate so audiobook/tone
     // playback (which the library won't re-rate on this platform) is correct.
-    i2s_set_sample_rates((i2s_port_t)VOICE_I2S_PORT, VOICE_PLAYBACK_DEFAULT_RATE);
+    // Only while the playback driver is installed: after a recording the mic
+    // has uninstalled it, and i2s_set_sample_rates() on an uninstalled port
+    // dereferences a null driver object (crash on D / Q in the review view).
+    if (_i2sInitialized) {
+      i2s_set_sample_rates((i2s_port_t)VOICE_I2S_PORT, VOICE_PLAYBACK_DEFAULT_RATE);
+    }
 #endif
     _reviewPlaying = false;
     _listPlaying = false;
