@@ -738,6 +738,17 @@ private:
   // Apply radio parameters live
   // ---------------------------------------------------------------------------
 
+#if defined(LilyGo_TDeck_Pro_Max)
+  // Select the LoRa antenna (XL9555 switch) and save the choice
+  void setLoraAntenna(bool external) {
+    _prefs->lora_antenna = external ? 1 : 0;
+    if (external) board.loraAntennaExternal();
+    else          board.loraAntennaInternal();
+    the_mesh.savePrefs();
+    Serial.printf("Settings: LoRa antenna = %s\n", external ? "External" : "Internal");
+  }
+#endif
+
   void applyRadioParams() {
     radio_set_params(_prefs->freq, _prefs->bw, _prefs->sf, _prefs->cr);
     radio_set_tx_power(_prefs->tx_power_dbm);
@@ -2615,6 +2626,9 @@ public:
       } else if (_confirmAction == 3) {
         display.drawTextCentered(display.width() / 2, by + 4, MECK_TR("Region not set.", "R\xC3\xA9gion non d\xC3\xA9" "finie."));
         display.drawTextCentered(display.width() / 2, by + 15, MECK_TR("Leave unset?", "Laisser non d\xC3\xA9" "finie ?"));
+      } else if (_confirmAction == 4) {
+        display.drawTextCentered(display.width() / 2, by + 4, MECK_TR("External antenna connected?", "Antenne externe branch\xC3\xA9" "e ?"));
+        display.drawTextCentered(display.width() / 2, by + 15, MECK_TR("Switch to external", "Passer \xC3\xA0 l'externe"));
       }
       display.drawTextCentered(display.width() / 2, by + bh - 14, MECK_TR("Enter:Yes  Q:No", "Entr\xC3\xA9" "e:Oui  Q:Non"));
       display.setTextSize(1);
@@ -3210,6 +3224,10 @@ public:
           rebuildRows();
         } else if (_confirmAction == 2) {
           applyRadioParams();
+#if defined(LilyGo_TDeck_Pro_Max)
+        } else if (_confirmAction == 4) {
+          setLoraAntenna(true);
+#endif
         } else if (_confirmAction == 3) {
           // Region nudge dismissed — user chose "Yes, leave unscoped"
           _editMode = EDIT_NONE;
@@ -3929,12 +3947,15 @@ public:
           break;
 #if defined(LilyGo_TDeck_Pro_Max)
         case ROW_LORA_ANTENNA:
-          _prefs->lora_antenna = _prefs->lora_antenna ? 0 : 1;
-          if (_prefs->lora_antenna) board.loraAntennaExternal();
-          else                      board.loraAntennaInternal();
-          the_mesh.savePrefs();
-          Serial.printf("Settings: LoRa antenna = %s\n",
-                        _prefs->lora_antenna ? "External" : "Internal");
+          // Switching to the external antenna must be confirmed: transmitting
+          // into an unconnected antenna port can damage the radio. Back to
+          // the internal antenna is always safe and needs no confirmation.
+          if (_prefs->lora_antenna) {
+            setLoraAntenna(false);
+          } else {
+            _editMode = EDIT_CONFIRM;
+            _confirmAction = 4;
+          }
           break;
 #endif
         case ROW_DARK_MODE:
