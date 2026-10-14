@@ -558,6 +558,175 @@ void GxEPDDisplay::drawTextRawStyled(int16_t x, int16_t yTop, const char* text, 
   drawTextRawTracked(x, yTop, text, color);
 }
 
+// ---------------------------------------------------------------------------
+// Native-pixel primitives (UI v2 design system)
+// ---------------------------------------------------------------------------
+
+void GxEPDDisplay::fillRectRaw(int16_t x, int16_t y, int16_t w, int16_t h, bool ink) {
+  display_crc.update<uint8_t>(1);
+  display_crc.update<int16_t>(x); display_crc.update<int16_t>(y);
+  display_crc.update<int16_t>(w); display_crc.update<int16_t>(h);
+  display_crc.update<bool>(ink);
+  if (w > 0 && h > 0) display.fillRect(x, y, w, h, rawColor(ink));
+}
+
+void GxEPDDisplay::hLineRaw(int16_t x, int16_t y, int16_t w, bool ink) {
+  display_crc.update<uint8_t>(2);
+  display_crc.update<int16_t>(x); display_crc.update<int16_t>(y);
+  display_crc.update<int16_t>(w); display_crc.update<bool>(ink);
+  if (w > 0) display.drawFastHLine(x, y, w, rawColor(ink));
+}
+
+void GxEPDDisplay::vLineRaw(int16_t x, int16_t y, int16_t h, bool ink) {
+  display_crc.update<uint8_t>(3);
+  display_crc.update<int16_t>(x); display_crc.update<int16_t>(y);
+  display_crc.update<int16_t>(h); display_crc.update<bool>(ink);
+  if (h > 0) display.drawFastVLine(x, y, h, rawColor(ink));
+}
+
+void GxEPDDisplay::drawRectRaw(int16_t x, int16_t y, int16_t w, int16_t h, bool ink) {
+  display_crc.update<uint8_t>(4);
+  display_crc.update<int16_t>(x); display_crc.update<int16_t>(y);
+  display_crc.update<int16_t>(w); display_crc.update<int16_t>(h);
+  display_crc.update<bool>(ink);
+  if (w > 0 && h > 0) display.drawRect(x, y, w, h, rawColor(ink));
+}
+
+void GxEPDDisplay::drawRoundRectRaw(int16_t x, int16_t y, int16_t w, int16_t h, int16_t r, bool ink) {
+  display_crc.update<uint8_t>(5);
+  display_crc.update<int16_t>(x); display_crc.update<int16_t>(y);
+  display_crc.update<int16_t>(w); display_crc.update<int16_t>(h);
+  display_crc.update<int16_t>(r); display_crc.update<bool>(ink);
+  if (w > 0 && h > 0) display.drawRoundRect(x, y, w, h, r, rawColor(ink));
+}
+
+void GxEPDDisplay::fillRoundRectRaw(int16_t x, int16_t y, int16_t w, int16_t h, int16_t r, bool ink) {
+  display_crc.update<uint8_t>(6);
+  display_crc.update<int16_t>(x); display_crc.update<int16_t>(y);
+  display_crc.update<int16_t>(w); display_crc.update<int16_t>(h);
+  display_crc.update<int16_t>(r); display_crc.update<bool>(ink);
+  if (w > 0 && h > 0) display.fillRoundRect(x, y, w, h, r, rawColor(ink));
+}
+
+void GxEPDDisplay::drawDashedRectRaw(int16_t x, int16_t y, int16_t w, int16_t h, uint8_t dash, bool ink) {
+  display_crc.update<uint8_t>(7);
+  display_crc.update<int16_t>(x); display_crc.update<int16_t>(y);
+  display_crc.update<int16_t>(w); display_crc.update<int16_t>(h);
+  display_crc.update<uint8_t>(dash); display_crc.update<bool>(ink);
+  if (w <= 0 || h <= 0 || dash == 0) return;
+  uint16_t color = rawColor(ink);
+  for (int16_t i = 0; i < w; i++) {
+    if ((i / dash) % 2) continue;
+    display.drawPixel(x + i, y, color);
+    display.drawPixel(x + i, y + h - 1, color);
+  }
+  for (int16_t j = 0; j < h; j++) {
+    if ((j / dash) % 2) continue;
+    display.drawPixel(x, y + j, color);
+    display.drawPixel(x + w - 1, y + j, color);
+  }
+}
+
+void GxEPDDisplay::hatchRectRaw(int16_t x, int16_t y, int16_t w, int16_t h, uint8_t period, bool ink) {
+  display_crc.update<uint8_t>(8);
+  display_crc.update<int16_t>(x); display_crc.update<int16_t>(y);
+  display_crc.update<int16_t>(w); display_crc.update<int16_t>(h);
+  display_crc.update<uint8_t>(period); display_crc.update<bool>(ink);
+  if (w <= 0 || h <= 0 || period == 0) return;
+  uint16_t color = rawColor(ink);
+  // Lines run top-left to bottom-right; anchored to the panel so adjacent
+  // hatched areas line up.
+  for (int16_t py = y; py < y + h; py++) {
+    for (int16_t px = x; px < x + w; px++) {
+      if ((((px - py) % period) + period) % period == 0) display.drawPixel(px, py, color);
+    }
+  }
+}
+
+// Map a code point a font does not contain to one it does: typographic
+// punctuation to ASCII, accented letters to their base letter. 0 = skip.
+static uint32_t rawFontFallback(uint32_t cp, const GFXfont* f) {
+  if (cp >= f->first && cp <= f->last) return cp;
+  switch (cp) {
+    case 0x2018: case 0x2019: case 0x201A: case 0x2032: return '\'';
+    case 0x201C: case 0x201D: case 0x201E: case 0x2033: return '"';
+    case 0x2010: case 0x2011: case 0x2012: case 0x2013:
+    case 0x2014: case 0x2015: case 0x2212: return '-';
+    case 0x00A0: case 0x2007: case 0x2009: case 0x202F: return ' ';
+    case 0x2022: case 0x2027: return (f->last >= 0xB7) ? 0xB7 : '.';
+    case 0x2190: return '<';
+    case 0x2192: return '>';
+  }
+  char a = foldToAscii(cp);
+  return a ? (uint32_t)(uint8_t)a : 0;
+}
+
+static inline int16_t rawGlyphAdvance(const GFXfont* f, uint32_t cp) {
+  if (cp < f->first || cp > f->last) return 0;
+  return f->glyph[cp - f->first].xAdvance;
+}
+
+int16_t GxEPDDisplay::measureTextFontRaw(const char* utf8, const GFXfont* font, int maxBytes) {
+  if (!utf8 || !font) return 0;
+  const uint8_t* s = (const uint8_t*)utf8;
+  int len = strlen(utf8);
+  if (maxBytes >= 0 && maxBytes < len) len = maxBytes;
+  int pos = 0, adv = 0;
+  while (pos < len) {
+    int consumed;
+    uint32_t cp = utf8Decode(s + pos, len - pos, &consumed);
+    pos += consumed ? consumed : 1;
+    if (cp == 0x2026) { adv += 3 * rawGlyphAdvance(font, '.'); continue; }  // ellipsis
+    uint32_t g = rawFontFallback(cp, font);
+    if (g) adv += rawGlyphAdvance(font, g);
+  }
+  return (int16_t)adv;
+}
+
+int16_t GxEPDDisplay::drawRawGlyph(const GFXfont* font, uint16_t cp, int16_t x, int16_t baseline, uint16_t color) {
+  if (cp < font->first || cp > font->last) return x;
+  const GFXglyph* glyph = &font->glyph[cp - font->first];
+  const uint8_t* bitmap = font->bitmap;
+  uint16_t bo = glyph->bitmapOffset;
+  uint8_t gw = glyph->width, gh = glyph->height;
+  int16_t ox = x + glyph->xOffset, oy = baseline + glyph->yOffset;
+  uint8_t bit = 0, bits = 0;
+  for (uint8_t yy = 0; yy < gh; yy++) {
+    for (uint8_t xx = 0; xx < gw; xx++) {
+      if (!(bit++ & 7)) bits = bitmap[bo++];
+      if (bits & 0x80) display.drawPixel(ox + xx, oy + yy, color);
+      bits <<= 1;
+    }
+  }
+  return x + glyph->xAdvance;
+}
+
+int16_t GxEPDDisplay::drawTextFontRaw(int16_t x, int16_t baseline, const char* utf8, const GFXfont* font, bool ink, int maxBytes) {
+  if (!utf8 || !font) return x;
+  int len = strlen(utf8);
+  if (maxBytes >= 0 && maxBytes < len) len = maxBytes;
+  display_crc.update<uint8_t>(9);
+  display_crc.update<int16_t>(x); display_crc.update<int16_t>(baseline);
+  display_crc.update<uint8_t>((const uint8_t*)utf8, len);
+  display_crc.update<uintptr_t>((uintptr_t)font);
+  display_crc.update<bool>(ink);
+  uint16_t color = rawColor(ink);
+  const uint8_t* s = (const uint8_t*)utf8;
+  int pos = 0;
+  while (pos < len) {
+    int consumed;
+    uint32_t cp = utf8Decode(s + pos, len - pos, &consumed);
+    pos += consumed ? consumed : 1;
+    if (cp == 0x2026) {  // ellipsis: three full stops
+      for (int i = 0; i < 3; i++) x = drawRawGlyph(font, '.', x, baseline, color);
+      continue;
+    }
+    uint32_t g = rawFontFallback(cp, font);
+    if (g) x = drawRawGlyph(font, (uint16_t)g, x, baseline, color);
+  }
+  return x;
+}
+
 void GxEPDDisplay::drawXbm(int x, int y, const uint8_t* bits, int w, int h) {
   display_crc.update<int>(x);
   display_crc.update<int>(y);

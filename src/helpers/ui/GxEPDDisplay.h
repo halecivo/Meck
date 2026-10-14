@@ -85,6 +85,8 @@ class GxEPDDisplay : public DisplayDriver {
 
   // Render one glyph from the current 8b font at the display's cursor position
   void drawGlyphAtCursor(uint16_t cp);
+  // Render one glyph of `font` with its pen at (x, baseline); returns the new pen x
+  int16_t drawRawGlyph(const GFXfont* font, uint16_t cp, int16_t x, int16_t baseline, uint16_t color);
 
   // Helpers for drawRoundRectShadedRaw: 1px rounded outline rasteriser
   // (physical coords) and dither-masked pixel plot
@@ -160,6 +162,30 @@ public:
   // position by baseline internally; this compensates). CRC tracked.
   int16_t measureTextRawStyled(const char* text);
   void drawTextRawStyled(int16_t x, int16_t yTop, const char* text, uint16_t color);
+
+  // --- Native-pixel primitives (UI v2 design system) ---
+  // Physical coordinates, all tracked by the frame CRC. `ink` true draws the
+  // foreground colour (black, or white in dark mode); false draws background.
+  uint16_t rawColor(bool ink) const { return (ink != _darkMode) ? GxEPD_BLACK : GxEPD_WHITE; }
+  void fillRectRaw(int16_t x, int16_t y, int16_t w, int16_t h, bool ink = true);
+  void hLineRaw(int16_t x, int16_t y, int16_t w, bool ink = true);
+  void vLineRaw(int16_t x, int16_t y, int16_t h, bool ink = true);
+  void drawRectRaw(int16_t x, int16_t y, int16_t w, int16_t h, bool ink = true);
+  // 1 px rounded outline / filled rounded rectangle, corner radius r
+  void drawRoundRectRaw(int16_t x, int16_t y, int16_t w, int16_t h, int16_t r, bool ink = true);
+  void fillRoundRectRaw(int16_t x, int16_t y, int16_t w, int16_t h, int16_t r, bool ink = true);
+  // 1 px dashed outline, `dash` px on then `dash` px off
+  void drawDashedRectRaw(int16_t x, int16_t y, int16_t w, int16_t h, uint8_t dash = 2, bool ink = true);
+  // Diagonal 1 px hatching (top-left to bottom-right lines every `period` px)
+  void hatchRectRaw(int16_t x, int16_t y, int16_t w, int16_t h, uint8_t period = 4, bool ink = true);
+  // Text in any GFXfont whose glyph table is indexed by code point (the
+  // ui2 fonts and the *8b fonts). (x, baseline) is the pen start. UTF-8 is
+  // decoded; common typographic punctuation outside the font is folded to
+  // ASCII. maxBytes < 0 draws the whole string, otherwise only its first
+  // maxBytes bytes. Returns the pen x after the text.
+  int16_t drawTextFontRaw(int16_t x, int16_t baseline, const char* utf8, const GFXfont* font, bool ink = true, int maxBytes = -1);
+  // Advance width of (a prefix of) a string in a GFXfont, in pixels
+  static int16_t measureTextFontRaw(const char* utf8, const GFXfont* font, int maxBytes = -1);
 
   // Force endFrame() to push to display even if CRC unchanged
   // (needed because drawPixelRaw bypasses CRC tracking)
