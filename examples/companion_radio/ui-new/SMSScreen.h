@@ -1684,7 +1684,7 @@ public:
         _cpEditing = false;
         return true;
       }
-      if (c == 0x18) {  // Shift+Backspace -- abandon this field edit
+      if (c == 0x18 || c == KEY_CANCEL) {  // Shift+Backspace -- abandon this field edit
         _cpEditing = false;
         return true;
       }
@@ -2447,7 +2447,8 @@ public:
         }
         return true;
 
-      case 0x18:  // Shift+Backspace (cancel)
+      case 0x18:
+      case KEY_CANCEL:  // Shift+Backspace (cancel)
         _composeBuf[0] = '\0';
         _composePos = 0;
         refreshInbox();
@@ -2483,7 +2484,8 @@ public:
         }
         return true;
 
-      case 0x18:  // Shift+Backspace (cancel)
+      case 0x18:
+      case KEY_CANCEL:  // Shift+Backspace (cancel)
         _phoneInputBuf[0] = '\0';
         _phoneInputPos = 0;
         refreshInbox();
@@ -2584,7 +2586,8 @@ public:
         }
         return true;
 
-      case 0x18:  // Shift+Backspace (cancel without saving)
+      case 0x18:
+      case KEY_CANCEL:  // Shift+Backspace (cancel without saving)
         if (_editReturnView == CONVERSATION) {
           refreshConversation();
         } else {
