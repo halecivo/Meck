@@ -231,6 +231,9 @@ def main():
     ]
     lines += ["  UI2_IC_%s," % c_ident(n) for n in names]
     lines += ["  UI2_IC_COUNT", "};", ""]
+    # The bitmaps are compiled in one translation unit only (Ui2Assets.cpp
+    # defines UI2_ICONS_IMPL); everything else just sees the enum.
+    lines += ["#ifdef UI2_ICONS_IMPL", ""]
 
     rendered = {}
     for size in SIZES:
@@ -251,7 +254,7 @@ def main():
         "  switch (size) {",
     ]
     lines += ["    case %d: return UI2_ICONS_%d[id];" % (s, s) for s in SIZES]
-    lines += ["    default: return nullptr;", "  }", "}", ""]
+    lines += ["    default: return nullptr;", "  }", "}", "", "#endif // UI2_ICONS_IMPL", ""]
 
     os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
     with open(args.out, "w", encoding="utf-8", newline="\n") as f:
