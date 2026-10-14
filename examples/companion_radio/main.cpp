@@ -1856,7 +1856,11 @@ static void meckLaunchHomeTile(Ui2Tile t) {
       NotesScreen* notes = (NotesScreen*)ui_task.getNotesScreen();
       if (notes) {
         if (notes->isInFileList()) {
+#ifdef MECK_UI_V2
+          int result = notes->selectRowAtPx(y);
+#else
           int result = notes->selectRowAtVY(vy);
+#endif
           if (result == 1) { ui_task.forceRefresh(); return 0; }  // Moved selection
           if (result == 2) return KEY_ENTER;  // Same row — open
           return 0;

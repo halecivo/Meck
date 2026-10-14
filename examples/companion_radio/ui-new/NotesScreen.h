@@ -7,6 +7,10 @@
 #include <vector>
 #include "Utf8CP437.h"
 #include "../NodePrefs.h"
+#ifdef MECK_UI_V2
+  #include "ui2/Ui2Chrome.h"
+  #include "ui2/Ui2List.h"
+#endif
 
 // Forward declarations
 class UITask;
@@ -566,6 +570,77 @@ private:
     display.print(right);
   }
 
+#ifdef MECK_UI_V2
+  // UI v2 file list: "New note" first, then the notes (name without .txt).
+  void renderFileListV2(DisplayDriver& display) {
+    using namespace ui2;
+    Ui2Canvas c(display);
+    Ui2Chrome::statusHeader(c);
+    const int total = 1 + (int)_fileList.size();
+    char right[16];
+    Ui2List::pageLabel(right, sizeof(right), _selectedFile, total, ROWS_PER_PAGE);
+    Ui2Chrome::titleBar(c, MECK_TR("Notes", "Notes"), right);
+
+    const int start = Ui2List::pageStart(_selectedFile, ROWS_PER_PAGE);
+    for (int i = start; i < total && i < start + ROWS_PER_PAGE; i++) {
+      Ui2Row r;
+      String name;
+      if (i == 0) {
+        r.icon = UI2_IC_PLUS;
+        r.title = MECK_TR("New note", "Nouvelle note");
+      } else {
+        name = _fileList[i - 1];
+        if (name.endsWith(".txt") || name.endsWith(".TXT")) name = name.substring(0, name.length() - 4);
+        r.icon = UI2_IC_NOTES;
+        r.title = name.c_str();
+      }
+      r.selected = (i == _selectedFile);
+      Ui2List::drawRow(c, BODY_Y + (i - start) * ROW_H, r);
+    }
+    if (total == 1) {
+      c.wrap(PAD, BODY_Y + ROW_H + 28, SCREEN_W - 2 * PAD, 16, 2,
+             MECK_TR("Notes are saved as .txt files in /notes/ on the SD card.",
+                     "Les notes sont enregistr\xC3\xA9" "es en .txt dans /notes/ sur la SD."),
+             UI2_F_BODY, true, true, nullptr, UI2_CENTER);
+    }
+    const bool onFile = _selectedFile >= 1;
+    const Ui2Key keys[] = {
+      ui2KeyIcon(UI2_IC_ENTER, onFile ? MECK_TR("Open", "Ouvrir") : MECK_TR("New", "Nouveau")),
+      ui2Key("R", MECK_TR("Rename", "Renommer")),
+      ui2Key("Sh+Del", MECK_TR("Delete", "Suppr.")),
+      ui2Key("Q", MECK_TR("Back", "Retour")),
+    };
+    if (onFile) Ui2Chrome::footer(c, keys, 4);
+    else { const Ui2Key k2[] = { keys[0], keys[3] }; Ui2Chrome::footer(c, k2, 2); }
+  }
+
+  void renderRenameV2(DisplayDriver& display) {
+    using namespace ui2;
+    Ui2Canvas c(display);
+    Ui2Chrome::statusHeader(c);
+    Ui2Chrome::titleBar(c, MECK_TR("Rename note", "Renommer la note"));
+    char val[NOTES_RENAME_MAX + 2];
+    snprintf(val, sizeof(val), "%s_", _renameBuf);
+    Ui2Row r0; r0.icon = UI2_IC_NOTES; r0.title = MECK_TR("Current name", "Nom actuel"); r0.sub = _renameOriginal.c_str();
+    Ui2Row r1; r1.icon = UI2_IC_EDIT; r1.title = MECK_TR("New name", "Nouveau nom"); r1.sub = val; r1.selected = true; r1.pending = true;
+    Ui2List::drawRow(c, BODY_Y, r0);
+    Ui2List::drawRow(c, BODY_Y + ROW_H, r1);
+    c.textFit(PAD, BODY_Y + 2 * ROW_H + 20, SCREEN_W - 2 * PAD,
+              MECK_TR(".txt is added automatically", ".txt est ajout\xC3\xA9 automatiquement"), UI2_F_META);
+    const Ui2Key keys[] = { ui2KeyIcon(UI2_IC_ENTER, MECK_TR("Save", "Enregistrer")), ui2Key("Sh+Del", MECK_TR("Cancel", "Annuler")) };
+    Ui2Chrome::footer(c, keys, 2);
+  }
+
+  // Delete confirmation as a dialog over the note list
+  void renderDeleteConfirmV2(DisplayDriver& display) {
+    renderFileListV2(display);
+    Ui2Canvas c(display);
+    String body = _deleteTarget + "\n" + MECK_TR("This cannot be undone.", "Action irr\xC3\xA9versible.");
+    Ui2List::dialog(c, UI2_IC_DEL, MECK_TR("Delete note?", "Supprimer la note ?"), body.c_str(),
+                    MECK_TR("Cancel", "Annuler"), MECK_TR("Delete", "Supprimer"));
+  }
+#endif
+
   void renderReadPage(DisplayDriver& display) {
     if (_totalPages == 0) {
       display.setCursor(0, 14);
@@ -1032,8 +1107,12 @@ private:
       return true;
     }
 
-    // Shift+Del - cancel
+    // Shift+Del - cancel (UI v2: also Q, as the dialog shows)
+#ifdef MECK_UI_V2
+    if (c == KEY_CANCEL || c == 'q') {
+#else
     if (c == KEY_CANCEL) {
+#endif
       _deleteTarget = "";
       _mode = FILE_LIST;
       return true;
@@ -1189,6 +1268,21 @@ public:
 
   // Touch: select file list row by virtual Y coordinate
   // Returns: 0 = outside list, 1 = moved selection, 2 = tapped same row (open)
+#ifdef MECK_UI_V2
+  // Touch hit test in physical pixels: 0 = miss, 1 = moved, 2 = tapped current row
+  int selectRowAtPx(int py) {
+    if (_mode != FILE_LIST) return 0;
+    int total = 1 + (int)_fileList.size();
+    int row = Ui2List::rowAt(py, ui2::BODY_Y, ui2::ROW_H, ui2::ROWS_PER_PAGE);
+    if (row < 0) return 0;
+    int idx = Ui2List::pageStart(_selectedFile, ui2::ROWS_PER_PAGE) + row;
+    if (idx >= total) return 0;
+    if (idx == _selectedFile) return 2;
+    _selectedFile = idx;
+    return 1;
+  }
+#endif
+
   int selectRowAtVY(int vy) {
     if (_mode != FILE_LIST) return 0;
     const int startY = 14, footerH = 14;
@@ -1330,6 +1424,16 @@ public:
 
   int render(DisplayDriver& display) override {
     if (!_sdReady) {
+#ifdef MECK_UI_V2
+      Ui2Canvas c(display);
+      Ui2Chrome::statusHeader(c);
+      Ui2Chrome::titleBar(c, MECK_TR("Notes", "Notes"));
+      Ui2List::emptyState(c, ui2::BODY_Y, ui2::FOOTER_Y, UI2_IC_SD, MECK_TR("SD card not found", "Carte SD introuvable"),
+                          MECK_TR("Insert an SD card to keep notes.", "Ins\xC3\xA9rez une SD pour vos notes."));
+      const Ui2Key keys[] = { ui2Key("Q", MECK_TR("Back", "Retour")) };
+      Ui2Chrome::footer(c, keys, 1);
+      return 5000;
+#endif
       display.setCursor(0, 20);
       display.setTextSize(1);
       display.setColor(DisplayDriver::LIGHT);
@@ -1340,11 +1444,17 @@ public:
     }
 
     switch (_mode) {
+#ifdef MECK_UI_V2
+      case FILE_LIST:       renderFileListV2(display); break;
+      case RENAMING:        renderRenameV2(display); break;
+      case CONFIRM_DELETE:  renderDeleteConfirmV2(display); break;
+#else
       case FILE_LIST:       renderFileList(display); break;
-      case READING:         renderReadPage(display); break;
-      case EDITING:         renderEditor(display); break;
       case RENAMING:        renderRenameDialog(display); break;
       case CONFIRM_DELETE:  renderDeleteConfirm(display); break;
+#endif
+      case READING:         renderReadPage(display); break;
+      case EDITING:         renderEditor(display); break;
     }
 
     return 5000;
