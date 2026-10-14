@@ -28,6 +28,10 @@
 #include <helpers/ui/UIScreen.h>
 #include <helpers/ui/DisplayDriver.h>
 #include "MeckLang.h"
+#ifdef MECK_UI_V2
+  #include "ui2/Ui2Chrome.h"
+  #include "ui2/Ui2List.h"
+#endif
 #include <SD.h>
 #include <vector>
 
@@ -446,6 +450,204 @@ private:
     display.setCursor(display.width() - display.getTextWidth(right) - 2, footerY);
     display.print(right);
   }
+
+#ifdef MECK_UI_V2
+  // Sound name for display: "Buzzer (vibrate)", the file name without its
+  // extension, or "(default)"
+  void soundLabel(const AlarmSlot& s, char* buf, size_t len) {
+#if defined(LilyGo_TDeck_Pro_Max)
+    if (slotIsVibrate(s)) { snprintf(buf, len, "%s", MECK_TR("Buzzer (vibrate)", "Buzzer (vibreur)")); return; }
+#endif
+    if (s.sound[0] == '\0') { snprintf(buf, len, "%s", MECK_TR("(default)", "(d\xC3\xA9" "faut)")); return; }
+    snprintf(buf, len, "%s", s.sound);
+    char* dot = strrchr(buf, '.');
+    if (dot && dot != buf) *dot = '\0';
+  }
+
+  // UI v2 alarm list: one row per slot (time, days and sound, on/off toggle)
+  void renderAlarmListV2(DisplayDriver& display) {
+    using namespace ui2;
+    Ui2Canvas c(display);
+    Ui2Chrome::statusHeader(c);
+    Ui2Chrome::titleBar(c, MECK_TR("Alarm clock", "R\xC3\xA9veil"));
+    for (int i = 0; i < ALARM_SLOT_COUNT; i++) {
+      const AlarmSlot& s = _config.slots[i];
+      char time[8], days[24], snd[40], sub[72];
+      snprintf(time, sizeof(time), "%02d:%02d", s.hour, s.minute);
+      formatDays(s.days, days, sizeof(days));
+      soundLabel(s, snd, sizeof(snd));
+      snprintf(sub, sizeof(sub), "%s \xC2\xB7 %s", days, snd);
+      Ui2Row r;
+      r.icon = UI2_IC_ALARM;
+      r.title = time;
+      r.sub = sub;
+      r.toggle = s.enabled ? 1 : 0;
+      r.selected = (i == _selectedSlot);
+      Ui2List::drawRow(c, BODY_Y + i * ROW_H, r);
+    }
+    if (_soundFiles.empty() && _sdReady) {
+      c.wrap(PAD, BODY_Y + ALARM_SLOT_COUNT * ROW_H + 18, SCREEN_W - 2 * PAD, 14, 2,
+             MECK_TR("Put 44 kHz .mp3 tones in /alarms/ on the SD card.",
+                     "Placez des .mp3 44 kHz dans /alarms/ sur la SD."),
+             UI2_F_META, true, true, nullptr, UI2_CENTER);
+    }
+    const Ui2Key keys[] = {
+      ui2KeyIcon(UI2_IC_ENTER, MECK_TR("Edit", "\xC3\x89" "diter")),
+      ui2Key("O", MECK_TR("On/off", "Oui/non")),
+      ui2Key("A/D", MECK_TR("Move", "D\xC3\xA9placer"), true),
+      ui2Key("Q", MECK_TR("Back", "Retour")),
+    };
+    Ui2Chrome::footer(c, keys, 4);
+  }
+
+  // UI v2 alarm editor: compact field rows, the day toggles under the Days
+  // row, and the hour/minute digit entry as a box over the list
+  void renderEditAlarmV2(DisplayDriver& display) {
+    using namespace ui2;
+    Ui2Canvas c(display);
+    Ui2Chrome::statusHeader(c);
+    char title[32];
+    snprintf(title, sizeof(title), MECK_TR("Alarm %d", "R\xC3\xA9veil %d"), _editSlot + 1);
+    Ui2Chrome::titleBar(c, title);
+
+    const int16_t rowH = 34;
+    char hh[4], mm[4], days[24], vol[4], snd[40];
+    snprintf(hh, sizeof(hh), "%02d", _editCopy.hour);
+    snprintf(mm, sizeof(mm), "%02d", _editCopy.minute);
+    formatDays(_editCopy.days, days, sizeof(days));
+    snprintf(vol, sizeof(vol), "%d", _editCopy.volume);
+    soundLabel(_editCopy, snd, sizeof(snd));
+    struct { Ui2Icon icon; const char* label; const char* value; } f[FIELD_COUNT] = {
+      { UI2_IC_BELL,    MECK_TR("Enabled", "Activ\xC3\xA9"), nullptr },
+      { UI2_IC_CLOCK,   MECK_TR("Hour", "Heure"), hh },
+      { UI2_IC_CLOCK,   "Minute", mm },
+      { UI2_IC_CALENDAR, MECK_TR("Days", "Jours"), days },
+      { UI2_IC_SPEAKER, "Volume", vol },
+      { UI2_IC_AUDIO,   MECK_TR("Sound", "Son"), snd },
+    };
+    for (int i = 0; i < FIELD_COUNT; i++) {
+      Ui2Row r;
+      r.icon = f[i].icon;
+      r.title = f[i].label;
+      r.right = f[i].value;
+      r.rightMax = 130;
+      r.height = rowH;
+      if (i == FIELD_ENABLED) r.toggle = _editCopy.enabled ? 1 : 0;
+      if (i == FIELD_SOUND) r.chevron = true;
+      r.selected = (i == (int)_editField);
+      Ui2List::drawRow(c, BODY_Y + i * rowH, r);
+    }
+
+    int16_t y = BODY_Y + FIELD_COUNT * rowH + 6;
+    if (_editField == FIELD_DAYS) {
+      // Day toggles, Sunday first as stored (bit 0 = Sunday)
+      int16_t w = -4;
+      for (int d = 0; d < 7; d++) w += Ui2Canvas::chipWidth(dowShort(d)) + 4;
+      int16_t x = (SCREEN_W - w) / 2;
+      for (int d = 0; d < 7; d++) x += c.chip(x, y, dowShort(d), UI2_NO_ICON, (_editCopy.days & (1 << d)) != 0) + 4;
+    } else {
+      const char* hint = (_editField == FIELD_HOUR || _editField == FIELD_MINUTE)
+                           ? MECK_TR("A/D adjust \xC2\xB7 Enter types digits", "A/D r\xC3\xA9gler \xC2\xB7 Entr\xC3\xA9" "e saisie")
+                           : (_editField == FIELD_SOUND) ? MECK_TR("Enter or A/D picks a sound", "Entr\xC3\xA9" "e ou A/D : choisir un son")
+                           : MECK_TR("A/D adjust", "A/D r\xC3\xA9gler");
+      c.textFit(PAD, y + 11, SCREEN_W - 2 * PAD, hint, UI2_F_META, true, UI2_CENTER);
+    }
+
+    if (_digitEntry) {
+      // Digit entry box over the list
+      const int16_t bx = DLG_X, bw = DLG_W, by = 112, bh = 76;
+      c.fill(bx + 3, by + 3, bw, bh);
+      c.fill(bx, by, bw, bh, false);
+      c.rect(bx, by, bw, bh);
+      c.rect(bx + 1, by + 1, bw - 2, bh - 2);
+      c.text(bx + 12, by + 22, (_editField == FIELD_HOUR) ? MECK_TR("Hour (0-23)", "Heure (0-23)") : MECK_TR("Minute (0-59)", "Minute (0-59)"),
+             UI2_F_TITLE);
+      // Typed digits, then a bar cursor (the digit font has no underscore)
+      int16_t cx = c.text(bx + 12, by + 58, _digitBuf, UI2_F_NUM22);
+      c.fill(cx + 2, by + 56, 14, 3);
+      const Ui2Key keys[] = {
+        ui2KeyIcon(UI2_IC_ENTER, "OK"),
+        ui2Key("0-9", MECK_TR("Type", "Saisir")),
+        ui2Key("Sh+Del", MECK_TR("Cancel", "Annuler")),
+      };
+      Ui2Chrome::footer(c, keys, 3);
+      return;
+    }
+    const Ui2Key keys[] = {
+      ui2Key("A/D", MECK_TR("Adjust", "R\xC3\xA9gler"), true),
+      ui2Key("W/S", MECK_TR("Field", "Champ"), true),
+      ui2Key("Q", MECK_TR("Save", "OK")),
+    };
+    Ui2Chrome::footer(c, keys, 3);
+  }
+
+  void renderSoundPickerV2(DisplayDriver& display) {
+    using namespace ui2;
+    Ui2Canvas c(display);
+    Ui2Chrome::statusHeader(c);
+    const int total = kVibrateRows + (int)_soundFiles.size();
+    char right[16];
+    Ui2List::pageLabel(right, sizeof(right), _soundSelected, total, ROWS_PER_PAGE);
+    Ui2Chrome::titleBar(c, MECK_TR("Alarm sound", "Son du r\xC3\xA9veil"), right);
+    if (total == 0) {
+      Ui2List::emptyState(c, BODY_Y, FOOTER_Y, UI2_IC_AUDIO, MECK_TR("No alarm tones", "Aucune sonnerie"),
+                          MECK_TR("Put 44 kHz .mp3 files in /alarms/ on the SD card.",
+                                  "Placez des .mp3 44 kHz dans /alarms/ sur la SD."));
+      const Ui2Key keys[] = { ui2Key("Q", MECK_TR("Back", "Retour")) };
+      Ui2Chrome::footer(c, keys, 1);
+      return;
+    }
+    const int start = Ui2List::pageStart(_soundSelected, ROWS_PER_PAGE);
+    for (int i = start; i < total && i < start + ROWS_PER_PAGE; i++) {
+      Ui2Row r;
+      String name;
+      if (kVibrateRows && i == 0) {
+        r.icon = UI2_IC_SILENT;
+        r.title = MECK_TR("Buzzer (vibrate)", "Buzzer (vibreur)");
+      } else {
+        name = _soundFiles[i - kVibrateRows];
+        int dot = name.lastIndexOf('.');
+        if (dot > 0) name = name.substring(0, dot);
+        r.icon = UI2_IC_AUDIO;
+        r.title = name.c_str();
+      }
+      r.selected = (i == _soundSelected);
+      Ui2List::drawRow(c, BODY_Y + (i - start) * ROW_H, r);
+    }
+    const Ui2Key keys[] = {
+      ui2KeyIcon(UI2_IC_ENTER, MECK_TR("Pick", "Choisir")),
+      ui2Key("W/S", MECK_TR("Move", "D\xC3\xA9placer"), true),
+      ui2Key("Q", MECK_TR("Back", "Retour")),
+    };
+    Ui2Chrome::footer(c, keys, 3);
+  }
+
+  // Ringing: big time, alarm name and sound, and how to stop it
+  void renderRingingV2(DisplayDriver& display) {
+    using namespace ui2;
+    Ui2Canvas c(display);
+    Ui2Chrome::statusHeader(c);
+    const AlarmSlot& slot = _config.slots[_ringingSlot];
+    c.icon((SCREEN_W - 32) / 2, 56, UI2_IC_ALARM, 32);
+    char time[8];
+    snprintf(time, sizeof(time), "%02d:%02d", slot.hour, slot.minute);
+    c.textFit(0, 150, SCREEN_W, time, UI2_F_NUM40, true, UI2_CENTER);
+    char label[24], snd[40];
+    snprintf(label, sizeof(label), MECK_TR("Alarm %d", "R\xC3\xA9veil %d"), _ringingSlot + 1);
+    c.textFit(PAD, 180, SCREEN_W - 2 * PAD, label, UI2_F_TITLE, true, UI2_CENTER);
+    soundLabel(slot, snd, sizeof(snd));
+    c.textFit(PAD, 200, SCREEN_W - 2 * PAD, snd, UI2_F_BODY, true, UI2_CENTER);
+    if (meck_alarm_is_locked()) {
+      c.textFit(PAD, 250, SCREEN_W - 2 * PAD, MECK_TR("Unlock to dismiss", "D\xC3\xA9verrouillez pour arr\xC3\xAAter"),
+                UI2_F_HEAD16, true, UI2_CENTER);
+    } else {
+      c.textFit(PAD, 250, SCREEN_W - 2 * PAD, MECK_TR("Any key dismisses", "Une touche arr\xC3\xAAte"),
+                UI2_F_HEAD16, true, UI2_CENTER);
+      const Ui2Key keys[] = { ui2Key("Z", MECK_TR("Snooze 5 min", "Rappel 5 min")) };
+      Ui2Chrome::footer(c, keys, 1);
+    }
+  }
+#endif
 
   // ---- Render: Alarm list ----
 
@@ -1223,6 +1425,16 @@ public:
 
   int render(DisplayDriver& display) override {
     if (!_sdReady) {
+#ifdef MECK_UI_V2
+      Ui2Canvas c(display);
+      Ui2Chrome::statusHeader(c);
+      Ui2Chrome::titleBar(c, MECK_TR("Alarm clock", "R\xC3\xA9veil"));
+      Ui2List::emptyState(c, ui2::BODY_Y, ui2::FOOTER_Y, UI2_IC_SD, MECK_TR("No SD card", "Pas de carte SD"),
+                          MECK_TR("Insert an SD card with an /alarms/ folder.", "Ins\xC3\xA9rez une SD avec un dossier /alarms/."));
+      const Ui2Key keys[] = { ui2Key("Q", MECK_TR("Back", "Retour")) };
+      Ui2Chrome::footer(c, keys, 1);
+      return 5000;
+#endif
       display.setTextSize(1);
       display.setColor(DisplayDriver::RED);
       display.setCursor(0, 20);
@@ -1235,10 +1447,17 @@ public:
     }
 
     switch (_mode) {
+#ifdef MECK_UI_V2
+      case ALARM_LIST:  renderAlarmListV2(display); break;
+      case EDIT_ALARM:  renderEditAlarmV2(display); break;
+      case PICK_SOUND:  renderSoundPickerV2(display); break;
+      case RINGING:     renderRingingV2(display); break;
+#else
       case ALARM_LIST:  renderAlarmList(display); break;
       case EDIT_ALARM:  renderEditAlarm(display); break;
       case PICK_SOUND:  renderSoundPicker(display); break;
       case RINGING:     renderRinging(display); break;
+#endif
     }
 
     // Refresh rates: fast during ringing (for timeout), normal otherwise
