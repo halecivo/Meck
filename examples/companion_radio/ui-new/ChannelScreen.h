@@ -10,6 +10,7 @@
 #ifdef MECK_UI_V2
   #include "ui2/Ui2Chrome.h"
   #include "ui2/Ui2List.h"
+  #include "ui2/Ui2RichText.h"
 #endif
 
 // SD card message persistence
@@ -814,75 +815,6 @@ public:
   // UI v2 conversation (design B5)
   // ===========================================================================
 
-  // Message text tokens: UTF-8 characters, single-byte emoji escapes (drawn
-  // as 12 px sprites) and pad bytes (ignored). Returns the token's byte
-  // length and sets *w to its width in the body font.
-  static int v2Token(const char* s, int pos, int len, int16_t* w) {
-    uint8_t b = (uint8_t)s[pos];
-    if (b == EMOJI_PAD_BYTE) { *w = 0; return 1; }
-    bool utf8 = (b >= 0xC2 && pos + 1 < len && ((uint8_t)s[pos + 1] & 0xC0) == 0x80);
-    if (!utf8 && isEmojiEscape(b)) { *w = EMOJI_LG_W + 1; return 1; }
-    int cl = utf8 ? ((b < 0xE0) ? 2 : (b < 0xF0) ? 3 : 4) : 1;
-    if (pos + cl > len) cl = len - pos;
-    *w = Ui2Canvas::textWidth(s + pos, UI2_F_BODY, cl);
-    return cl;
-  }
-
-  struct V2Line { int16_t a, b, w; };
-
-  // Greedy word wrap with hard breaks for over-long words (URLs). Fills up
-  // to maxLines lines; *more tells whether text remains.
-  static int v2Wrap(const char* s, int len, int16_t maxW, V2Line* out, int maxLines, bool* more) {
-    int pos = 0, n = 0;
-    *more = false;
-    while (pos < len && n < maxLines) {
-      while (pos < len && s[pos] == ' ') pos++;
-      if (pos >= len) break;
-      int start = pos, lastSpace = -1, i = pos;
-      int16_t w = 0, wAtSpace = 0;
-      while (i < len) {
-        int16_t tw;
-        int cl = v2Token(s, i, len, &tw);
-        if (w + tw > maxW) break;
-        if (s[i] == ' ') { lastSpace = i; wAtSpace = w; }
-        w += tw;
-        i += cl;
-      }
-      V2Line& L = out[n++];
-      if (i >= len) { L.a = start; L.b = len; L.w = w; pos = len; }
-      else if (lastSpace > start) { L.a = start; L.b = lastSpace; L.w = wAtSpace; pos = lastSpace + 1; }
-      else {
-        if (i == start) { int16_t tw; i += v2Token(s, i, len, &tw); w = tw; }
-        L.a = start; L.b = i; L.w = w; pos = i;
-      }
-    }
-    while (pos < len && s[pos] == ' ') pos++;
-    *more = pos < len;
-    return n;
-  }
-
-  // Draw bytes [a, b) of a message: text runs in the body font, emoji as sprites
-  void v2DrawRange(Ui2Canvas& c, int16_t x, int16_t baseline, const char* s, int a, int b, bool ink) {
-    int i = a, run = a;
-    while (i < b) {
-      int16_t tw;
-      int cl = v2Token(s, i, b, &tw);
-      uint8_t ch = (uint8_t)s[i];
-      bool emoji = (cl == 1 && tw == EMOJI_LG_W + 1);
-      if (emoji || ch == EMOJI_PAD_BYTE) {
-        if (i > run) x = c.text(x, baseline, s + run, UI2_F_BODY, ink, i - run);
-        if (emoji) {
-          const uint8_t* sprite = getEmojiSpriteLg(ch);
-          if (sprite) c.raw().drawXbmRaw(x, baseline - 10, sprite, EMOJI_LG_W, EMOJI_LG_H, c.raw().rawColor(ink));
-          x += EMOJI_LG_W + 1;
-        }
-        run = i + cl;
-      }
-      i += cl;
-    }
-    if (b > run) c.text(x, baseline, s + run, UI2_F_BODY, ink, b - run);
-  }
-
   // Short local time ("19:58") or age ("14m") of a message
   void v2MsgTime(uint32_t ts, char* buf, size_t len) {
     uint32_t now = _rtc->getCurrentTime();
@@ -902,7 +834,7 @@ public:
     int chronoIdx;       // index into the chronological list (reply select)
     bool own;
     int16_t h, w;
-    V2Line lines[6];
+    Ui2RtLine lines[6];
     uint8_t nLines;
     bool more;
     const char* body;    // message text after "Sender: "
@@ -927,7 +859,7 @@ public:
     bb.own = (m->path_len == 0 && m->snr == 0 && strcmp(bb.sender, the_mesh.getNodePrefs()->node_name) == 0)
              || m->dm_status != DM_SEND_NONE;
     const int16_t textMax = V2_BUBBLE_MAXW - 2 - 2 * V2_TEXT_PAD;
-    bb.nLines = v2Wrap(bb.body, bb.bodyLen, textMax, bb.lines, 6, &bb.more);
+    bb.nLines = ui2RtWrap(bb.body, bb.bodyLen, textMax, UI2_F_BODY, bb.lines, 6, &bb.more);
     if (bb.nLines == 0) { bb.lines[0] = {0, 0, 0}; bb.nLines = 1; }
     int16_t cw = 0;
     for (int k = 0; k < bb.nLines; k++) if (bb.lines[k].w > cw) cw = bb.lines[k].w;
@@ -984,20 +916,20 @@ public:
     }
     for (int k = 0; k < bb.nLines; k++) {
       int16_t base = Ui2Canvas::lineBaseline(UI2_F_BODY, ty + k * 15, 15);
-      const V2Line& L = bb.lines[k];
+      const Ui2RtLine& L = bb.lines[k];
       if (k == bb.nLines - 1 && bb.more) {
         // Last line with text remaining: cut to leave room for "..."
         int16_t ellW = Ui2Canvas::textWidth("\xE2\x80\xA6", UI2_F_BODY);
         int b = L.a; int16_t w = 0;
         while (b < L.b) {
-          int16_t tw; int cl = v2Token(bb.body, b, L.b, &tw);
+          int16_t tw; int cl = ui2RtToken(bb.body, b, L.b, UI2_F_BODY, &tw);
           if (w + tw + ellW > textMax) break;
           w += tw; b += cl;
         }
-        v2DrawRange(c, x + V2_TEXT_PAD, base, bb.body, L.a, b, true);
+        ui2RtDraw(c, x + V2_TEXT_PAD, base, bb.body, L.a, b, UI2_F_BODY);
         c.text(x + V2_TEXT_PAD + w, base, "\xE2\x80\xA6", UI2_F_BODY);
       } else {
-        v2DrawRange(c, x + V2_TEXT_PAD, base, bb.body, L.a, L.b, true);
+        ui2RtDraw(c, x + V2_TEXT_PAD, base, bb.body, L.a, L.b, UI2_F_BODY);
       }
     }
     if (!bb.own) {
