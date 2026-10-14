@@ -7,6 +7,9 @@
 #include <helpers/BaseSerialInterface.h>
 #include <Arduino.h>
 #include <helpers/sensors/LPPDataHelpers.h>
+#ifdef MECK_UI_V2
+#include "ui2/Ui2HomeTiles.h"
+#endif
 
 #ifndef LED_STATE_ON
   #define LED_STATE_ON 1
@@ -285,6 +288,11 @@ public:
 #ifdef MECK_UI_V2
   // Refresh ui2Status (UI v2 status header data) before a frame is drawn
   void updateUi2Status();
+  // Home tile pages: the tile under the keyboard cursor, and the tile under
+  // a physical touch point (which becomes selected). UI2_TILE_NONE when the
+  // home tile page is not showing.
+  Ui2Tile ui2HomeSelectedTile() const;
+  Ui2Tile ui2HomeTileAt(int px, int py);
 #endif
   void toggleBuzzer();
   bool getGPSState();

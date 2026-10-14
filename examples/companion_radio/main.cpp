@@ -1519,6 +1519,57 @@ static void openVoiceNotes() {
 }
 #endif
 
+#ifdef MECK_UI_V2
+// UI v2 home tiles: open the screen behind a tile (Enter or a tap). Does
+// what the matching keyboard shortcut does.
+static void meckLaunchHomeTile(Ui2Tile t) {
+  if (t == UI2_TILE_NONE) return;
+  if (ui2TileIsPlaceholder(t)) {
+    ui_task.showAlert(MECK_TR("Coming in a later version", "Dans une future version"), 1500);
+    return;
+  }
+  if (!ui2TileAvailable(t)) {
+    ui_task.showAlert(MECK_TR("Not in this build", "Absent de cette version"), 1500);
+    return;
+  }
+  switch (t) {
+    case UI2_TILE_MESSAGES: ui_task.gotoChannelPickerScreen(); break;
+    case UI2_TILE_CONTACTS: ui_task.gotoContactsScreen(); break;
+    case UI2_TILE_SETTINGS: ui_task.gotoSettingsScreen(); break;
+  #if defined(HAS_4G_MODEM) && !defined(MECK_40MHZ_TEST)
+    case UI2_TILE_PHONE: ui_task.gotoSMSScreen(); break;
+  #endif
+  #if HAS_GPS && !defined(MECK_40MHZ_TEST)
+    case UI2_TILE_MAP: openMapScreen(); break;
+  #endif
+    case UI2_TILE_READER: ui_task.gotoTextReader(); break;
+  #if (!defined(HAS_4G_MODEM) || defined(MECK_AUDIO_VARIANT)) && !defined(MECK_40MHZ_TEST)
+    case UI2_TILE_AUDIO: openAudiobookPlayer(); break;
+  #endif
+  #if defined(MECK_WEB_READER) && !defined(MECK_40MHZ_TEST)
+    case UI2_TILE_BROWSER: ui_task.gotoWebReader(); break;
+  #endif
+    case UI2_TILE_NOTES: ui_task.gotoNotesScreen(); break;
+  #if defined(MECK_AUDIO_VARIANT) && !defined(MECK_40MHZ_TEST)
+    case UI2_TILE_ALARM: openAlarmClock(); break;
+    case UI2_TILE_VOICE: openVoiceNotes(); break;
+  #endif
+    case UI2_TILE_GAMES: ui_task.gotoGamesMenu(); break;
+    case UI2_TILE_DISCOVER:
+      the_mesh.startDiscovery();   // as the F key does
+      ui_task.gotoDiscoveryScreen();
+      break;
+    case UI2_TILE_TRACE: ui_task.gotoTraceScreen(); break;
+    case UI2_TILE_LAST_HEARD: ui_task.gotoLastHeardScreen(); break;
+    case UI2_TILE_ADVERT:
+      if (the_mesh.advert()) ui_task.showAlert(MECK_TR("Advert sent!", "Annonce envoy\xC3\xA9" "e !"), 1000);
+      else ui_task.showAlert(MECK_TR("Advert failed..", "\xC3\x89" "chec de l'annonce.."), 1000);
+      break;
+    default: break;
+  }
+}
+#endif
+
 #ifdef MECK_TOUCH_ENABLED
   #if defined(LilyGo_TDeck_Pro_Max)
   // T-Deck Pro MAX: the three capacitive pads below the screen are CST328 keys,
@@ -1624,6 +1675,19 @@ static void openVoiceNotes() {
 
     // Home screen FIRST page: tile taps (virtual coordinate hit test)
     if (ui_task.isOnHomeScreen() && ui_task.isHomeShowingTiles()) {
+#ifdef MECK_UI_V2
+      // UI v2 tile pages: physical-pixel hit test against the shared layout
+      // (ui2/Ui2Theme.h), so render and touch cannot drift apart.
+      {
+        Ui2Tile t = ui_task.ui2HomeTileAt(x, y);
+        if (t != UI2_TILE_NONE) {
+          meckLaunchHomeTile(t);
+          return 0;
+        }
+        // Tap outside the tiles -- left half backward, right half forward
+        return (x < 120) ? (char)KEY_PREV : (char)KEY_NEXT;
+      }
+#endif
 #if defined(LilyGo_TDeck_Pro)
       // T-Deck Pro: 2-column tile grid, 6 paired rows + full-width Phone row.
       // Hit-tested in RAW PHYSICAL pixels (240x320) using the untranslated
@@ -5165,6 +5229,12 @@ void handleKeyboardInput() {
 
     case 's':
       // Open settings (from home), or navigate down on channel/contacts/admin/web/map/discovery/lastheard
+#ifdef MECK_UI_V2
+      if (ui_task.ui2HomeSelectedTile() != UI2_TILE_NONE) {   // UI v2 home tile page
+        ui_task.injectKey('s');
+        break;
+      }
+#endif
       if (ui_task.isOnChannelScreen() || ui_task.isOnContactsScreen() || ui_task.isOnRepeaterAdmin()
           || ui_task.isOnDiscoveryScreen() || ui_task.isOnLastHeardScreen()
           || ui_task.isOnPathEditor() || ui_task.isOnChannelPickerScreen()
@@ -5216,6 +5286,12 @@ void handleKeyboardInput() {
 
     case 'w':
       // Navigate up/previous (scroll on channel screen)
+#ifdef MECK_UI_V2
+      if (ui_task.ui2HomeSelectedTile() != UI2_TILE_NONE) {   // UI v2 home tile page
+        ui_task.injectKey('w');
+        break;
+      }
+#endif
       if (ui_task.isOnChannelScreen() || ui_task.isOnContactsScreen() || ui_task.isOnRepeaterAdmin()
           || ui_task.isOnDiscoveryScreen() || ui_task.isOnLastHeardScreen()
           || ui_task.isOnPathEditor() || ui_task.isOnChannelPickerScreen()
@@ -5243,6 +5319,12 @@ void handleKeyboardInput() {
       
     case 'a':
       // Navigate left — channel screen opens picker, others pass through
+#ifdef MECK_UI_V2
+      if (ui_task.ui2HomeSelectedTile() != UI2_TILE_NONE) {   // UI v2 home tile page
+        ui_task.injectKey('a');
+        break;
+      }
+#endif
       if (ui_task.isOnChannelScreen()) {
         ui_task.gotoChannelPickerScreen();
       } else if (ui_task.isOnContactsScreen() || ui_task.isOnMapScreen()
@@ -5262,6 +5344,12 @@ void handleKeyboardInput() {
       
     case 'd':
       // Navigate right — channel screen opens picker, others pass through
+#ifdef MECK_UI_V2
+      if (ui_task.ui2HomeSelectedTile() != UI2_TILE_NONE) {   // UI v2 home tile page
+        ui_task.injectKey('d');
+        break;
+      }
+#endif
       if (ui_task.isOnChannelScreen()) {
         ui_task.gotoChannelPickerScreen();
       } else if (ui_task.isOnContactsScreen() || ui_task.isOnMapScreen()
@@ -5281,6 +5369,12 @@ void handleKeyboardInput() {
       
     case '\r':
       // Select/Enter - path editor handles Enter internally
+#ifdef MECK_UI_V2
+      if (ui_task.ui2HomeSelectedTile() != UI2_TILE_NONE) {   // UI v2 home: open the selected tile
+        meckLaunchHomeTile(ui_task.ui2HomeSelectedTile());
+        break;
+      }
+#endif
       if (ui_task.isOnPathEditor()) {
         ui_task.injectKey('\r');
         // Check if Save & Exit was selected

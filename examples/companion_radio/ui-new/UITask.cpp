@@ -30,6 +30,7 @@
 #ifdef MECK_UI_V2
   #include "ui2/Ui2Chrome.h"
   #include "ui2/Ui2List.h"
+  #include "ui2/Ui2HomeTiles.h"
 #endif
 #if defined(WIFI_SSID) || defined(MECK_WIFI_COMPANION)
   #include <WiFi.h>
@@ -197,6 +198,11 @@ class HomeScreen : public UIScreen {
   uint8_t _tz_sel;
   bool _tz_editing;
   int8_t _tz_edit_val;
+#ifdef MECK_UI_V2
+  // UI v2 home: tile page (0..UI2_HOME_TILE_PAGES-1) and selected tile slot
+  uint8_t _tilePage = 0;
+  uint8_t _tileSel = 0;
+#endif
 
   AdvertPath recent[UI_RECENT_LIST_SIZE];
 
@@ -455,6 +461,109 @@ void renderBatteryIndicator(DisplayDriver& display, uint16_t batteryMilliVolts, 
     return false;
   }
 
+#ifdef MECK_UI_V2
+  // ==========================================================================
+  // UI v2 home tile pages (design: B1, B2). 108 x 56 tiles, 2 x 4 per page,
+  // selection = inverted tile, placeholders and features missing from this
+  // build = dashed outline and hatched icon.
+  // ==========================================================================
+
+  void drawTileV2(Ui2Canvas& c, int16_t x, int16_t y, Ui2Tile t, bool sel) {
+    using namespace ui2;
+    const Ui2TileInfo& info = ui2TileInfo(t);
+    const bool dis = ui2TileIsPlaceholder(t) || !ui2TileAvailable(t);
+    const bool fg = !sel;
+    if (sel) c.fillRoundRect(x, y, TILE_W, TILE_H, TILE_RADIUS, true);
+    else if (dis) c.dashedRect(x, y, TILE_W, TILE_H, true);
+    else c.roundRect(x, y, TILE_W, TILE_H, TILE_RADIUS, true);
+
+    const int16_t ix = x + 7, iy = y + 5;
+    if (dis) c.hatch(ix, iy, 24, 24, fg);
+    c.icon(ix, iy, info.icon, 24, fg);
+
+    // Glance value next to the icon (only where the data exists today)
+#ifdef MECK_AUDIO_VARIANT
+    if (t == UI2_TILE_AUDIO && _task->isAudioPlayingInBackground()) {
+      c.icon(ix + 24 + 6, iy + 4, UI2_IC_PLAY, 16, fg);
+    }
+#endif
+
+    // Count badge, top right
+    if (t == UI2_TILE_MESSAGES) {
+      int unread = _task->getUnreadMsgCount();
+      if (unread > 0) {
+        char b[6];
+        if (unread > 99) strcpy(b, "99+"); else snprintf(b, sizeof(b), "%d", unread);
+        int16_t bw = Ui2Canvas::badgeWidth(18, b);
+        c.badge(x + TILE_W - 5 - bw, y + 5, 18, b, fg);
+      }
+    }
+
+    c.textFit(x + 7, Ui2Canvas::lineBaseline(UI2_F_LABEL, y + 35, 15), TILE_W - 14,
+              MECK_TR(info.label, info.label_fr), UI2_F_LABEL, fg);
+  }
+
+  int renderTilesV2(DisplayDriver& display) {
+    using namespace ui2;
+    Ui2Canvas c(display);
+    Ui2Chrome::statusHeader(c);
+
+    if (_tilePage >= UI2_HOME_TILE_PAGES) _tilePage = 0;
+    uint8_t n = ui2HomePageTileCount(_tilePage);
+    if (_tileSel >= n) _tileSel = n ? n - 1 : 0;
+    for (uint8_t slot = 0; slot < UI2_HOME_TILES_PER_PAGE; slot++) {
+      Ui2Tile t = UI2_HOME_LAYOUT[_tilePage][slot];
+      if (t == UI2_TILE_NONE) continue;
+      int16_t x = TILE_X0 + (slot % TILE_COLS) * (TILE_W + TILE_GAP_X);
+      int16_t y = TILE_Y0 + (slot / TILE_COLS) * (TILE_H + TILE_GAP_Y);
+      drawTileV2(c, x, y, t, slot == _tileSel);
+    }
+
+    // Page dots: the tile pages, then the other home pages
+    const int16_t gridBottom = TILE_Y0 + TILE_ROWS * TILE_H + (TILE_ROWS - 1) * TILE_GAP_Y;
+    c.pageDots(SCREEN_W / 2, gridBottom + (FOOTER_Y - gridBottom - 6) / 2,
+               UI2_HOME_TILE_PAGES + HomePage::Count - 1, _tilePage);
+
+    const Ui2Key keys[] = {
+      ui2KeyIcon(UI2_IC_ENTER, MECK_TR("Open", "Ouvrir")),
+      ui2Key("W/S", MECK_TR("Move", "D\xC3\xA9placer"), true),
+      ui2Key("A/D", MECK_TR("Page", "Page"), true),
+    };
+    Ui2Chrome::footer(c, keys, 3);
+    return 5000;
+  }
+
+  // Keys on the tile page. W/S walk the tiles (across pages), A/D change
+  // the tile page; past the first or last tile page they fall through to
+  // the home page cycling. Enter is handled by main.cpp (launches the tile).
+  bool handleTilesKeyV2(char c) {
+    if (c == 'w' || c == 's') {
+      int idx = _tilePage * UI2_HOME_TILES_PER_PAGE + _tileSel;
+      int dir = (c == 's') ? 1 : -1;
+      for (int i = 0; i < UI2_HOME_TILE_PAGES * UI2_HOME_TILES_PER_PAGE; i++) {
+        idx = (idx + dir + UI2_HOME_TILE_PAGES * UI2_HOME_TILES_PER_PAGE) % (UI2_HOME_TILE_PAGES * UI2_HOME_TILES_PER_PAGE);
+        if (UI2_HOME_LAYOUT[idx / UI2_HOME_TILES_PER_PAGE][idx % UI2_HOME_TILES_PER_PAGE] != UI2_TILE_NONE) break;
+      }
+      _tilePage = idx / UI2_HOME_TILES_PER_PAGE;
+      _tileSel = idx % UI2_HOME_TILES_PER_PAGE;
+      return true;
+    }
+    if (c == 'a' || c == KEY_LEFT || c == KEY_PREV) {
+      if (_tilePage == 0) return false;
+      _tilePage--;
+      return true;
+    }
+    if (c == 'd' || c == KEY_RIGHT || c == KEY_NEXT) {
+      if (_tilePage + 1 >= UI2_HOME_TILE_PAGES) return false;
+      _tilePage++;
+      uint8_t n = ui2HomePageTileCount(_tilePage);
+      if (_tileSel >= n) _tileSel = n - 1;
+      return true;
+    }
+    return false;
+  }
+#endif
+
   CayenneLPP sensors_lpp;
   int sensors_nb = 0;
   bool sensors_scroll = false;
@@ -495,6 +604,29 @@ public:
   bool isOnShutdownPage() const { return _page == HomePage::SHUTDOWN; }
   bool isOnTimezonesPage() const { return _page == HomePage::TIMEZONES; }
   bool isEditingTimezone() const { return _tz_editing; }
+#ifdef MECK_UI_V2
+  // Tile under the keyboard cursor on the tile page
+  Ui2Tile selectedTile() const {
+    return (_page == HomePage::FIRST) ? UI2_HOME_LAYOUT[_tilePage][_tileSel] : UI2_TILE_NONE;
+  }
+  // Tile under a physical touch point on the tile page (it becomes the
+  // selected one), or UI2_TILE_NONE
+  Ui2Tile tileAt(int px, int py) {
+    using namespace ui2;
+    if (_page != HomePage::FIRST) return UI2_TILE_NONE;
+    if (px < TILE_X0 || py < TILE_Y0) return UI2_TILE_NONE;
+    int col = (px - TILE_X0) / (TILE_W + TILE_GAP_X);
+    int row = (py - TILE_Y0) / (TILE_H + TILE_GAP_Y);
+    if (col >= TILE_COLS || row >= TILE_ROWS) return UI2_TILE_NONE;
+    // Gaps between tiles are not part of a tile
+    if ((px - TILE_X0) % (TILE_W + TILE_GAP_X) >= TILE_W) return UI2_TILE_NONE;
+    if ((py - TILE_Y0) % (TILE_H + TILE_GAP_Y) >= TILE_H) return UI2_TILE_NONE;
+    int slot = row * TILE_COLS + col;
+    Ui2Tile t = UI2_HOME_LAYOUT[_tilePage][slot];
+    if (t != UI2_TILE_NONE) _tileSel = slot;
+    return t;
+  }
+#endif
   // Touch long-press on the Timezones page (main.cpp mapTouchLongPress):
   // select the zone row under the finger before the Enter that opens its
   // editor. vy comes from touchToVirtual(), which lands 5 units below the
@@ -545,6 +677,13 @@ public:
         return 5000;
       }
     }
+
+#ifdef MECK_UI_V2
+    if (_page == HomePage::FIRST) {
+      _task->setHomeShowingTiles(true);
+      return renderTilesV2(display);
+    }
+#endif
 
     // node name (tinyfont to avoid overlapping clock)
     display.setTextSize(_node_prefs->smallTextSize());
@@ -1337,6 +1476,9 @@ public:
   }
 
   bool handleInput(char c) override {
+#ifdef MECK_UI_V2
+    if (_page == HomePage::FIRST && handleTilesKeyV2(c)) return true;
+#endif
     // UTC offset editing mode - intercept all keys
     if (_editing_utc) {
       if (c == 'w' || c == KEY_PREV) {
@@ -1415,10 +1557,16 @@ public:
 
     if (c == KEY_LEFT || c == KEY_PREV || c == 'a') {
       _page = (_page + HomePage::Count - 1) % HomePage::Count;
+#ifdef MECK_UI_V2
+      if (_page == HomePage::FIRST) _tilePage = UI2_HOME_TILE_PAGES - 1;  // entering from the right
+#endif
       return true;
     }
     if (c == KEY_NEXT || c == KEY_RIGHT || c == 'd') {
       _page = (_page + 1) % HomePage::Count;
+#ifdef MECK_UI_V2
+      if (_page == HomePage::FIRST) _tilePage = 0;  // entering from the left
+#endif
       if (_page == HomePage::RECENT) {
         _task->showAlert(MECK_TR("Recent adverts", "Annonces r\xC3\xA9" "centes"), 800);
       }
@@ -2808,6 +2956,16 @@ bool UITask::isEditingHomeScreen() const {
 bool UITask::isHomeOnRecentPage() const {
   return curr == home && ((HomeScreen *) home)->isOnRecentPage();
 }
+
+#ifdef MECK_UI_V2
+Ui2Tile UITask::ui2HomeSelectedTile() const {
+  return (curr == home) ? ((HomeScreen *) home)->selectedTile() : UI2_TILE_NONE;
+}
+
+Ui2Tile UITask::ui2HomeTileAt(int px, int py) {
+  return (curr == home) ? ((HomeScreen *) home)->tileAt(px, py) : UI2_TILE_NONE;
+}
+#endif
 
 bool UITask::isHomeOnShutdownPage() const {
   return curr == home && ((HomeScreen *) home)->isOnShutdownPage();
