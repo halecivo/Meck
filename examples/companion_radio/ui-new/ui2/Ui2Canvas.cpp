@@ -104,7 +104,7 @@ int16_t Ui2Canvas::fitLine(int16_t x, int16_t baseline, int16_t maxW, const char
 }
 
 int Ui2Canvas::wrap(int16_t x, int16_t firstBaseline, int16_t maxW, int16_t lineH, int maxLines,
-                    const char* s, Ui2Font f, bool ink, bool draw, bool* truncated) {
+                    const char* s, Ui2Font f, bool ink, bool draw, bool* truncated, Ui2Align align) {
   if (truncated) *truncated = false;
   if (!s || maxLines <= 0) return 0;
   const GFXfont* font = ui2Font(f);
@@ -144,11 +144,15 @@ int Ui2Canvas::wrap(int16_t x, int16_t firstBaseline, int16_t maxW, int16_t line
       if (truncated) *truncated = true;
       int paraEnd = start;
       while (paraEnd < len && s[paraEnd] != '\n') paraEnd++;
-      if (draw) fitLine(x, baseline, maxW, s + start, f, ink, UI2_LEFT, paraEnd - start, true);
+      if (draw) fitLine(x, baseline, maxW, s + start, f, ink, align, paraEnd - start, true);
       line++;
       break;
     }
-    if (draw) text(x, baseline, s + start, f, ink, end - start);
+    if (draw) {
+      int16_t lw = (align == UI2_LEFT) ? 0 : textWidth(s + start, f, end - start);
+      int16_t dx = (align == UI2_CENTER) ? (maxW - lw) / 2 : (align == UI2_RIGHT) ? (maxW - lw) : 0;
+      text(x + dx, baseline, s + start, f, ink, end - start);
+    }
     line++;
     pos = next;
   }

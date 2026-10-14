@@ -60,7 +60,8 @@ public:
   // (URLs). '\n' forces a break. With draw = false only measures.
   // Returns the number of lines; *truncated tells whether text was cut.
   int wrap(int16_t x, int16_t firstBaseline, int16_t maxW, int16_t lineH, int maxLines,
-           const char* s, Ui2Font f, bool ink = true, bool draw = true, bool* truncated = nullptr);
+           const char* s, Ui2Font f, bool ink = true, bool draw = true, bool* truncated = nullptr,
+           Ui2Align align = UI2_LEFT);
 
   // --- Widgets -------------------------------------------------------------
   // Keycap (15 px tall, raised bottom edge) showing a key name or an icon.

@@ -29,6 +29,7 @@
 #endif
 #ifdef MECK_UI_V2
   #include "ui2/Ui2Chrome.h"
+  #include "ui2/Ui2List.h"
 #endif
 #if defined(WIFI_SSID) || defined(MECK_WIFI_COMPANION)
   #include <WiFi.h>
@@ -2427,6 +2428,12 @@ if (curr) curr->poll();
         dismissBootHint();
         _next_refresh = millis() + 200;
       } else if (millis() < _alert_expiry) {  // render alert popup
+#ifdef MECK_UI_V2
+        {
+          Ui2Canvas c(*_display);
+          Ui2List::toast(c, _alert);
+        }
+#else
         _display->setTextSize(1);
         int y = _display->height() / 3;
         int p = _display->height() / 32;
@@ -2460,6 +2467,7 @@ if (curr) curr->poll();
           }
           _display->setTextSize(1);
         }
+#endif
         _next_refresh = _alert_expiry;   // will need refresh when alert is dismissed
       } else {
         _next_refresh = millis() + delay_millis;
