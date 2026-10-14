@@ -3862,6 +3862,13 @@ void MyMesh::checkCLIRescueCmd() {
       // Debug: print the last drawn frame (read by tools/ui2/grab_screen.py)
       extern void meckScreenDump();
       meckScreenDump();
+    } else if (memcmp(cli_command, "key ", 4) == 0) {
+      // Debug: press a key as if typed: "key s", "key enter", "key esc", "key bs"
+      extern void meckDebugKey(char k);
+      const char* k = &cli_command[4];
+      char kc = (strcmp(k, "enter") == 0) ? '\r' : (strcmp(k, "esc") == 0) ? 27
+              : (strcmp(k, "bs") == 0) ? '\b' : (strcmp(k, "space") == 0) ? ' ' : k[0];
+      meckDebugKey(kc);
 #endif
     } else if (strcmp(cli_command, "clock") == 0) {
       uint32_t t = getRTCClock()->getCurrentTime();

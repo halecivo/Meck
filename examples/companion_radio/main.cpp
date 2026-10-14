@@ -4161,11 +4161,25 @@ void toggleKeyboardBacklight() {
 }
 #endif
 
+#ifdef MECK_UI_SCREENDUMP
+// Debug: a key queued by the serial "key" command, handled as if typed
+static volatile char meckDebugPendingKey = 0;
+void meckDebugKey(char k) { meckDebugPendingKey = k; }
+#endif
+
 void handleKeyboardInput() {
-  if (!keyboard.isReady()) return;
-  
-  char key = keyboard.readKey();
-  if (key == 0) return;
+  char key;
+#ifdef MECK_UI_SCREENDUMP
+  if (meckDebugPendingKey) {
+    key = meckDebugPendingKey;
+    meckDebugPendingKey = 0;
+  } else
+#endif
+  {
+    if (!keyboard.isReady()) return;
+    key = keyboard.readKey();
+    if (key == 0) return;
+  }
 
   // Shift+Backspace is the universal back/cancel token. Convert it to
   // KEY_CANCEL here at the source so every screen and dispatch path sees one
