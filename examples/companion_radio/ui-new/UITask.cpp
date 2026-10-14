@@ -31,6 +31,7 @@
   #include "ui2/Ui2Chrome.h"
   #include "ui2/Ui2List.h"
   #include "ui2/Ui2HomeTiles.h"
+  #include "RadioPresets.h"
 #endif
 #if defined(WIFI_SSID) || defined(MECK_WIFI_COMPANION)
   #include <WiFi.h>
@@ -562,6 +563,340 @@ void renderBatteryIndicator(DisplayDriver& display, uint16_t batteryMilliVolts, 
     }
     return false;
   }
+
+  // ==========================================================================
+  // UI v2 home info pages (design: B3 pattern). Title bar, label/value lines
+  // with section headers, page dots above the keycap footer. Behaviour and
+  // keys are unchanged; only the drawing differs.
+  // ==========================================================================
+
+  void infoDots(Ui2Canvas& c) {
+    c.pageDots(ui2::SCREEN_W / 2, ui2::FOOTER_Y - 12,
+               UI2_HOME_TILE_PAGES + HomePage::Count - 1, UI2_HOME_TILE_PAGES + _page - 1);
+  }
+
+  // Box used by the UTC and time-zone offset editors
+  void offsetEditorV2(Ui2Canvas& c, const char* title, int8_t offset, const char* detail) {
+    using namespace ui2;
+    const int16_t x = DLG_X, w = DLG_W, y = 80, h = 120;
+    c.fill(x + 3, y + 3, w, h, true);
+    c.fill(x, y, w, h, false);
+    c.roundRect(x, y, w, h, 3, true);
+    c.roundRect(x + 1, y + 1, w - 2, h - 2, 2, true);
+    c.textFit(x + 10, Ui2Canvas::lineBaseline(UI2_F_TITLE, y + 10, 18), w - 20, title, UI2_F_TITLE, true, UI2_CENTER);
+    // "UTC" in the title face, the number in big numerals
+    char num[6];
+    snprintf(num, sizeof(num), "%+d", (int)offset);
+    int16_t uw = Ui2Canvas::textWidth("UTC", UI2_F_TITLE);
+    int16_t nw = Ui2Canvas::textWidth(num, UI2_F_NUM22);
+    int16_t sx = x + (w - uw - 4 - nw) / 2;
+    int16_t base = y + 64;
+    c.text(sx, base, "UTC", UI2_F_TITLE);
+    c.text(sx + uw + 4, base, num, UI2_F_NUM22);
+    if (detail && *detail) c.textFit(x + 10, Ui2Canvas::lineBaseline(UI2_F_BODY, y + 80, 15), w - 20, detail, UI2_F_BODY, true, UI2_CENTER);
+  }
+
+  int renderInfoV2(DisplayDriver& display) {
+    using namespace ui2;
+    Ui2Canvas c(display);
+    char buf[48], val[48];
+    Ui2Chrome::statusHeader(c);
+
+    if (_page == HomePage::RECENT) {
+      Ui2Chrome::titleBar(c, MECK_TR("Recent adverts", "Annonces r\xC3\xA9" "centes"));
+      the_mesh.getRecentlyHeard(recent, UI_RECENT_LIST_SIZE);
+      int16_t y = BODY_Y;
+      int shown = 0;
+      for (int i = 0; i < UI_RECENT_LIST_SIZE && shown < ROWS_PER_PAGE - 1; i++) {
+        AdvertPath* a = &recent[i];
+        if (a->name[0] == 0) continue;
+        Ui2List::formatAge(val, sizeof(val), (int32_t)(_rtc->getCurrentTime() - a->recv_timestamp));
+        Ui2Row r;
+        r.icon = ui2NodeIcon(a->type);
+        r.title = a->name;
+        r.right = val;
+        Ui2List::drawRow(c, y, r);
+        y += ROW_H;
+        shown++;
+      }
+      if (!shown) Ui2List::emptyState(c, BODY_Y, FOOTER_Y - 16, UI2_IC_RADIO,
+                                      MECK_TR("Nothing heard yet", "Rien entendu"));
+      infoDots(c);
+      const Ui2Key keys[] = { ui2Key("H", MECK_TR("Last heard", "Entendus")), ui2Key("A/D", MECK_TR("Page", "Page"), true) };
+      Ui2Chrome::footer(c, keys, 2);
+      return 5000;
+    }
+
+    if (_page == HomePage::RADIO) {
+      Ui2Chrome::titleBar(c, MECK_TR("Radio", "Radio"));
+      int16_t y = BODY_Y + 4;
+      // Frequency in big numerals, antenna on the right
+      snprintf(val, sizeof(val), "%.3f", _node_prefs->freq);
+      int16_t fx = c.text(PAD, y + 24, val, UI2_F_NUM22);
+      c.text(fx + 6, y + 24, "MHz", UI2_F_LABEL);
+      const bool ext = _node_prefs->lora_antenna;
+      const char* ant = ext ? MECK_TR("External", "Externe") : MECK_TR("Internal", "Interne");
+      int16_t aw = Ui2Canvas::textWidth(ant, UI2_F_SMALL);
+      c.text(SCREEN_W - PAD - aw, y + 20, ant, UI2_F_SMALL);
+      c.icon(SCREEN_W - PAD - aw - 4 - 16, y + 8, ext ? UI2_IC_ANTEXT : UI2_IC_ANTINT, 16);
+      y += 36;
+      c.sectionHeader(y, "LORA");
+      y += SECTION_H;
+      const char* preset = MECK_TR("Custom", "Personnalis\xC3\xA9");
+      for (size_t i = 0; i < NUM_RADIO_PRESETS; i++) {
+        const RadioPreset& p = RADIO_PRESETS[i];
+        if (fabsf(p.freq - _node_prefs->freq) < 0.0005f && fabsf(p.bw - _node_prefs->bw) < 0.01f &&
+            p.sf == _node_prefs->sf && p.cr == _node_prefs->cr) { preset = p.name; break; }
+      }
+      Ui2List::kvRow(c, y, MECK_TR("Preset", "Pr\xC3\xA9r\xC3\xA9glage"), preset); y += 20;
+      snprintf(val, sizeof(val), "%g kHz \xC2\xB7 SF%d \xC2\xB7 CR%d", _node_prefs->bw, _node_prefs->sf, _node_prefs->cr);
+      Ui2List::kvRow(c, y, "BW \xC2\xB7 SF \xC2\xB7 CR", val); y += 20;
+      snprintf(val, sizeof(val), "%d dBm", _node_prefs->tx_power_dbm);
+      Ui2List::kvRow(c, y, MECK_TR("TX power", "Puissance TX"), val); y += 20;
+      snprintf(val, sizeof(val), "%d dBm", radio_driver.getNoiseFloor());
+      Ui2List::kvRow(c, y, MECK_TR("Noise floor", "Bruit de fond"), val); y += 20;
+      snprintf(val, sizeof(val), "%u", (unsigned)the_mesh.getRxPacketCount());
+      Ui2List::kvRow(c, y, MECK_TR("RX packets", "Paquets RX"), val); y += 20;
+      infoDots(c);
+      const Ui2Key keys[] = { ui2Key("A/D", MECK_TR("Page", "Page"), true) };
+      Ui2Chrome::footer(c, keys, 1);
+      return 5000;
+    }
+
+#if defined(BLE_PIN_CODE)
+    if (_page == HomePage::BLUETOOTH) {
+      Ui2Chrome::titleBar(c, "Bluetooth");
+  #if defined(MECK_WIFI_COMPANION)
+      const bool btOn = meckCompanionIsBLE() && _task->isSerialEnabled();
+      const bool restart = meckCompanionBLENeedsRestart();
+  #else
+      const bool btOn = _task->isSerialEnabled();
+      const bool restart = false;
+  #endif
+      const char* line;
+      const char* detail = nullptr;
+      if (btOn && _task->hasConnection()) {
+        line = MECK_TR("Connected", "Connect\xC3\xA9");
+        detail = MECK_TR("The companion app is connected.", "L'appli compagnon est connect\xC3\xA9" "e.");
+      } else if (btOn) {
+        line = MECK_TR("Waiting for the app", "Attente de l'appli");
+        if (the_mesh.getBLEPin() != 0) {
+          snprintf(buf, sizeof(buf), MECK_TR("Pairing PIN: %d", "Code d'appairage : %d"), (int)the_mesh.getBLEPin());
+          detail = buf;
+        }
+      } else {
+        line = MECK_TR("Bluetooth is off", "Bluetooth d\xC3\xA9sactiv\xC3\xA9");
+      }
+      Ui2List::emptyState(c, BODY_Y, FOOTER_Y - 16, UI2_IC_BLE, line, detail);
+      infoDots(c);
+      const char* act = restart ? MECK_TR("Restart", "Red\xC3\xA9marrer")
+                                : (btOn ? MECK_TR("Turn off", "D\xC3\xA9sactiver") : MECK_TR("Turn on", "Activer"));
+      const Ui2Key keys[] = { ui2KeyIcon(UI2_IC_ENTER, act), ui2Key("A/D", MECK_TR("Page", "Page"), true) };
+      Ui2Chrome::footer(c, keys, 2);
+      return 5000;
+    }
+#endif
+
+#ifdef MECK_WIFI_COMPANION
+    if (_page == HomePage::WIFI_STATUS) {
+      Ui2Chrome::titleBar(c, MECK_TR("WiFi companion", "Compagnon WiFi"));
+      int16_t y = BODY_Y + 4;
+      if (WiFi.status() == WL_CONNECTED) {
+        Ui2List::kvRow(c, y, "SSID", WiFi.SSID().c_str()); y += 20;
+        IPAddress ip = WiFi.localIP();
+        snprintf(val, sizeof(val), "%d.%d.%d.%d", ip[0], ip[1], ip[2], ip[3]);
+        Ui2List::kvRow(c, y, "IP", val); y += 20;
+        snprintf(val, sizeof(val), "%d", TCP_PORT);
+        Ui2List::kvRow(c, y, "Port", val); y += 20;
+        Ui2List::kvRow(c, y, MECK_TR("App", "Appli"),
+                       _task->hasConnection() ? MECK_TR("Connected", "Connect\xC3\xA9" "e")
+                                              : MECK_TR("Waiting", "En attente"));
+      } else {
+        Ui2List::emptyState(c, BODY_Y, FOOTER_Y - 16, UI2_IC_WIFIOFF, MECK_TR("Not connected", "Non connect\xC3\xA9"),
+                            MECK_TR("Set up the network in Settings.", "R\xC3\xA9seau \xC3\xA0 configurer dans R\xC3\xA9glages."));
+      }
+      infoDots(c);
+      const char* act = (WiFi.getMode() != WIFI_OFF) ? MECK_TR("Turn off", "Couper") : MECK_TR("Turn on", "Activer");
+  #if defined(BLE_PIN_CODE)
+      if (WiFi.getMode() == WIFI_OFF && meckCompanionWiFiNeedsRestart()) act = MECK_TR("Restart", "Red\xC3\xA9marrer");
+  #endif
+      const Ui2Key keys[] = { ui2KeyIcon(UI2_IC_ENTER, act), ui2Key("A/D", MECK_TR("Page", "Page"), true) };
+      Ui2Chrome::footer(c, keys, 2);
+      return 5000;
+    }
+#endif
+
+    if (_page == HomePage::ADVERT) {
+      Ui2Chrome::titleBar(c, MECK_TR("Advert", "Annonce"));
+      Ui2List::emptyState(c, BODY_Y, FOOTER_Y - 16, UI2_IC_SEND, MECK_TR("Send an advert", "Envoyer une annonce"),
+                          MECK_TR("Lets nearby nodes know you are here.", "Signale votre pr\xC3\xA9sence aux n\xC5\x93uds proches."));
+      infoDots(c);
+      const Ui2Key keys[] = { ui2KeyIcon(UI2_IC_ENTER, MECK_TR("Send", "Envoyer")), ui2Key("A/D", MECK_TR("Page", "Page"), true) };
+      Ui2Chrome::footer(c, keys, 2);
+      return 5000;
+    }
+
+#if ENV_INCLUDE_GPS == 1 && !defined(MECK_40MHZ_TEST)
+    if (_page == HomePage::GPS) {
+      extern GPSStreamCounter gpsStream;
+      LocationProvider* nmea = sensors.getLocationProvider();
+      const bool on = _node_prefs->gps_enabled;
+      const bool fix = nmea && nmea->isValid();
+      Ui2Chrome::titleBar(c, "GPS", nullptr, on ? (fix ? "fix" : MECK_TR("no fix", "sans fix")) : MECK_TR("off", "\xC3\xA9teint"),
+                          UI2_NO_ICON, on && fix);
+      int16_t y = BODY_Y + 4;
+      Ui2List::kvRow(c, y, MECK_TR("Receiver", "R\xC3\xA9" "cepteur"), on ? MECK_TR("On", "Allum\xC3\xA9") : MECK_TR("Off", "\xC3\x89teint")); y += 20;
+      if (!nmea) {
+        Ui2List::kvRow(c, y, MECK_TR("Status", "\xC3\x89tat"), MECK_TR("Can't access GPS", "GPS inaccessible")); y += 20;
+      } else {
+        snprintf(val, sizeof(val), "%d", nmea->satellitesCount());
+        Ui2List::kvRow(c, y, MECK_TR("Satellites", "Satellites"), val); y += 20;
+        if (on) snprintf(val, sizeof(val), "%u/s (%lu)", gpsStream.getSentencesPerSec(), (unsigned long)gpsStream.getSentenceCount());
+        else strcpy(val, MECK_TR("hw off", "\xC3\xA9teint"));
+        Ui2List::kvRow(c, y, MECK_TR("Sentences", "Phrases"), val); y += 20;
+        snprintf(val, sizeof(val), "%.4f %.4f", nmea->getLatitude() / 1000000., nmea->getLongitude() / 1000000.);
+        Ui2List::kvRow(c, y, MECK_TR("Position", "Position"), val); y += 20;
+        snprintf(val, sizeof(val), "%.0f m", nmea->getAltitude() / 1000.);
+        Ui2List::kvRow(c, y, MECK_TR("Altitude", "Altitude"), val); y += 20;
+      }
+      uint32_t now = _rtc->getCurrentTime();
+      if (now > 1700000000) {
+        int32_t local = (int32_t)now + ((int32_t)_node_prefs->utc_offset_hours * 3600);
+        int hrs = (local / 3600) % 24; if (hrs < 0) hrs += 24;
+        int mins = (local / 60) % 60;  if (mins < 0) mins += 60;
+        snprintf(val, sizeof(val), "%02d:%02d UTC%+d", hrs, mins, _node_prefs->utc_offset_hours);
+      } else {
+        strcpy(val, MECK_TR("not synced", "non synchro"));
+      }
+      Ui2List::kvRow(c, y, MECK_TR("Time", "Heure"), val); y += 20;
+      infoDots(c);
+      if (_editing_utc) {
+        offsetEditorV2(c, MECK_TR("Time zone", "Fuseau horaire"), _node_prefs->utc_offset_hours, nullptr);
+        const Ui2Key keys[] = { ui2Key("W/S", MECK_TR("Adjust", "R\xC3\xA9gler")), ui2KeyIcon(UI2_IC_ENTER, MECK_TR("Save", "OK")),
+                                ui2Key("Q", MECK_TR("Cancel", "Annuler")) };
+        Ui2Chrome::footer(c, keys, 3);
+        return 700;
+      }
+      const Ui2Key keys[] = { ui2KeyIcon(UI2_IC_ENTER, on ? MECK_TR("GPS off", "Couper") : MECK_TR("GPS on", "Activer")),
+                              ui2Key("U", MECK_TR("Time zone", "Fuseau")), ui2Key("A/D", MECK_TR("Page", "Page"), true) };
+      Ui2Chrome::footer(c, keys, 3);
+      return 5000;
+    }
+#endif
+
+#if HAS_BQ27220
+    if (_page == HomePage::BATTERY) {
+      snprintf(buf, sizeof(buf), "%d %%", (int)_task->getBatteryPercent());
+      Ui2Chrome::titleBar(c, MECK_TR("Battery", "Batterie"), buf);
+      int16_t y = BODY_Y + 4;
+      uint16_t tte = board.getTimeToEmpty();
+      if (tte == 0xFFFF || tte == 0) strcpy(val, tte == 0 ? MECK_TR("depleted", "\xC3\xA9puis\xC3\xA9" "e") : MECK_TR("charging", "en charge"));
+      else if (tte >= 60) snprintf(val, sizeof(val), MECK_TR("%dh %dm", "%dh %dmin"), tte / 60, tte % 60);
+      else snprintf(val, sizeof(val), "%d min", tte);
+      Ui2List::kvRow(c, y, MECK_TR("Remaining", "Autonomie"), val); y += 20;
+      snprintf(val, sizeof(val), "%d mA", board.getAvgCurrent());
+      Ui2List::kvRow(c, y, MECK_TR("Average current", "Courant moyen"), val); y += 20;
+      snprintf(val, sizeof(val), "%d mW", board.getAvgPower());
+      Ui2List::kvRow(c, y, MECK_TR("Average power", "Puissance moyenne"), val); y += 20;
+      uint16_t mv = board.getBattMilliVolts();
+      snprintf(val, sizeof(val), "%d.%03d V", mv / 1000, mv % 1000);
+      Ui2List::kvRow(c, y, MECK_TR("Voltage", "Tension"), val); y += 20;
+      uint16_t remCap = board.getRemainingCapacity();
+      uint16_t desCap = board.getDesignCapacity();
+      if (desCap > 0 && remCap > desCap) remCap = desCap;   // gauge FCC may be stale until a full cycle
+      snprintf(val, sizeof(val), "%d mAh", remCap);
+      Ui2List::kvRow(c, y, MECK_TR("Remaining capacity", "Capacit\xC3\xA9 restante"), val); y += 20;
+      int16_t t = board.getBattTemperature();
+      snprintf(val, sizeof(val), "%d.%d \xC2\xB0" "C", t / 10, abs(t % 10));
+      Ui2List::kvRow(c, y, MECK_TR("Temperature", "Temp\xC3\xA9rature"), val); y += 20;
+      infoDots(c);
+      const Ui2Key keys[] = { ui2Key("A/D", MECK_TR("Page", "Page"), true) };
+      Ui2Chrome::footer(c, keys, 1);
+      return 5000;
+    }
+#endif
+
+    if (_page == HomePage::SHUTDOWN) {
+      Ui2Chrome::titleBar(c, MECK_TR("Power", "Alimentation"));
+      if (_shutdown_init) {
+        Ui2List::emptyState(c, BODY_Y, FOOTER_Y, UI2_IC_MOON, MECK_TR("Hibernating\xE2\x80\xA6", "Mise en veille\xE2\x80\xA6"));
+        return 5000;
+      }
+      Ui2Row r1;
+      r1.icon = UI2_IC_MOON;
+      r1.title = MECK_TR("Hibernate", "Veille");
+      r1.sub = MECK_TR("Wakes with the button", "R\xC3\xA9veil par le bouton");
+      r1.selected = !_poweroff_selected;
+      Ui2List::drawRow(c, BODY_Y, r1);
+      Ui2Row r2;
+      r2.icon = UI2_IC_BOLT;
+      r2.title = MECK_TR("Power off", "\xC3\x89teindre");
+      r2.sub = MECK_TR("Plug in USB-C to turn on", "USB-C pour rallumer");
+      r2.selected = _poweroff_selected;
+      Ui2List::drawRow(c, BODY_Y + ROW_H, r2);
+      infoDots(c);
+      if (_poweroff_confirm) {
+        Ui2List::dialog(c, UI2_IC_WARN, MECK_TR("Power off the device?", "\xC3\x89teindre l'appareil ?"),
+                        MECK_TR("Plug in USB-C to turn it on again.", "Branchez l'USB-C pour le rallumer."),
+                        MECK_TR("Cancel", "Annuler"), MECK_TR("Power off", "\xC3\x89teindre"));
+        const Ui2Key keys[] = { ui2KeyIcon(UI2_IC_ENTER, MECK_TR("Power off", "\xC3\x89teindre")), ui2Key("Q", MECK_TR("Cancel", "Annuler")) };
+        Ui2Chrome::footer(c, keys, 2);
+        return 5000;
+      }
+      const Ui2Key keys[] = { ui2KeyIcon(UI2_IC_ENTER, MECK_TR("Select", "Choisir")), ui2Key("W/S", MECK_TR("Move", "D\xC3\xA9placer"), true),
+                              ui2Key("A/D", MECK_TR("Page", "Page"), true) };
+      Ui2Chrome::footer(c, keys, 3);
+      return 5000;
+    }
+
+    if (_page == HomePage::TIMEZONES) {
+      Ui2Chrome::titleBar(c, MECK_TR("World clock", "Horloge mondiale"));
+      if (!tzClockValid()) {
+        Ui2List::emptyState(c, BODY_Y, FOOTER_Y - 16, UI2_IC_CLOCK, MECK_TR("Clock not set", "Heure non r\xC3\xA9gl\xC3\xA9" "e"),
+                            MECK_TR("Waiting for GPS or the companion app.", "En attente du GPS ou de l'appli."));
+        infoDots(c);
+        const Ui2Key keys[] = { ui2Key("A/D", MECK_TR("Page", "Page"), true) };
+        Ui2Chrome::footer(c, keys, 1);
+        return 5000;
+      }
+      const uint32_t now = _rtc->getCurrentTime();
+      const int32_t home_local = (int32_t)now + ((int32_t)tzRowOffset(0) * 3600);
+      for (int r = 0; r < 3; r++) {
+        const int16_t y = BODY_Y + r * 56;
+        const int8_t off = tzRowOffset(r);
+        const int32_t local = (int32_t)now + ((int32_t)off * 3600);
+        int hrs = (local / 3600) % 24; if (hrs < 0) hrs += 24;
+        int mins = (local / 60) % 60;  if (mins < 0) mins += 60;
+        const bool sel = (r == _tz_sel);
+        const bool fg = !sel;
+        if (sel) { c.fill(0, y, SCREEN_W, 56, true); c.fill(2, y + 4, 2, 48, false); }
+        else c.hline(0, y + 55, SCREEN_W, true);
+        snprintf(buf, sizeof(buf), "%s \xC2\xB7 UTC%+d", tzRowLabel(r), (int)off);
+        c.textFit(10, Ui2Canvas::lineBaseline(UI2_F_LABEL, y + 8, 15), 120, buf, UI2_F_LABEL, fg);
+        const int dayDiff = (int)((local / 86400) - (home_local / 86400));
+        if (dayDiff != 0) snprintf(val, sizeof(val), MECK_TR("%+dD  %s", "%+dJ  %s"), dayDiff, tzCities(off));
+        else snprintf(val, sizeof(val), "%s", tzCities(off));
+        c.textFit(10, Ui2Canvas::lineBaseline(UI2_F_META, y + 30, 13), 120, val, UI2_F_META, fg);
+        snprintf(val, sizeof(val), "%02d:%02d", hrs, mins);
+        int16_t tw = Ui2Canvas::textWidth(val, UI2_F_NUM22);
+        c.text(SCREEN_W - PAD - tw, y + 37, val, UI2_F_NUM22, fg);
+      }
+      infoDots(c);
+      if (_tz_editing) {
+        offsetEditorV2(c, tzRowLabel(_tz_sel), _tz_edit_val, tzCities(_tz_edit_val));
+        const Ui2Key keys[] = { ui2Key("W/S", MECK_TR("Adjust", "R\xC3\xA9gler")), ui2KeyIcon(UI2_IC_ENTER, MECK_TR("Save", "OK")),
+                                ui2Key("Q", MECK_TR("Cancel", "Annuler")) };
+        Ui2Chrome::footer(c, keys, 3);
+        return 700;
+      }
+      const Ui2Key keys[] = { ui2KeyIcon(UI2_IC_ENTER, MECK_TR("Edit", "Modifier")), ui2Key("W/S", MECK_TR("Move", "D\xC3\xA9placer"), true),
+                              ui2Key("A/D", MECK_TR("Page", "Page"), true) };
+      Ui2Chrome::footer(c, keys, 3);
+      return 5000;
+    }
+
+    return 5000;
+  }
 #endif
 
   CayenneLPP sensors_lpp;
@@ -683,6 +1018,10 @@ public:
       _task->setHomeShowingTiles(true);
       return renderTilesV2(display);
     }
+  #if UI_SENSORS_PAGE == 1
+    if (_page != HomePage::SENSORS)   // the sensors page keeps the classic layout
+  #endif
+    return renderInfoV2(display);
 #endif
 
     // node name (tinyfont to avoid overlapping clock)

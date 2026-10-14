@@ -34,8 +34,23 @@ struct Ui2Row {
   int16_t height = ui2::ROW_H;
 };
 
+// Row icon for a MeshCore node type (ADV_TYPE_*: 1 chat, 2 repeater, 3 room, 4 sensor)
+inline Ui2Icon ui2NodeIcon(uint8_t type) {
+  switch (type) {
+    case 2: return UI2_IC_REPEATER;
+    case 3: return UI2_IC_ROOMSRV;
+    case 4: return UI2_IC_SENSOR;
+    default: return UI2_IC_CONTACT;
+  }
+}
+
 namespace Ui2List {
   void drawRow(Ui2Canvas& c, int16_t y, const Ui2Row& r);
+
+  // Compact age: "45s", "14m", "3h", "2d" (or "-" when unknown/negative)
+  void formatAge(char* buf, size_t len, int32_t secs);
+  // Label / value line (20 px): label ellipsized, value bold at natural width
+  void kvRow(Ui2Canvas& c, int16_t y, const char* label, const char* value);
 
   // Page-based paging (the design shows "1 / 7" instead of scrolling)
   inline int pageOf(int index, int perPage) { return perPage > 0 ? index / perPage : 0; }

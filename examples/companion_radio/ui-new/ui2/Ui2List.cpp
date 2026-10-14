@@ -78,6 +78,23 @@ void drawRow(Ui2Canvas& c, int16_t y, const Ui2Row& r) {
   }
 }
 
+void formatAge(char* buf, size_t len, int32_t secs) {
+  if (secs < 0) snprintf(buf, len, "-");
+  else if (secs < 60) snprintf(buf, len, "%lds", (long)secs);
+  else if (secs < 3600) snprintf(buf, len, "%ldm", (long)(secs / 60));
+  else if (secs < 86400) snprintf(buf, len, "%ldh", (long)(secs / 3600));
+  else snprintf(buf, len, "%ldd", (long)(secs / 86400));
+}
+
+void kvRow(Ui2Canvas& c, int16_t y, const char* label, const char* value) {
+  int16_t vw = value ? Ui2Canvas::textWidth(value, UI2_F_LABEL) : 0;
+  const int16_t maxV = SCREEN_W - 2 * PAD - 40;     // keep room for the label
+  if (vw > maxV) vw = maxV;
+  if (value) c.textFit(SCREEN_W - PAD - vw, Ui2Canvas::lineBaseline(UI2_F_LABEL, y + 2, 15), vw, value, UI2_F_LABEL);
+  int16_t lw = SCREEN_W - 2 * PAD - vw - 8;
+  if (label && lw > 0) c.textFit(PAD, Ui2Canvas::lineBaseline(UI2_F_BODY, y + 2, 15), lw, label, UI2_F_BODY);
+}
+
 void pageLabel(char* buf, size_t len, int index, int count, int perPage) {
   int pages = pageCount(count, perPage);
   if (pages <= 1) { if (len) buf[0] = 0; return; }
