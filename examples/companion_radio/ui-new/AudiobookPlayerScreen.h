@@ -1440,7 +1440,7 @@ private:
       snprintf(sleep, sizeof(sleep), "%lu:%02lu", remaining / 60, remaining % 60);
     }
     Ui2Chrome::titleBar(c, MECK_TR("Now playing", "Lecture"), track[0] ? track : nullptr,
-                        sleep[0] ? sleep : nullptr, UI2_IC_MOON);
+                        sleep[0] ? sleep : nullptr, sleep[0] ? UI2_IC_MOON : UI2_NO_ICON);
 
     int16_t y = BODY_Y + 8;
     if (_hasCover && _coverBitmap) {

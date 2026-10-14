@@ -636,6 +636,14 @@ private:
     snprintf(label, sizeof(label), MECK_TR("Alarm %d", "R\xC3\xA9veil %d"), _ringingSlot + 1);
     c.textFit(PAD, 180, SCREEN_W - 2 * PAD, label, UI2_F_TITLE, true, UI2_CENTER);
     soundLabel(slot, snd, sizeof(snd));
+    if (slot.sound[0] == '\0' && _resolvedSoundPath.length()) {
+      // Default tone: name the file actually playing
+      AlarmSlot shown = slot;
+      String base = _resolvedSoundPath.substring(_resolvedSoundPath.lastIndexOf('/') + 1);
+      strncpy(shown.sound, base.c_str(), sizeof(shown.sound) - 1);
+      shown.sound[sizeof(shown.sound) - 1] = '\0';
+      soundLabel(shown, snd, sizeof(snd));
+    }
     c.textFit(PAD, 200, SCREEN_W - 2 * PAD, snd, UI2_F_BODY, true, UI2_CENTER);
     if (meck_alarm_is_locked()) {
       c.textFit(PAD, 250, SCREEN_W - 2 * PAD, MECK_TR("Unlock to dismiss", "D\xC3\xA9verrouillez pour arr\xC3\xAAter"),

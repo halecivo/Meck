@@ -1194,9 +1194,10 @@ private:
         int16_t s = _recBuffer[i];
         sum += (s < 0) ? -s : s;
       }
-      int segs = (int)((sum / 256) * 20 / 16384);
+      // Speech averages well below full scale: 20 segments span 0..4096
+      int segs = (int)((sum / 256) * 20 / 4096);
       if (segs > 20) segs = 20;
-      c.icon(barX, 236, UI2_IC_SPEAKER, 12);
+      c.icon(barX, 236, UI2_IC_MIC, 12);
       c.segBar(barX + 18, 238, barW - 18, 8, segs, 20);
     }
     c.textFit(PAD, 284, SCREEN_W - 2 * PAD, MECK_TR("Release the Mic key to stop", "Rel\xC3\xA2" "chez Mic pour arr\xC3\xAAter"),
@@ -1207,8 +1208,10 @@ private:
     using namespace ui2;
     Ui2Canvas c(display);
     Ui2Chrome::statusHeader(c);
-    Ui2Chrome::titleBar(c, MECK_TR("Review", "\xC3\x89" "coute"), nullptr,
-                        _reviewPlaying ? MECK_TR("Playing", "Lecture") : nullptr, UI2_IC_PLAY, true);
+    if (_reviewPlaying)
+      Ui2Chrome::titleBar(c, MECK_TR("Review", "\xC3\x89" "coute"), nullptr, MECK_TR("Playing", "Lecture"), UI2_IC_PLAY, true);
+    else
+      Ui2Chrome::titleBar(c, MECK_TR("Review", "\xC3\x89" "coute"));
     char dur[24], size[24], c2[40];
     snprintf(dur, sizeof(dur), "%.1f s", _recSamples / (float)VOICE_SAMPLE_RATE);
     uint32_t sizeBytes = 44 + _recSamples * sizeof(int16_t);
