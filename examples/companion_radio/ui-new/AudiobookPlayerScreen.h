@@ -503,6 +503,15 @@ private:
   void drawLoadingSplash() {
     if (!_displayRef) return;
     _displayRef->startFrame();
+#ifdef MECK_UI_V2
+    {
+      Ui2Canvas c(*_displayRef);
+      Ui2List::busyPage(c, UI2_IC_HEADPHONES, MECK_TR("Loading audiobooks\xE2\x80\xA6", "Chargement\xE2\x80\xA6"),
+                        MECK_TR("Please wait.", "Patientez."));
+      _displayRef->endFrame();
+      return;
+    }
+#endif
     _displayRef->setTextSize(2);
     _displayRef->setColor(DisplayDriver::GREEN);
     _displayRef->setCursor(10, 15);

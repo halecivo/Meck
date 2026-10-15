@@ -132,6 +132,20 @@ public:
   }
 
   int render(DisplayDriver& display) override {
+#ifdef MECK_UI_V2
+    {
+      // UI v2: the MeshCore logo (scaled as before), then version and build
+      // date in the v2 fonts; no status header, its data is not ready yet
+      using namespace ui2;
+      Ui2Canvas c(display);
+      display.setColor(DisplayDriver::LIGHT);
+      display.drawXbm((display.width() - 128) / 2, 32, meshcore_logo, 128, 13);
+      c.textFit(PAD, 156, SCREEN_W - 2 * PAD, _version_info, UI2_F_TITLE, true, UI2_CENTER);
+      c.textFit(PAD, 178, SCREEN_W - 2 * PAD, FIRMWARE_BUILD_DATE, UI2_F_META, true, UI2_CENTER);
+      c.textFit(PAD, 270, SCREEN_W - 2 * PAD, MECK_TR("Starting\xE2\x80\xA6", "D\xC3\xA9marrage\xE2\x80\xA6"), UI2_F_BODY, true, UI2_CENTER);
+      return 1000;
+    }
+#endif
     // meshcore logo
     display.setColor(DisplayDriver::BLUE);
     int logoWidth = 128;

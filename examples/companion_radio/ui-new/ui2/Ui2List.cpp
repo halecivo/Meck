@@ -1,6 +1,7 @@
 #ifdef MECK_UI_V2
 
 #include "Ui2List.h"
+#include "Ui2Chrome.h"
 #include <stdio.h>
 
 using namespace ui2;
@@ -210,6 +211,30 @@ void emptyState(Ui2Canvas& c, int16_t top, int16_t bottom, Ui2Icon icon,
       ax += kw + 5;
     }
     c.text(ax, Ui2Canvas::boxBaseline(UI2_F_LABEL, y, 20), actionLabel, UI2_F_LABEL, false);
+  }
+}
+
+void busyPage(Ui2Canvas& c, Ui2Icon icon, const char* title, const char* detail, int pct, bool withHeader) {
+  c.fill(0, 0, SCREEN_W, SCREEN_H, false);
+  if (withHeader) Ui2Chrome::statusHeader(c);
+  const int16_t w = SCREEN_W - 2 * 16;
+  int16_t y = 92;
+  c.icon((SCREEN_W - 32) / 2, y, icon, 32, true);
+  y += 32 + 14;
+  c.textFit(16, Ui2Canvas::lineBaseline(UI2_F_TITLE, y, 18), w, title ? title : "", UI2_F_TITLE, true, UI2_CENTER);
+  y += 18 + 8;
+  if (detail && *detail) {
+    int n = c.wrap(16, Ui2Canvas::lineBaseline(UI2_F_BODY, y, 16), w, 16, 3, detail, UI2_F_BODY, true,
+                   true, nullptr, UI2_CENTER);
+    y += n * 16;
+  }
+  if (pct >= 0) {
+    if (pct > 100) pct = 100;
+    y += 14;
+    const int16_t bx = 40, bw = SCREEN_W - 80;
+    c.rect(bx, y, bw, 8);
+    int16_t fw = (int16_t)((bw - 4) * pct / 100);
+    if (fw > 0) c.fill(bx + 2, y + 2, fw, 4);
   }
 }
 

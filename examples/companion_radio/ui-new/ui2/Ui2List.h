@@ -80,4 +80,11 @@ namespace Ui2List {
   void emptyState(Ui2Canvas& c, int16_t top, int16_t bottom, Ui2Icon icon,
                   const char* line, const char* detail = nullptr,
                   const char* actionKey = nullptr, const char* actionLabel = nullptr);
+
+  // Full-screen busy page for splashes drawn outside the normal frame
+  // (loading, indexing, saving): clears the screen, then a status header,
+  // a 32 px icon, a title, up to 3 lines of detail and, when pct >= 0, a
+  // progress bar. withHeader = false leaves the header out (boot).
+  void busyPage(Ui2Canvas& c, Ui2Icon icon, const char* title, const char* detail = nullptr,
+                int pct = -1, bool withHeader = true);
 }

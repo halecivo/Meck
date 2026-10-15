@@ -551,6 +551,16 @@ private:
   void drawSplash(const char* title, const char* subtitle, const char* detail) {
     if (!_display) return;
     _display->startFrame();
+#ifdef MECK_UI_V2
+    {
+      Ui2Canvas c(*_display);
+      String body = String(subtitle ? subtitle : "");
+      if (detail && detail[0]) body += String(body.length() ? "\n" : "") + detail;
+      Ui2List::busyPage(c, UI2_IC_BOOK, title, body.c_str());
+      _display->endFrame();
+      return;
+    }
+#endif
 
     // Title in large text
     _display->setTextSize(2);
@@ -584,6 +594,15 @@ private:
   void drawIndexingSplash(const String& filename) {
     if (!_display) return;
     _display->startFrame();
+#ifdef MECK_UI_V2
+    {
+      Ui2Canvas c(*_display);
+      String body = filename + "\n" + MECK_TR("Please wait.", "Patientez.");
+      Ui2List::busyPage(c, UI2_IC_BOOK, MECK_TR("Indexing pages\xE2\x80\xA6", "Indexation\xE2\x80\xA6"), body.c_str());
+      _display->endFrame();
+      return;
+    }
+#endif
 
     // "Indexing" / "Pages..." in large text
     // Original: textSize(2) at real (20, 40) and (20, 65)
@@ -647,6 +666,18 @@ private:
   void drawBootSplash(int current, int total, const String& filename) {
     if (!_display) return;
     _display->startFrame();
+#ifdef MECK_UI_V2
+    {
+      // Boot: no status header yet; the book counter becomes a progress bar
+      Ui2Canvas c(*_display);
+      String body = filename;
+      if (current > 0 || total > 0) body = String(current) + " / " + String(total) + "\n" + filename;
+      Ui2List::busyPage(c, UI2_IC_BOOK, MECK_TR("Indexing books\xE2\x80\xA6", "Indexation des livres\xE2\x80\xA6"),
+                        body.c_str(), total > 0 ? current * 100 / total : -1, false);
+      _display->endFrame();
+      return;
+    }
+#endif
 
     // "Indexing" / "Pages..." in large text
     _display->setTextSize(2);

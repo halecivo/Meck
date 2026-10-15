@@ -487,6 +487,14 @@ private:
   void drawBriefSplash(const char* message) {
     if (!_display) return;
     _display->startFrame();
+#ifdef MECK_UI_V2
+    {
+      Ui2Canvas c(*_display);
+      Ui2List::busyPage(c, UI2_IC_NOTES, message);
+      _display->endFrame();
+      return;
+    }
+#endif
     _display->setTextSize(2);
     _display->setColor(DisplayDriver::GREEN);
     _display->setCursor(10, 40);
