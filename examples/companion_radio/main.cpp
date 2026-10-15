@@ -930,6 +930,37 @@ static uint32_t _atoi(const char* sp) {
     if (strncmp(cmd, "pwrhiz ", 7) == 0) {
       bool on = cmd[7] == '1';
       Serial.printf("pwr: HIZ %s %s\n", on ? "on" : "off", meckSetHiz(on) ? "ok" : "FAILED");
+    } else if (strncmp(cmd, "pwrx ", 5) == 0) {
+      // Measuring the items of LilyGo's factory sleep routine one by one.
+      // One-way: restart afterwards.
+      const char* it = cmd + 5;
+      if (!strcmp(it, "epdoff")) {
+        display.panelPowerOff();                       // panel charge pump off
+      } else if (!strcmp(it, "epdhib")) {
+        display.panelHibernate();                      // panel controller deep sleep
+      } else if (!strcmp(it, "sd")) {
+        SD.end();                                      // card deselected, CS high
+        pinMode(SDCARD_CS, OUTPUT);
+        digitalWrite(SDCARD_CS, HIGH);
+      } else if (!strcmp(it, "codec")) {
+        const uint8_t i2s[] = { BOARD_ES8311_MCLK, BOARD_ES8311_SCLK, BOARD_ES8311_LRCK,
+                                BOARD_ES8311_DSDIN, BOARD_ES8311_ASDOUT };
+        for (uint8_t p : i2s) { gpio_reset_pin((gpio_num_t)p); pinMode(p, OUTPUT); digitalWrite(p, LOW); }
+      } else if (!strcmp(it, "kbled")) {
+        pinMode(KB_BL_PIN, OUTPUT);                    // keyboard LED driver pin low
+        digitalWrite(KB_BL_PIN, LOW);
+      } else if (!strcmp(it, "touch")) {
+        Wire.beginTransmission(I2C_ADDR_TOUCH);        // CST3xx deep sleep (0xD105)
+        Wire.write(0xD1);
+        Wire.write(0x05);
+        Serial.printf("pwr: touch sleep %s\n", Wire.endTransmission() == 0 ? "ok" : "FAILED");
+      } else if (!strcmp(it, "keyrst")) {
+        board.xl9555_digitalWrite(XL_PIN_KEY_RST, LOW); // keyboard controller held in reset
+      } else {
+        Serial.println("pwr: pwrx epdoff|epdhib|sd|codec|kbled|touch|keyrst");
+        return;
+      }
+      Serial.printf("pwr: %s done\n", it);
     } else if (strncmp(cmd, "pwrcpu ", 7) == 0) {
       // Temporary CPU clock for measuring (80 / 160 / 240; 40 MHz breaks I2C)
       int mhz = atoi(cmd + 7);

@@ -255,6 +255,12 @@ public:
   // LUT, or the factory OTP one while a dithered game picture is showing),
   // and read how many fast partials have run since the last full refresh.
   // No-ops on builds using the library driver.
+  // Panel power: powerOff() stops the panel's charge pump after a refresh;
+  // hibernate() also deep-sleeps the controller (the next refresh wakes it
+  // through the reset pin). Used by the power measurements.
+  void panelPowerOff() { display.powerOff(); }
+  void panelHibernate() { display.hibernate(); }
+
   void setFastWaveform(bool on) {
 #ifdef EINK_FASTLUT_EXPERIMENT
     display.epd2.setFastWaveform(on);
