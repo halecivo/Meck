@@ -894,10 +894,29 @@ static uint32_t _atoi(const char* sp) {
   // runs from the battery while the USB data link stays up and the gauge
   // shows the real consumption. It switches back off by itself after 15 min.
   static unsigned long meckHizUntil = 0;
-  // Gauge avgI at the end of the awake and the sleep phase of "pwrsleep";
-  // RTC_NOINIT so they survive the reset that USB recovery needs
-  RTC_NOINIT_ATTR static int meckAwakeResult;
-  RTC_NOINIT_ATTR static int meckSleepResult;
+  #include <Preferences.h>
+  // Gauge avgI at the end of the awake and the sleep phase of "pwrsleep",
+  // kept in NVS: the reset button that USB recovery needs clears RTC memory
+  static int meckAwakeResult = 0;
+  static int meckSleepResult = 0;
+
+  static void meckLoadSleepResults() {
+    Preferences p;
+    if (p.begin("pwrtest", true)) {
+      meckAwakeResult = p.getInt("awake", 0);
+      meckSleepResult = p.getInt("sleep", 0);
+      p.end();
+    }
+  }
+
+  static void meckSaveSleepResults() {
+    Preferences p;
+    if (p.begin("pwrtest", false)) {
+      p.putInt("awake", meckAwakeResult);
+      p.putInt("sleep", meckSleepResult);
+      p.end();
+    }
+  }
 
   static int meckChgRead(uint8_t reg) {
     Wire.beginTransmission(I2C_ADDR_SY6970);
@@ -954,6 +973,17 @@ static uint32_t _atoi(const char* sp) {
         Wire.write(0xD1);
         Wire.write(0x05);
         Serial.printf("pwr: touch sleep %s\n", Wire.endTransmission() == 0 ? "ok" : "FAILED");
+      } else if (!strcmp(it, "uarts")) {
+        // GPS and modem UART / control pins to inputs, as the factory sleep
+        // does: an output idling high can back-power a switched-off module
+        Serial2.end();
+        const uint8_t uart[] = { GPS_TX_PIN, GPS_RX_PIN, PIN_GPS_PPS, MODEM_TX, MODEM_RX, MODEM_DTR, MODEM_RI };
+        for (uint8_t p : uart) {
+          Serial.printf("pwr: pin %u was %s level %d\n", p,
+                        (GPIO.enable & (1UL << p)) ? "output" : "input", gpio_get_level((gpio_num_t)p));
+          gpio_reset_pin((gpio_num_t)p);
+          pinMode(p, INPUT);
+        }
       } else if (!strcmp(it, "keyrst")) {
         board.xl9555_digitalWrite(XL_PIN_KEY_RST, LOW); // keyboard controller held in reset
       } else {
@@ -969,16 +999,20 @@ static uint32_t _atoi(const char* sp) {
       // Light-sleep experiment: stop BLE, then sleep in 1 s timer cycles for
       // the given seconds and keep the gauge's average current from the end
       // (USB drops while asleep; read it later with "pwr"). Restart afterwards.
-      // USB does not come back after light sleep, so both results are kept in
-      // RTC memory (survives the reset button) and shown on the display.
+      // USB does not come back after light sleep, so both results are saved
+      // in NVS (read back with "pwr" after the reset) and shown on the display.
+      // The awake phase lasts 90 s so the gauge's average settles first.
       int secs = constrain(atoi(cmd + 9), 10, 300);
-      Serial.printf("pwr: 60 s awake + light sleep %d s, BLE off; USB will drop\n", secs);
+      Serial.printf("pwr: 90 s awake + light sleep %d s, BLE off; USB will drop\n", secs);
       Serial.flush();
+      meckAwakeResult = meckSleepResult = 0;
+      meckSaveSleepResults();
       serial_interface.disable();
       btStop();
-      unsigned long until = millis() + 60000UL;
+      unsigned long until = millis() + 90000UL;
       while ((long)(millis() - until) < 0) delay(50);
       meckAwakeResult = board.getAvgCurrent();
+      meckSaveSleepResults();
       until = millis() + secs * 1000UL;
       while ((long)(millis() - until) < 0) {
         esp_sleep_enable_timer_wakeup(1000000ULL);
@@ -986,6 +1020,7 @@ static uint32_t _atoi(const char* sp) {
         delay(2);
       }
       meckSleepResult = board.getAvgCurrent();
+      meckSaveSleepResults();
       meckSetHiz(false);   // charge again right away
       char res[96];
       snprintf(res, sizeof(res), "awake %d mA\nlight sleep %d mA\nPress reset", meckAwakeResult, meckSleepResult);
@@ -1019,6 +1054,7 @@ static uint32_t _atoi(const char* sp) {
       board.xl9555_digitalWrite(pin, v != 0);
       Serial.printf("pwr: %s %s\n", what, v ? "on" : "off");
     }
+    meckLoadSleepResults();
     int r0 = meckChgRead(0x00), r0b = meckChgRead(0x0B);
     Serial.printf("pwr: V=%umV avgI=%dmA soc=%u%% | hiz=%d vbus=%d | cpu=%uMHz locked=%d ble=%d | "
                   "lora=%d gps=%d 1v8=%d modem=%d motor=%d amp=%d bl=%d | last test awake=%d sleep=%d\n",
@@ -1054,6 +1090,9 @@ static uint32_t _atoi(const char* sp) {
       display.endFrame();
       return;
     }
+#endif
+#if ENV_INCLUDE_GPS == 1
+    else if (strcmp(name, "gps") == 0)      ui_task.toggleGPS();   // same as Enter on the GPS page
 #endif
     else if (strcmp(name, "lock") == 0)     ui_task.lockScreen();
     else if (strcmp(name, "unlock") == 0)   ui_task.unlockScreen();
