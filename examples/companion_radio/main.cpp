@@ -949,6 +949,27 @@ static uint32_t _atoi(const char* sp) {
     if (strncmp(cmd, "pwrhiz ", 7) == 0) {
       bool on = cmd[7] == '1';
       Serial.printf("pwr: HIZ %s %s\n", on ? "on" : "off", meckSetHiz(on) ? "ok" : "FAILED");
+    } else if (strcmp(cmd, "pwrcodec") == 0) {
+      // ES8311 registers that hold its power state (0x0D: analog power)
+      const uint8_t regs[] = { 0x00, 0x01, 0x02, 0x0D, 0x0E, 0x12, 0x14, 0x15, 0x17, 0x32, 0x37, 0x45 };
+      Serial.print("pwr: ES8311");
+      for (uint8_t r : regs) {
+        Wire.beginTransmission(I2C_ADDR_ES8311);
+        Wire.write(r);
+        int v = -1;
+        if (Wire.endTransmission(false) == 0 && Wire.requestFrom((uint8_t)I2C_ADDR_ES8311, (uint8_t)1) == 1) v = Wire.read();
+        Serial.printf(" %02X=%02X", r, v & 0xFF);
+      }
+      Serial.println();
+    } else if (strcmp(cmd, "pwrpins") == 0) {
+      // Every GPIO that drives an output, with its level and pull state:
+      // finds lines held high into switched-off chips
+      for (int p = 0; p <= 48; p++) {
+        if (!GPIO_IS_VALID_GPIO(p)) continue;
+        bool oe = p < 32 ? (GPIO.enable & (1UL << p)) : (GPIO.enable1.val & (1UL << (p - 32)));
+        if (!oe) continue;
+        Serial.printf("pwr: GPIO%-2d output level=%d\n", p, gpio_get_level((gpio_num_t)p));
+      }
     } else if (strncmp(cmd, "pwrx ", 5) == 0) {
       // Measuring the items of LilyGo's factory sleep routine one by one.
       // One-way: restart afterwards.
@@ -965,6 +986,22 @@ static uint32_t _atoi(const char* sp) {
         const uint8_t i2s[] = { BOARD_ES8311_MCLK, BOARD_ES8311_SCLK, BOARD_ES8311_LRCK,
                                 BOARD_ES8311_DSDIN, BOARD_ES8311_ASDOUT };
         for (uint8_t p : i2s) { gpio_reset_pin((gpio_num_t)p); pinMode(p, OUTPUT); digitalWrite(p, LOW); }
+      } else if (!strcmp(it, "codecoff")) {
+        // ES8311 standby sequence (Everest / Espressif reference driver):
+        // ADC, DAC, analog and clocks down
+        static const uint8_t seq[][2] = {
+          {0x32, 0x00}, {0x17, 0x00}, {0x0E, 0xFF}, {0x12, 0x02}, {0x14, 0x00}, {0x0D, 0xFA},
+          {0x15, 0x00}, {0x37, 0x08}, {0x02, 0x10}, {0x00, 0x00}, {0x00, 0x1F}, {0x01, 0x30},
+          {0x01, 0x00}, {0x45, 0x00}, {0x0D, 0xFC}, {0x02, 0x00},
+        };
+        int fails = 0;
+        for (auto& w : seq) {
+          Wire.beginTransmission(I2C_ADDR_ES8311);
+          Wire.write(w[0]);
+          Wire.write(w[1]);
+          if (Wire.endTransmission() != 0) fails++;
+        }
+        Serial.printf("pwr: ES8311 standby, %d write errors\n", fails);
       } else if (!strcmp(it, "kbled")) {
         pinMode(KB_BL_PIN, OUTPUT);                    // keyboard LED driver pin low
         digitalWrite(KB_BL_PIN, LOW);
@@ -1049,8 +1086,9 @@ static uint32_t _atoi(const char* sp) {
       int v = 0;
       sscanf(cmd + 6, "%7s %d", what, &v);
       uint8_t pin = !strcmp(what, "gps") ? XL_PIN_GPS_EN : !strcmp(what, "1v8") ? XL_PIN_1V8_EN
-                  : !strcmp(what, "lora") ? XL_PIN_LORA_EN : !strcmp(what, "touch") ? XL_PIN_TOUCH_RST : 0xFF;
-      if (pin == 0xFF) { Serial.println("pwr: pwrxl gps|1v8|lora|touch 0|1"); return; }
+                  : !strcmp(what, "lora") ? XL_PIN_LORA_EN : !strcmp(what, "touch") ? XL_PIN_TOUCH_RST
+                  : !strcmp(what, "motor") ? XL_PIN_MOTOR_EN : 0xFF;
+      if (pin == 0xFF) { Serial.println("pwr: pwrxl gps|1v8|lora|touch|motor 0|1"); return; }
       board.xl9555_digitalWrite(pin, v != 0);
       Serial.printf("pwr: %s %s\n", what, v ? "on" : "off");
     }
