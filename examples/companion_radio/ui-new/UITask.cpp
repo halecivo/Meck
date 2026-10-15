@@ -2034,7 +2034,80 @@ public:
   LockScreen(UITask* task, mesh::RTCClock* rtc, NodePrefs* node_prefs)
     : _task(task), _rtc(rtc), _node_prefs(node_prefs) {}
 
+#ifdef MECK_UI_V2
+  // UI v2 lock screen: large clock and date, battery and unread counts as
+  // chips, missed SMS / calls, and the node name at the top
+  int renderV2(DisplayDriver& display) {
+    using namespace ui2;
+    Ui2Canvas c(display);
+    uint32_t now = _rtc->getCurrentTime();
+    char timeBuf[6] = "--:--", dateBuf[24] = "";
+    if (now > 1700000000) {
+      int32_t local = (int32_t)now + ((int32_t)_node_prefs->utc_offset_hours * 3600);
+      int hrs = ((local / 3600) % 24 + 24) % 24;
+      int mins = ((local / 60) % 60 + 60) % 60;
+      snprintf(timeBuf, sizeof(timeBuf), "%02d:%02d", hrs, mins);
+      // Civil date from days since 1970-01-01 (Howard Hinnant's algorithm)
+      int32_t z = local / 86400 + 719468;
+      int32_t era = z / 146097, doe = z - era * 146097;
+      int32_t yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+      int32_t doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+      int32_t mp = (5 * doy + 2) / 153;
+      int d = doy - (153 * mp + 2) / 5 + 1, m = mp < 10 ? mp + 3 : mp - 9;
+      static const char* const wd_en[] = {"Thursday", "Friday", "Saturday", "Sunday", "Monday", "Tuesday", "Wednesday"};
+      static const char* const wd_fr[] = {"jeudi", "vendredi", "samedi", "dimanche", "lundi", "mardi", "mercredi"};
+      int wd = (int)((local / 86400) % 7);
+      snprintf(dateBuf, sizeof(dateBuf), "%s %d. %d.", MECK_TR(wd_en[wd], wd_fr[wd]), d, m);
+    }
+
+    c.textFit(PAD, 30, SCREEN_W - 2 * PAD, _node_prefs->node_name, UI2_F_NODE, true, UI2_CENTER);
+    c.icon((SCREEN_W - 16) / 2, 52, UI2_IC_LOCK, 16);
+    c.textFit(0, 146, SCREEN_W, timeBuf, UI2_F_NUM40, true, UI2_CENTER);
+    if (dateBuf[0]) c.textFit(PAD, 174, SCREEN_W - 2 * PAD, dateBuf, UI2_F_BODY, true, UI2_CENTER);
+
+    // Battery and unread messages
+    int pct = 0;
+#if HAS_BQ27220
+    pct = _task->getBatteryPercent();
+#else
+    uint16_t mv = _task->getBattMilliVolts();
+    if (mv > 0) pct = constrain(((int)mv - 3000) * 100 / 1200, 0, 100);
+#endif
+    char batt[8], unread[24];
+    snprintf(batt, sizeof(batt), "%d%%", pct);
+    int u = _task->getUnreadMsgCount();
+    snprintf(unread, sizeof(unread), MECK_TR("%d unread", "%d non lus"), u);
+    int16_t bw = 20 + 4 + Ui2Canvas::textWidth(batt, UI2_F_SMALL);
+    int16_t uw = u > 0 ? Ui2Canvas::chipWidth(unread, UI2_IC_MSG) : 0;
+    int16_t x = (SCREEN_W - bw - (u > 0 ? uw + 12 : 0)) / 2;
+    c.battery(x, 208, pct);
+    c.text(x + 24, 217, batt, UI2_F_SMALL);
+    if (u > 0) c.chip(x + bw + 12, 206, unread, UI2_IC_MSG, true);
+
+#ifdef HAS_4G_MODEM
+    SMSScreen* smsScr = _task->getSMSScreen();
+    int sms = smsScr ? smsScr->getUnreadSmsCount() : 0;
+    int missed = smsScr ? smsScr->getUnseenMissedCount() : 0;
+    if (sms > 0 || missed > 0) {
+      char a[16] = "", b[24] = "";
+      if (sms > 0) snprintf(a, sizeof(a), "%d SMS", sms);
+      if (missed > 0) snprintf(b, sizeof(b), MECK_TR("%d missed", "%d manqu\xC3\xA9s"), missed);
+      int16_t aw = sms > 0 ? Ui2Canvas::chipWidth(a, UI2_IC_SMS) : 0;
+      int16_t mw = missed > 0 ? Ui2Canvas::chipWidth(b, UI2_IC_PHONE) : 0;
+      int16_t gap = (sms > 0 && missed > 0) ? 8 : 0;
+      int16_t sx = (SCREEN_W - aw - mw - gap) / 2;
+      if (sms > 0) c.chip(sx, 236, a, UI2_IC_SMS, true);
+      if (missed > 0) c.chip(sx + aw + gap, 236, b, UI2_IC_PHONE, true);
+    }
+#endif
+    return 30000;
+  }
+#endif
+
   int render(DisplayDriver& display) override {
+#ifdef MECK_UI_V2
+    return renderV2(display);
+#endif
     uint32_t now = _rtc->getCurrentTime();
 
     char timeBuf[6] = "--:--";
