@@ -900,6 +900,13 @@ static uint32_t _atoi(const char* sp) {
     if      (strcmp(name, "home") == 0)     ui_task.gotoHomeScreen();
     else if (strcmp(name, "settings") == 0) ui_task.gotoSettingsScreen();
     else if (strcmp(name, "rxlog") == 0)    ui_task.gotoRxLogScreen();
+    else if (strcmp(name, "chat") == 0)     ui_task.gotoChannelScreen();
+    else if (strcmp(name, "chatclr") == 0) {
+      // Remove test messages: clears the whole Public history (channel 0),
+      // so check on screen first that it holds nothing but "uimsg" messages
+      ChannelScreen* cs = (ChannelScreen*)ui_task.getChannelScreen();
+      if (cs) Serial.printf("uigo: cleared %d Public messages\n", cs->clearHistoryForChannel(0));
+    }
     else if (strcmp(name, "trace") == 0)    ui_task.gotoTraceScreen();
     else if (strcmp(name, "pathed") == 0)   ui_task.gotoPathEditor(idx);
     else if (strcmp(name, "admin") == 0)    ui_task.gotoRepeaterAdmin(idx);
