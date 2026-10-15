@@ -900,6 +900,16 @@ static uint32_t _atoi(const char* sp) {
     else if (strcmp(name, "trace") == 0)    ui_task.gotoTraceScreen();
     else if (strcmp(name, "pathed") == 0)   ui_task.gotoPathEditor(idx);
     else if (strcmp(name, "admin") == 0)    ui_task.gotoRepeaterAdmin(idx);
+    else if (strcmp(name, "adminok") == 0) {
+      // Fake a successful admin login on the open admin screen. Only for the
+      // contact-less screen (idx -1): its commands fail before transmitting.
+      RepeaterAdminScreen* admin = (RepeaterAdminScreen*)ui_task.getRepeaterAdminScreen();
+      if (!ui_task.isOnRepeaterAdmin() || !admin || admin->getContactIdx() >= 0) {
+        Serial.println("uigo: adminok needs 'uigo admin -1' first");
+        return;
+      }
+      admin->onLoginResult(true, 3, the_mesh.getRTCClock()->getCurrentTime() - 4);
+    }
 #if HAS_GPS
     else if (strcmp(name, "map") == 0)      ui_task.gotoMapScreen();
 #endif
