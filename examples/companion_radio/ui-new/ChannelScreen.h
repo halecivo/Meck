@@ -1097,6 +1097,103 @@ public:
 
   // Canned overlay tap in physical pixels: a row tap queues that slot for
   // the main loop to send; any other tap just closes the overlay.
+  // UI v2 path view for the newest received message: its text, age, route,
+  // region and SNR as label/value lines, then one row per hop with the
+  // contact it resolves to (repeaters first)
+  int renderPathV2(DisplayDriver& display) {
+    using namespace ui2;
+    Ui2Canvas c(display);
+    Ui2Chrome::statusHeader(c);
+    ChannelMessage* msg = getNewestReceivedMsg();
+    uint8_t plen = msg ? msg->path_len : 0;
+    int hops = (msg && plen != 0xFF) ? (plen & 63) : 0;
+    int bph = (plen >> 6) + 1;
+    char right[16] = "";
+    if (hops > 0) snprintf(right, sizeof(right), MECK_TR("%d hop%s", "%d saut%s"), hops, hops == 1 ? "" : "s");
+    Ui2Chrome::titleBar(c, MECK_TR("Message path", "Chemin du message"), right[0] ? right : nullptr);
+    if (!msg) {
+      Ui2List::emptyState(c, BODY_Y, FOOTER_Y, UI2_IC_TRACE, MECK_TR("No received messages", "Aucun message re\xC3\xA7u"), nullptr);
+      const Ui2Key keys[] = { ui2Key("Q", MECK_TR("Back", "Retour")) };
+      Ui2Chrome::footer(c, keys, 1);
+      return 5000;
+    }
+
+    int16_t y = BODY_Y + 4;
+    // The message, up to two lines
+    Ui2RtLine lines[2];
+    bool more = false;
+    int len = strlen(msg->text);
+    int n = ui2RtWrap(msg->text, len, SCREEN_W - 2 * PAD, UI2_F_BODY, lines, 2, &more);
+    for (int i = 0; i < n; i++) {
+      ui2RtDraw(c, PAD, y + 13, msg->text, lines[i].a, lines[i].b, UI2_F_BODY);
+      y += 16;
+    }
+    y += 4;
+    char age[12], val[40];
+    Ui2List::formatAge(age, sizeof(age), (int32_t)(_rtc->getCurrentTime() - msg->timestamp));
+    Ui2List::kvRow(c, y, MECK_TR("Received", "Re\xC3\xA7u"), age);  y += 20;
+    if (plen == 0xFF) snprintf(val, sizeof(val), "%s", MECK_TR("Direct", "Directe"));
+    else if (plen == 0) snprintf(val, sizeof(val), "%s", MECK_TR("Local / sent", "Locale / envoy\xC3\xA9"));
+    else snprintf(val, sizeof(val), MECK_TR("Flood \xC2\xB7 %d-byte hashes", "Flood \xC2\xB7 hash %d o"), bph);
+    Ui2List::kvRow(c, y, "Route", val);  y += 20;
+    const char* rgn = the_mesh.getScopeName(msg->scope_idx);
+    if (rgn) { Ui2List::kvRow(c, y, MECK_TR("Region", "R\xC3\xA9gion"), rgn); y += 20; }
+    if (msg->snr != 0) {
+      snprintf(val, sizeof(val), "%.2f dB", msg->snr / 4.0f);
+      Ui2List::kvRow(c, y, "SNR", val);
+      y += 20;
+    }
+
+    if (hops > 0) {
+      y += 4;
+      c.hline(0, y, SCREEN_W);
+      const int16_t rowH = 32;
+      int visible = (FOOTER_Y - y - 1) / rowH;
+      if (visible < 1) visible = 1;
+      _pathHopsVisible = visible;
+      if (_pathScrollPos > hops - visible) _pathScrollPos = hops - visible;
+      if (_pathScrollPos < 0) _pathScrollPos = 0;
+      for (int h = _pathScrollPos; h < hops && h < _pathScrollPos + visible; h++) {
+        const uint8_t* hb = &msg->path[h * bph];
+        char hex[8], name[33] = "", sub[16];
+        if (bph == 1) snprintf(hex, sizeof(hex), "%02X", hb[0]);
+        else if (bph == 2) snprintf(hex, sizeof(hex), "%02X%02X", hb[0], hb[1]);
+        else snprintf(hex, sizeof(hex), "%02X%02X%02X", hb[0], hb[1], hb[2]);
+        // Resolve the hash: repeaters first, then any contact
+        uint8_t type = 0;
+        ContactInfo ci;
+        int numContacts = the_mesh.getNumContacts();
+        for (int pass = 0; pass < 2 && !name[0]; pass++) {
+          for (int k = 0; k < numContacts; k++) {
+            if (the_mesh.getContactByIdx(k, ci) && memcmp(ci.id.pub_key, hb, bph) == 0 &&
+                (pass == 1 || ci.type == ADV_TYPE_REPEATER)) {
+              snprintf(name, sizeof(name), "%s", ci.name);
+              type = ci.type;
+              break;
+            }
+          }
+        }
+        snprintf(sub, sizeof(sub), MECK_TR("Hop %d", "Saut %d"), h + 1);
+        Ui2Row r;
+        r.icon = name[0] ? ui2NodeIcon(type) : UI2_IC_REPEATER;
+        r.title = name[0] ? name : MECK_TR("Unknown node", "N\xC5\x93ud inconnu");
+        r.sub = sub;
+        r.right = hex;
+        r.height = rowH;
+        Ui2List::drawRow(c, y + 1 + (h - _pathScrollPos) * rowH, r);
+      }
+    }
+    const bool scroll = hops > _pathHopsVisible;
+    const Ui2Key keys[] = {
+      ui2KeyIcon(UI2_IC_ENTER, MECK_TR("Copy", "Copier")),
+      ui2Key("W/S", MECK_TR("Scroll", "D\xC3\xA9" "filer"), true),
+      ui2Key("Q", MECK_TR("Back", "Retour")),
+    };
+    if (scroll) Ui2Chrome::footer(c, keys, 3);
+    else { const Ui2Key k2[] = { keys[0], keys[2] }; Ui2Chrome::footer(c, k2, 2); }
+    return 5000;
+  }
+
   void cannedTapAtPx(int py) {
     int row = Ui2List::rowAt(py, ui2::BODY_Y, ui2::ROW_H, ui2::ROWS_PER_PAGE);
     if (row >= 0 && row < (int)_cannedCount) _cannedPendingSlot = _cannedMap[row];
@@ -1106,7 +1203,7 @@ public:
 
   int render(DisplayDriver& display) override {
 #ifdef MECK_UI_V2
-    if (!_showPathOverlay) return renderV2(display);   // the path overlay keeps its classic layout
+    return _showPathOverlay ? renderPathV2(display) : renderV2(display);
 #endif
     char tmp[40];
     
