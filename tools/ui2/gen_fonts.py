@@ -56,12 +56,26 @@ FACES = [
 ]
 
 
-def render_glyph(font, ch, antialias=False):
+# Faces rendered anti-aliased, with the coverage threshold (0-255) that
+# turns a grey pixel black. Monochrome hinting suits the hinted Noto Sans,
+# with one exception: at 12 px bold it rounds some stems (T, E) down to one
+# pixel, so that size reads half bold; a 38 % threshold keeps it even.
+# Montserrat's outlines collapse under hinting at small sizes (the 11 px
+# clock read "14:1B"), so it is thresholded at 50 %.
+AA_THRESHOLD = {"Ui2NotoSansBold12": 96}
+
+
+def aa_threshold(name, ttf):
+    if name in AA_THRESHOLD:
+        return AA_THRESHOLD[name]
+    return 128 if ttf.startswith("Montserrat") else None
+
+
+def render_glyph(font, ch, threshold=None):
     """Return (bits rows, width, height, xOffset, yOffset, xAdvance).
 
-    Monochrome hinting suits the hinted Noto Sans; Montserrat's outlines
-    collapse under it at small sizes (the 11 px clock read "14:1B"), so those
-    faces are rendered anti-aliased and thresholded at 50 % instead.
+    threshold None renders with monochrome hinting; a number renders
+    anti-aliased and keeps pixels with at least that coverage.
     """
     adv = int(round(font.getlength(ch)))
     x0, y0, x1, y1 = font.getbbox(ch, anchor="ls")
@@ -69,12 +83,12 @@ def render_glyph(font, ch, antialias=False):
         return [], 0, 0, 0, 0, adv
     pad = 4
     size = (x1 - x0 + 2 * pad, y1 - y0 + 2 * pad)
-    if antialias:
+    if threshold is not None:
         grey = Image.new("L", size, 0)
         d = ImageDraw.Draw(grey)
         d.fontmode = "L"
         d.text((pad - x0, pad - y0), ch, font=font, fill=255, anchor="ls")
-        img = grey.point(lambda v: 255 if v >= 128 else 0).convert("1")
+        img = grey.point(lambda v: 255 if v >= threshold else 0).convert("1")
     else:
         img = Image.new("1", size, 0)
         d = ImageDraw.Draw(img)
@@ -100,7 +114,7 @@ def build(name, ttf, size, rng, subset):
         if (0x7F <= cp <= 0x9F) or (subset is not None and ch not in subset):
             glyphs.append((len(bitmap), 0, 0, 0, 0, 0, cp))
             continue
-        rows, w, h, xo, yo, adv = render_glyph(font, ch, antialias=ttf.startswith("Montserrat"))
+        rows, w, h, xo, yo, adv = render_glyph(font, ch, threshold=aa_threshold(name, ttf))
         offset = len(bitmap)
         acc, nbits = 0, 0
         for r in rows:
