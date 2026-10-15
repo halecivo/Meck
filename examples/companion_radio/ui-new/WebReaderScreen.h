@@ -28,6 +28,10 @@
 #include <helpers/ui/UIScreen.h>
 #include <helpers/ui/DisplayDriver.h>
 #include "MeckLang.h"
+#ifdef MECK_UI_V2
+  #include "ui2/Ui2Chrome.h"
+  #include "ui2/Ui2List.h"
+#endif
 #include "variant.h"
 #include <WiFi.h>
 #include <HTTPClient.h>
@@ -2664,6 +2668,187 @@ private:
 
   // ---- Rendering Helpers ----
 
+#ifdef MECK_UI_V2
+  // =====================================================================
+  // UI v2: Wi-Fi setup, start page, loading and download result. Reading
+  // pages, forms and IRC keep the classic layout.
+  // =====================================================================
+
+  void renderWifiSetupV2(DisplayDriver& display) {
+    using namespace ui2;
+    Ui2Canvas c(display);
+    Ui2Chrome::statusHeader(c);
+    char right[16] = "";
+    if (_wifiState == WIFI_SCAN_DONE) Ui2List::pageLabel(right, sizeof(right), _selectedSSID, _ssidCount, ROWS_PER_PAGE);
+    Ui2Chrome::titleBar(c, "Wi-Fi", right[0] ? right : nullptr);
+
+    if (_wifiState == WIFI_SCANNING) {
+      Ui2List::emptyState(c, BODY_Y, FOOTER_Y, UI2_IC_WIFI, MECK_TR("Scanning\xE2\x80\xA6", "Recherche\xE2\x80\xA6"),
+                          MECK_TR("Looking for Wi-Fi networks nearby.", "Recherche des r\xC3\xA9seaux Wi-Fi."));
+    } else if (_wifiState == WIFI_SCAN_DONE) {
+      if (_ssidCount == 0) {
+        Ui2List::emptyState(c, BODY_Y, FOOTER_Y, UI2_IC_WIFIOFF, MECK_TR("No networks found", "Aucun r\xC3\xA9seau"), nullptr);
+      }
+      const int start = Ui2List::pageStart(_selectedSSID, ROWS_PER_PAGE);
+      for (int i = start; i < _ssidCount && i < start + ROWS_PER_PAGE; i++) {
+        Ui2Row r;
+        r.icon = UI2_IC_WIFI;
+        r.title = _ssidList[i].c_str();
+        r.chevron = true;
+        r.selected = (i == _selectedSSID);
+        Ui2List::drawRow(c, BODY_Y + (i - start) * ROW_H, r);
+      }
+    } else if (_wifiState == WIFI_ENTERING_PASS) {
+      char pass[WEB_WIFI_PASS_LEN + 2];
+      for (int i = 0; i < _wifiPassLen; i++) pass[i] = '*';
+      if (_wifiPassLen > 0 && _formLastCharAt > 0 && (millis() - _formLastCharAt) < 800)
+        pass[_wifiPassLen - 1] = _wifiPass[_wifiPassLen - 1];
+      pass[_wifiPassLen] = '_';
+      pass[_wifiPassLen + 1] = '\0';
+      Ui2Row r0; r0.icon = UI2_IC_WIFI; r0.title = _ssidList[_selectedSSID].c_str(); r0.sub = MECK_TR("Network", "R\xC3\xA9seau");
+      Ui2Row r1; r1.icon = UI2_IC_KEY; r1.title = MECK_TR("Password", "Mot de passe"); r1.sub = pass;
+      r1.selected = true; r1.pending = true;
+      Ui2List::drawRow(c, BODY_Y, r0);
+      Ui2List::drawRow(c, BODY_Y + ROW_H, r1);
+    } else if (_wifiState == WIFI_CONNECTING) {
+      Ui2List::emptyState(c, BODY_Y, FOOTER_Y, UI2_IC_WIFI, MECK_TR("Connecting\xE2\x80\xA6", "Connexion\xE2\x80\xA6"), _connectedSSID.c_str());
+    } else if (_wifiState == WIFI_FAILED) {
+      Ui2List::emptyState(c, BODY_Y, FOOTER_Y, UI2_IC_WIFIOFF, MECK_TR("Wi-Fi error", "Erreur Wi-Fi"), _fetchError.c_str());
+    }
+
+    if (_wifiState == WIFI_ENTERING_PASS) {
+      const Ui2Key keys[] = { ui2KeyIcon(UI2_IC_ENTER, MECK_TR("Connect", "Connexion")), ui2Key("Sh+Del", MECK_TR("Back", "Retour")) };
+      Ui2Chrome::footer(c, keys, 2);
+    } else if (_wifiState == WIFI_FAILED) {
+      const Ui2Key keys[] = { ui2KeyIcon(UI2_IC_ENTER, MECK_TR("Retry", "R\xC3\xA9" "essayer")), ui2Key("Sh+Del", MECK_TR("Back", "Retour")) };
+      Ui2Chrome::footer(c, keys, 2);
+    } else {
+      const Ui2Key keys[] = {
+        ui2KeyIcon(UI2_IC_ENTER, MECK_TR("Select", "Choisir")),
+        ui2Key("W/S", MECK_TR("Move", "D\xC3\xA9placer"), true),
+        ui2Key("Sh+Del", MECK_TR("Back", "Retour")),
+      };
+      Ui2Chrome::footer(c, keys, 3);
+    }
+  }
+
+  // Text being typed plus the cursor; when too long for a row subtitle only
+  // its end is shown, after "…", so the cursor stays visible
+  static void fieldTail(char* out, size_t len, const char* text) {
+    const int16_t maxW = 160;
+    const char* p = text;
+    while (*p && Ui2Canvas::textWidth(p, UI2_F_BODY) > maxW) {
+      p++;
+      while (((uint8_t)*p & 0xC0) == 0x80) p++;   // whole UTF-8 characters
+    }
+    snprintf(out, len, "%s%s_", p == text ? "" : "\xE2\x80\xA6", p);
+  }
+
+  // Start page items: 0 IRC, 1 URL, 2 search, then bookmarks and history
+  void renderHomeV2(DisplayDriver& display) {
+    using namespace ui2;
+    Ui2Canvas c(display);
+    Ui2Chrome::statusHeader(c);
+    const int nBook = (int)_bookmarks.size(), nHist = (int)_history.size();
+    const int total = 3 + nBook + nHist;
+    if (_homeSelected >= total) _homeSelected = total - 1;
+    char net[20];
+    if (!isNetworkAvailable()) snprintf(net, sizeof(net), "%s", MECK_TR("Offline", "Hors ligne"));
+    else if (isWiFiConnected()) { IPAddress ip = WiFi.localIP(); snprintf(net, sizeof(net), "%d.%d.%d.%d", ip[0], ip[1], ip[2], ip[3]); }
+    else snprintf(net, sizeof(net), "4G");
+    Ui2Chrome::titleBar(c, MECK_TR("Browser", "Navigateur"), nullptr, net,
+                        isNetworkAvailable() ? UI2_IC_WIFI : UI2_IC_WIFIOFF, isNetworkAvailable());
+
+    const int start = Ui2List::pageStart(_homeSelected, ROWS_PER_PAGE);
+    for (int i = start; i < total && i < start + ROWS_PER_PAGE; i++) {
+      Ui2Row r;
+      char sub[WEB_MAX_URL_LEN + 4];
+      if (i == 0) {
+        r.icon = UI2_IC_MSG;
+        r.title = MECK_TR("IRC chat", "Chat IRC");
+        if (_ircConnected && _ircJoined) snprintf(sub, sizeof(sub), MECK_TR("%s \xC2\xB7 connected", "%s \xC2\xB7 connect\xC3\xA9"), _ircChannel);
+        else if (_ircConnected) snprintf(sub, sizeof(sub), "%s", MECK_TR("Connecting\xE2\x80\xA6", "Connexion\xE2\x80\xA6"));
+        else snprintf(sub, sizeof(sub), "%s:%d", _ircHost, _ircPort);
+        r.sub = sub;
+      } else if (i == 1) {
+        r.icon = UI2_IC_GLOBE;
+        r.title = MECK_TR("Open address", "Ouvrir une adresse");
+        if (_urlEditing) { fieldTail(sub, sizeof(sub), _urlBuffer); r.pending = true; }
+        else snprintf(sub, sizeof(sub), "%s", _urlLen ? _urlBuffer : MECK_TR("Type a URL", "Saisir une URL"));
+        r.sub = sub;
+      } else if (i == 2) {
+        r.icon = UI2_IC_SEARCH;
+        r.title = MECK_TR("Search", "Rechercher");
+        if (_searchEditing) { fieldTail(sub, sizeof(sub), _searchBuffer); r.pending = true; }
+        else snprintf(sub, sizeof(sub), "%s", _searchLen ? _searchBuffer : "DuckDuckGo Lite");
+        r.sub = sub;
+      } else {
+        bool bm = (i - 3) < nBook;
+        const String& url = bm ? _bookmarks[i - 3] : _history[i - 3 - nBook];
+        const char* u = url.c_str();
+        if (!strncmp(u, "https://", 8)) u += 8;
+        else if (!strncmp(u, "http://", 7)) u += 7;
+        r.icon = bm ? UI2_IC_STAR : UI2_IC_CLOCK;
+        r.title = u;
+        r.sub = bm ? MECK_TR("Bookmark", "Favori") : MECK_TR("History", "Historique");
+      }
+      r.selected = (i == _homeSelected);
+      Ui2List::drawRow(c, BODY_Y + (i - start) * ROW_H, r);
+    }
+
+    if (_urlEditing || _searchEditing) {
+      const Ui2Key keys[] = { ui2KeyIcon(UI2_IC_ENTER, MECK_TR("Go", "OK")), ui2Key("Sh+Del", MECK_TR("Cancel", "Annuler")) };
+      Ui2Chrome::footer(c, keys, 2);
+    } else {
+      bool onBookmark = (_homeSelected >= 3 && _homeSelected < 3 + nBook);
+      bool hasData = (_cookieCount > 0 || !_history.empty());
+      Ui2Key keys[4];
+      int n = 0;
+      keys[n++] = ui2KeyIcon(UI2_IC_ENTER, MECK_TR("Open", "Ouvrir"));
+      keys[n++] = ui2Key("W/S", MECK_TR("Move", "D\xC3\xA9placer"), true);
+      if (onBookmark) keys[n++] = ui2Key("Del", MECK_TR("Remove", "Retirer"));
+      else if (hasData) keys[n++] = ui2Key("X", MECK_TR("Clear data", "Effacer"));
+      keys[n++] = ui2Key("Q", MECK_TR("Back", "Retour"));
+      Ui2Chrome::footer(c, keys, n);
+    }
+
+    if (_toastMsg[0] && (millis() - _toastTime < 1500)) Ui2List::toast(c, _toastMsg);
+    else if (_toastMsg[0]) _toastMsg[0] = '\0';
+  }
+
+  void renderFetchingV2(DisplayDriver& display) {
+    using namespace ui2;
+    Ui2Canvas c(display);
+    Ui2Chrome::statusHeader(c);
+    Ui2Chrome::titleBar(c, MECK_TR("Browser", "Navigateur"));
+    c.icon((SCREEN_W - 32) / 2, 80, UI2_IC_GLOBE, 32);
+    c.textFit(PAD, 140, SCREEN_W - 2 * PAD, MECK_TR("Loading\xE2\x80\xA6", "Chargement\xE2\x80\xA6"), UI2_F_TITLE, true, UI2_CENTER);
+    c.wrap(PAD, 162, SCREEN_W - 2 * PAD, 14, 3, _urlBuffer, UI2_F_META, true, true, nullptr, UI2_CENTER);
+    char prog[48];
+    int elapsed = (int)((millis() - _fetchStartTime) / 1000);
+    if (_fetchRetryCount > 0) snprintf(prog, sizeof(prog), MECK_TR("Retry %d/4 \xC2\xB7 %d s", "Essai %d/4 \xC2\xB7 %d s"), _fetchRetryCount, elapsed);
+    else if (_fetchProgress > 0) snprintf(prog, sizeof(prog), MECK_TR("%d bytes \xC2\xB7 %d s", "%d octets \xC2\xB7 %d s"), _fetchProgress, elapsed);
+    else snprintf(prog, sizeof(prog), MECK_TR("Connecting \xC2\xB7 %d s", "Connexion \xC2\xB7 %d s"), elapsed);
+    c.textFit(PAD, 218, SCREEN_W - 2 * PAD, prog, UI2_F_BODY, true, UI2_CENTER);
+  }
+
+  void renderDownloadDoneV2(DisplayDriver& display) {
+    using namespace ui2;
+    Ui2Canvas c(display);
+    Ui2Chrome::statusHeader(c);
+    Ui2Chrome::titleBar(c, MECK_TR("Download", "T\xC3\xA9l\xC3\xA9" "chargement"));
+    if (_downloadOk) {
+      Ui2List::emptyState(c, BODY_Y, FOOTER_Y, UI2_IC_DOWNLOAD, MECK_TR("Saved to /books/", "Enregistr\xC3\xA9 dans /books/"), _downloadedFile);
+      const Ui2Key keys[] = { ui2KeyIcon(UI2_IC_ENTER, MECK_TR("Read", "Lire")), ui2Key("Q", MECK_TR("Back", "Retour")) };
+      Ui2Chrome::footer(c, keys, 2);
+    } else {
+      Ui2List::emptyState(c, BODY_Y, FOOTER_Y, UI2_IC_WARN, MECK_TR("Download failed", "\xC3\x89" "chec"), _fetchError.c_str());
+      const Ui2Key keys[] = { ui2Key("Q", MECK_TR("Back", "Retour")) };
+      Ui2Chrome::footer(c, keys, 1);
+    }
+  }
+#endif
+
   void renderWifiSetup(DisplayDriver& display) {
     display.setColor(DisplayDriver::GREEN);
     display.setTextSize(1);
@@ -5232,6 +5417,15 @@ public:
   }
 
   int render(DisplayDriver& display) override {
+#ifdef MECK_UI_V2
+    switch (_mode) {
+      case WIFI_SETUP:    renderWifiSetupV2(display); return 1000;
+      case HOME:          renderHomeV2(display); return 5000;
+      case FETCHING:      renderFetchingV2(display); return 500;
+      case DOWNLOAD_DONE: renderDownloadDoneV2(display); return 5000;
+      default: break;     // reading, forms and IRC: classic layout below
+    }
+#endif
     switch (_mode) {
       case WIFI_SETUP:
         renderWifiSetup(display);
