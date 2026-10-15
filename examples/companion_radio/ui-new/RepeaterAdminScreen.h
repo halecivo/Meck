@@ -4,6 +4,10 @@
 #include <helpers/ui/DisplayDriver.h>
 #include "MeckLang.h"
 #include <MeshCore.h>
+#ifdef MECK_UI_V2
+  #include "ui2/Ui2Chrome.h"
+  #include "ui2/Ui2List.h"
+#endif
 
 // Forward declarations
 #include "../AbstractUITask.h"
@@ -595,6 +599,9 @@ public:
   // =====================================================================
 
   int render(DisplayDriver& display) override {
+#ifdef MECK_UI_V2
+    return renderV2(display);
+#endif
     char tmp[64];
 
     // --- Header ---
@@ -711,6 +718,243 @@ public:
   }
 
 private:
+
+#ifdef MECK_UI_V2
+  // =====================================================================
+  // UI v2
+  // =====================================================================
+
+  const char* permLabel() const {
+    uint8_t p = _permissions & 0x03;
+    return p >= 3 ? "Admin" : p >= 2 ? "R/W" : MECK_TR("Read only", "Lecture");
+  }
+
+  static Ui2Icon categoryIcon(int cat) {
+    switch (cat) {
+      case CAT_OPERATIONAL: return UI2_IC_CLOCK;
+      case CAT_NEIGHBORS:   return UI2_IC_RADIO;
+      case CAT_GET_CONFIG:  return UI2_IC_INFO;
+      case CAT_SET_CONFIG:  return UI2_IC_SETTINGS;
+      case CAT_POWER:       return UI2_IC_BOLT;
+      case CAT_REBOOT_OTA:  return UI2_IC_WARN;
+      default:              return UI2_IC_CHIP;
+    }
+  }
+
+  int renderV2(DisplayDriver& display) {
+    using namespace ui2;
+    Ui2Canvas c(display);
+    Ui2Chrome::statusHeader(c);
+    switch (_state) {
+      case STATE_PASSWORD_ENTRY:  renderPasswordV2(c); break;
+      case STATE_LOGGING_IN:      renderWaitingV2(c, MECK_TR("Logging in\xE2\x80\xA6", "Connexion\xE2\x80\xA6")); break;
+      case STATE_CATEGORY_MENU:   renderCategoriesV2(c); break;
+      case STATE_COMMAND_MENU:    renderCommandsV2(c); break;
+      case STATE_PARAM_ENTRY:     renderParamV2(c); break;
+      case STATE_CONFIRM:         renderCommandsV2(c); renderConfirmV2(c); break;
+      case STATE_COMMAND_PENDING: renderWaitingV2(c, MECK_TR("Waiting for the repeater\xE2\x80\xA6", "Attente du r\xC3\xA9p\xC3\xA9teur\xE2\x80\xA6")); break;
+      case STATE_RESPONSE_VIEW:
+      case STATE_ERROR:           renderResponseV2(c); break;
+    }
+    if (_state == STATE_LOGGING_IN || _state == STATE_COMMAND_PENDING) return 30000;
+    if (_state == STATE_PASSWORD_ENTRY && _lastCharAt > 0 && (millis() - _lastCharAt) < 800) {
+      return _lastCharAt + 800 - millis() + 50;
+    }
+    return 5000;
+  }
+
+  void renderPasswordV2(Ui2Canvas& c) {
+    using namespace ui2;
+    Ui2Chrome::titleBar(c, _repeaterName);
+    char masked[ADMIN_PASSWORD_MAX + 2];
+    bool revealing = (_pwdLen > 0 && (millis() - _lastCharAt) < 800);
+    int i;
+    for (i = 0; i < _pwdLen && i < ADMIN_PASSWORD_MAX - 1; i++) {
+      masked[i] = (revealing && i == _pwdLen - 1) ? _password[i] : '*';
+    }
+    masked[i++] = '_';
+    masked[i] = '\0';
+    Ui2Row r0;
+    r0.icon = UI2_IC_REPEATER;
+    r0.title = MECK_TR("Log in to this node", "Connexion au n\xC5\x93ud");
+    r0.sub = MECK_TR("Admin or guest password", "Mot de passe admin ou invit\xC3\xA9");
+    Ui2Row r1;
+    r1.icon = UI2_IC_KEY;
+    r1.title = MECK_TR("Password", "Mot de passe");
+    r1.sub = masked;
+    r1.selected = true;
+    r1.pending = true;
+    Ui2List::drawRow(c, BODY_Y, r0);
+    Ui2List::drawRow(c, BODY_Y + ROW_H, r1);
+    const Ui2Key keys[] = {
+      ui2KeyIcon(UI2_IC_ENTER, MECK_TR("Log in", "Connexion")),
+      ui2Key("Sh+Del", MECK_TR("Exit", "Sortir")),
+    };
+    Ui2Chrome::footer(c, keys, 2);
+  }
+
+  void renderWaitingV2(Ui2Canvas& c, const char* msg) {
+    using namespace ui2;
+    Ui2Chrome::titleBar(c, _repeaterName);
+    c.icon((SCREEN_W - 32) / 2, 96, UI2_IC_REFRESH, 32);
+    c.textFit(PAD, 156, SCREEN_W - 2 * PAD, msg, UI2_F_TITLE, true, UI2_CENTER);
+    if (_state == STATE_COMMAND_PENDING && _pendingCmd) {
+      c.textFit(PAD, 178, SCREEN_W - 2 * PAD, _pendingCmd->cmd, UI2_F_BODY, true, UI2_CENTER);
+    }
+    const Ui2Key keys[] = { ui2Key("Q", MECK_TR("Cancel", "Annuler")) };
+    Ui2Chrome::footer(c, keys, 1);
+  }
+
+  void renderCategoriesV2(Ui2Canvas& c) {
+    using namespace ui2;
+    Ui2Chrome::titleBar(c, _repeaterName, nullptr, permLabel(), UI2_IC_LOCK, (_permissions & 0x03) >= 3);
+    int16_t y = BODY_Y;
+    // Clock of the repeater against ours, then its battery and temperature
+    if (_serverTime > 0) {
+      char srv[12], val[32];
+      formatTime(srv, sizeof(srv), _serverTime);
+      int drift = (int)(_rtc->getCurrentTime() - _serverTime);
+      if (abs(drift) < 2) snprintf(val, sizeof(val), MECK_TR("%s \xC2\xB7 in sync", "%s \xC2\xB7 synchro"), srv);
+      else snprintf(val, sizeof(val), "%s \xC2\xB7 %+d s", srv, drift);
+      Ui2List::kvRow(c, y + 2, MECK_TR("Repeater clock", "Horloge"), val);
+      y += 20;
+    }
+    if (_telemHasVoltage || _telemHasTemp || _telemRequested) {
+      char val[32] = "";
+      int p = 0;
+      if (_telemHasVoltage) p += snprintf(val + p, sizeof(val) - p, "%.2f V", _telemVoltage);
+      if (_telemHasTemp) p += snprintf(val + p, sizeof(val) - p, "%s%.1f \xC2\xB0" "C", p ? " \xC2\xB7 " : "", _telemTempC);
+      if (!p) snprintf(val, sizeof(val), "%s", MECK_TR("requesting\xE2\x80\xA6", "demande\xE2\x80\xA6"));
+      Ui2List::kvRow(c, y + 2, MECK_TR("Battery \xC2\xB7 temp", "Batterie \xC2\xB7 temp."), val);
+      y += 20;
+    }
+    if (y > BODY_Y) { c.hline(0, y + 3, SCREEN_W); y += 4; }
+    // Seven categories share what is left (rows of at least 28 px)
+    int16_t rowH = (FOOTER_Y - y) / CAT_COUNT;
+    if (rowH > ROW_H) rowH = ROW_H;
+    for (int i = 0; i < CAT_COUNT; i++) {
+      char n[4];
+      snprintf(n, sizeof(n), "%d", i + 1);
+      Ui2Row r;
+      r.icon = categoryIcon(i);
+      r.title = MECK_TR(CATEGORIES[i].label, CATEGORIES[i].label_fr);
+      r.right = n;
+      r.height = rowH;
+      r.selected = (i == _catSel);
+      Ui2List::drawRow(c, y + i * rowH, r);
+    }
+    const Ui2Key keys[] = {
+      ui2KeyIcon(UI2_IC_ENTER, MECK_TR("Open", "Ouvrir")),
+      ui2Key("1-7", MECK_TR("Jump", "Aller")),
+      ui2Key("W/S", MECK_TR("Move", "D\xC3\xA9placer"), true),
+      ui2Key("Q", MECK_TR("Exit", "Sortir")),
+    };
+    Ui2Chrome::footer(c, keys, 4);
+  }
+
+  static Ui2Icon commandIcon(const AdminCmdDef& d) {
+    if (d.flags & (CMDF_CONFIRM | CMDF_EXPECT_TIMEOUT)) return UI2_IC_WARN;
+    if (d.flags & CMDF_PARAM) return UI2_IC_EDIT;
+    return UI2_IC_SEND;
+  }
+
+  void renderCommandsV2(Ui2Canvas& c) {
+    using namespace ui2;
+    const AdminCategoryDef& cat = CATEGORIES[_catSel];
+    char right[16];
+    Ui2List::pageLabel(right, sizeof(right), _cmdSel, cat.count, ROWS_PER_PAGE);
+    Ui2Chrome::titleBar(c, MECK_TR(cat.label, cat.label_fr), right);
+    const int start = Ui2List::pageStart(_cmdSel, ROWS_PER_PAGE);
+    for (int i = start; i < cat.count && i < start + ROWS_PER_PAGE; i++) {
+      Ui2Row r;
+      r.icon = commandIcon(cat.cmds[i]);
+      r.title = MECK_TR(cat.cmds[i].label, cat.cmds[i].label_fr);
+      r.sub = cat.cmds[i].cmd;   // the CLI command it sends
+      r.selected = (i == _cmdSel);
+      Ui2List::drawRow(c, BODY_Y + (i - start) * ROW_H, r);
+    }
+    const Ui2Key keys[] = {
+      ui2KeyIcon(UI2_IC_ENTER, MECK_TR("Run", "Lancer")),
+      ui2Key("W/S", MECK_TR("Move", "D\xC3\xA9placer"), true),
+      ui2Key("Q", MECK_TR("Back", "Retour")),
+    };
+    Ui2Chrome::footer(c, keys, 3);
+  }
+
+  void renderParamV2(Ui2Canvas& c) {
+    using namespace ui2;
+    Ui2Chrome::titleBar(c, _pendingCmd ? MECK_TR(_pendingCmd->label, _pendingCmd->label_fr) : "");
+    char val[ADMIN_PARAM_MAX + 2], preview[ADMIN_PARAM_MAX + 40];
+    snprintf(val, sizeof(val), "%s_", _paramBuf);
+    snprintf(preview, sizeof(preview), "%s%s", _pendingCmd ? _pendingCmd->cmd : "", _paramBuf);
+    Ui2Row r;
+    r.icon = UI2_IC_EDIT;
+    r.title = (_pendingCmd && _pendingCmd->paramHint) ? MECK_TR(_pendingCmd->paramHint, _pendingCmd->paramHint_fr)
+                                                      : MECK_TR("Value", "Valeur");
+    r.sub = val;
+    r.selected = true;
+    r.pending = true;
+    Ui2List::drawRow(c, BODY_Y, r);
+    c.textFit(PAD, BODY_Y + ROW_H + 20, SCREEN_W - 2 * PAD, MECK_TR("Sends:", "Envoie :"), UI2_F_META);
+    c.wrap(PAD, BODY_Y + ROW_H + 36, SCREEN_W - 2 * PAD, 15, 3, preview, UI2_F_SMALL);
+    const Ui2Key keys[] = {
+      ui2KeyIcon(UI2_IC_ENTER, MECK_TR("Send", "Envoyer")),
+      ui2Key("Sh+Del", MECK_TR("Cancel", "Annuler")),
+    };
+    Ui2Chrome::footer(c, keys, 2);
+  }
+
+  void renderConfirmV2(Ui2Canvas& c) {
+    if (!_pendingCmd) return;
+    char body[ADMIN_PARAM_MAX + 80];
+    int p = 0;
+    if ((_pendingCmd->flags & CMDF_PARAM) && _paramLen > 0)
+      p += snprintf(body + p, sizeof(body) - p, MECK_TR("Value: %s\n", "Valeur : %s\n"), _paramBuf);
+    p += snprintf(body + p, sizeof(body) - p, MECK_TR("Sends \"%s\".", "Envoie \"%s\"."), _pendingCmd->cmd);
+    if (_pendingCmd->flags & CMDF_EXPECT_TIMEOUT)
+      snprintf(body + p, sizeof(body) - p, "%s", MECK_TR("\nNo answer is expected.", "\nPas de r\xC3\xA9ponse attendue."));
+    Ui2List::dialog(c, UI2_IC_WARN, MECK_TR(_pendingCmd->label, _pendingCmd->label_fr), body,
+                    MECK_TR("No", "Non"), MECK_TR("Yes", "Oui"));
+  }
+
+  void renderResponseV2(Ui2Canvas& c) {
+    using namespace ui2;
+    bool err = (_state == STATE_ERROR);
+    const char* title = err ? MECK_TR("Error", "Erreur")
+                      : (_pendingCmd ? MECK_TR(_pendingCmd->label, _pendingCmd->label_fr) : MECK_TR("Response", "R\xC3\xA9ponse"));
+    char right[16] = "";
+    if (_responseTotalLines > 1) snprintf(right, sizeof(right), "%d / %d", _responseScroll + 1, _responseTotalLines);
+    Ui2Chrome::titleBar(c, title, right[0] ? right : nullptr);
+    int16_t y = BODY_Y + 6;
+    if (err) {
+      c.icon(PAD, y, UI2_IC_WARN, 24);
+      y += 30;
+    }
+    // Lines from _responseScroll, each wrapped to the width
+    const char* p = _response;
+    for (int skip = _responseScroll; skip > 0 && *p; skip--) {
+      while (*p && *p != '\n') p++;
+      if (*p == '\n') p++;
+    }
+    char line[96];
+    while (*p && y + 16 <= FOOTER_Y) {
+      int i = 0;
+      while (*p && *p != '\n' && i < (int)sizeof(line) - 1) line[i++] = *p++;
+      while (*p && *p != '\n') p++;
+      if (*p == '\n') p++;
+      line[i] = '\0';
+      int maxLines = (FOOTER_Y - y) / 16;
+      if (maxLines > 4) maxLines = 4;
+      int n = line[0] ? c.wrap(PAD, y + 12, SCREEN_W - 2 * PAD, 16, maxLines, line, UI2_F_BODY) : 1;
+      y += n * 16;
+    }
+    const Ui2Key keys[] = {
+      ui2Key("W/S", MECK_TR("Scroll", "D\xC3\xA9" "filer"), true),
+      ui2Key("Q", MECK_TR("Back", "Retour")),
+    };
+    Ui2Chrome::footer(c, keys, 2);
+  }
+#endif
 
   // --- Footer helpers ---
   void renderFooterRight(DisplayDriver& display, int footerY, const char* text) {
