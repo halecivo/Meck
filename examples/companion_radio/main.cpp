@@ -888,6 +888,66 @@ static uint32_t _atoi(const char* sp) {
   // Serial "screendump" command: print the last drawn frame
   void meckScreenDump() { display.dumpScreen(Serial); }
 
+#if defined(LilyGo_TDeck_Pro_Max) && HAS_BQ27220
+  // Serial "pwr", "pwrhiz 0|1" and "pwrxl <gps|1v8> 0|1": power measurement.
+  // pwrhiz 1 puts the SY6970 charger input in high impedance, so the device
+  // runs from the battery while the USB data link stays up and the gauge
+  // shows the real consumption. It switches back off by itself after 15 min.
+  static unsigned long meckHizUntil = 0;
+
+  static int meckChgRead(uint8_t reg) {
+    Wire.beginTransmission(I2C_ADDR_SY6970);
+    Wire.write(reg);
+    if (Wire.endTransmission(false) != 0) return -1;
+    if (Wire.requestFrom((uint8_t)I2C_ADDR_SY6970, (uint8_t)1) != 1) return -1;
+    return Wire.read();
+  }
+
+  static bool meckSetHiz(bool on) {
+    int r0 = meckChgRead(0x00);
+    if (r0 < 0) return false;
+    uint8_t v = on ? (r0 | 0x80) : (r0 & 0x7F);
+    Wire.beginTransmission(I2C_ADDR_SY6970);
+    Wire.write((uint8_t)0x00);
+    Wire.write(v);
+    bool ok = Wire.endTransmission() == 0;
+    meckHizUntil = (ok && on) ? millis() + 15UL * 60 * 1000 : 0;
+    return ok;
+  }
+
+  void meckPowerTick() {
+    if (meckHizUntil && (long)(millis() - meckHizUntil) >= 0) {
+      meckSetHiz(false);
+      Serial.println("pwr: HIZ timeout, USB input back on");
+    }
+  }
+
+  void meckPowerCmd(const char* cmd) {
+    if (strncmp(cmd, "pwrhiz ", 7) == 0) {
+      bool on = cmd[7] == '1';
+      Serial.printf("pwr: HIZ %s %s\n", on ? "on" : "off", meckSetHiz(on) ? "ok" : "FAILED");
+    } else if (strncmp(cmd, "pwrxl ", 6) == 0) {
+      // Only the supplies that are safe to cut: GPS and the 1.8 V sensor rail
+      char what[8] = "";
+      int v = 0;
+      sscanf(cmd + 6, "%7s %d", what, &v);
+      uint8_t pin = !strcmp(what, "gps") ? XL_PIN_GPS_EN : !strcmp(what, "1v8") ? XL_PIN_1V8_EN : 0xFF;
+      if (pin == 0xFF) { Serial.println("pwr: pwrxl gps|1v8 0|1"); return; }
+      board.xl9555_digitalWrite(pin, v != 0);
+      Serial.printf("pwr: %s %s\n", what, v ? "on" : "off");
+    }
+    int r0 = meckChgRead(0x00), r0b = meckChgRead(0x0B);
+    Serial.printf("pwr: V=%umV avgI=%dmA soc=%u%% | hiz=%d vbus=%d | cpu=%uMHz locked=%d ble=%d | "
+                  "lora=%d gps=%d 1v8=%d modem=%d motor=%d bl=%d\n",
+                  board.getBattMilliVolts(), board.getAvgCurrent(), board.getBatteryPercent(),
+                  r0 >= 0 ? (r0 >> 7) & 1 : -1, r0b >= 0 ? (r0b >> 2) & 1 : -1,
+                  (unsigned)getCpuFrequencyMhz(), ui_task.isLocked(), serial_interface.isConnected(),
+                  board.xl9555_digitalRead(XL_PIN_LORA_EN), board.xl9555_digitalRead(XL_PIN_GPS_EN),
+                  board.xl9555_digitalRead(XL_PIN_1V8_EN), board.xl9555_digitalRead(XL_PIN_6609_EN),
+                  board.xl9555_digitalRead(XL_PIN_MOTOR_EN), board.isBacklightOn());
+  }
+#endif
+
 #if HAS_GPS
   static void openMapScreen();
 #endif
@@ -3225,6 +3285,9 @@ void loop() {
 
   // CPU frequency auto-timeout back to idle
   cpuPower.loop();
+#if defined(MECK_UI_SCREENDUMP) && defined(LilyGo_TDeck_Pro_Max) && HAS_BQ27220
+  meckPowerTick();   // debug: end the HIZ measurement window
+#endif
 
   // Low-power mode — drop CPU to 40 MHz and throttle loop when lock screen
   // is active.  The mesh radio has its own FIFO so packets are buffered;

@@ -3896,6 +3896,12 @@ void MyMesh::checkCLIRescueCmd() {
         _rxlog_head = (_rxlog_head + 1) % RXLOG_SIZE;
         if (_rxlog_count < RXLOG_SIZE) _rxlog_count++;
       }
+#if defined(LilyGo_TDeck_Pro_Max) && HAS_BQ27220
+    } else if (memcmp(cli_command, "pwr", 3) == 0) {
+      // Debug: power measurement ("pwr", "pwrhiz 0|1", "pwrxl gps|1v8 0|1")
+      extern void meckPowerCmd(const char* cmd);
+      meckPowerCmd(cli_command);
+#endif
     } else if (memcmp(cli_command, "uigo ", 5) == 0) {
       // Debug: open a screen directly, e.g. "uigo rxlog", "uigo pathed 3"
       extern void meckDebugGoto(const char* arg);
