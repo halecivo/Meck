@@ -3875,6 +3875,27 @@ void MyMesh::checkCLIRescueCmd() {
       // Debug: add a local test message to the Public channel history
       extern void meckDebugAddMsg(const char* arg);
       meckDebugAddMsg(&cli_command[6]);
+    } else if (strcmp(cli_command, "uirx") == 0 && _rxlog != nullptr) {
+      // Debug: add three made-up packets to the RX log (local only)
+      static const struct { uint8_t header, path_len; uint16_t size; int8_t snr; uint8_t p0, p1;
+                            const char* ch; const char* text; } fake[] = {
+        { (PAYLOAD_TYPE_ADVERT << 2) | 0x01, 2, 132, 26, 0x5E, 0x00, "", "" },
+        { (PAYLOAD_TYPE_TXT_MSG << 2) | 0x02, 0, 58, -18, 0xA3, 0x7C, "", "" },
+        { (PAYLOAD_TYPE_GRP_TXT << 2) | 0x01, 3, 77, 9, 0x11, 0x00, "public", "Tom\xC3\xA1\xC5\xA1: Dobr\xC3\xBD ve\xC4\x8D" "er z kopc\xC5\xAF" },
+      };
+      for (const auto& f : fake) {
+        RxLogEntry& e = _rxlog[_rxlog_head];
+        memset(&e, 0, sizeof(e));
+        e.timestamp = getRTCClock()->getCurrentTime();
+        e.header = f.header; e.path_len = f.path_len; e.size = f.size; e.snr = f.snr;
+        e.payload0 = f.p0; e.payload1 = f.p1;
+        for (int i = 0; i < MAX_HASH_SIZE; i++) e.hash[i] = (uint8_t)(0x3C + i * 17 + f.size);
+        for (int i = 0; i < (f.path_len & 63); i++) e.path[i] = (uint8_t)(0xB0 + i * 9);
+        strncpy(e.channel_name, f.ch, sizeof(e.channel_name) - 1);
+        strncpy(e.text, f.text, sizeof(e.text) - 1);
+        _rxlog_head = (_rxlog_head + 1) % RXLOG_SIZE;
+        if (_rxlog_count < RXLOG_SIZE) _rxlog_count++;
+      }
     } else if (memcmp(cli_command, "uigo ", 5) == 0) {
       // Debug: open a screen directly, e.g. "uigo rxlog", "uigo pathed 3"
       extern void meckDebugGoto(const char* arg);
