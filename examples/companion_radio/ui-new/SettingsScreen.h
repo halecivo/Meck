@@ -8,6 +8,12 @@
 #include "../NodePrefs.h"
 #include "MeckFonts.h"
 #include "MeckLang.h"
+
+#if defined(LilyGo_TDeck_Pro_Max) && !defined(MECK_40MHZ_TEST)
+// Power saving when locked (main.cpp / UITask.cpp); codes are MeckSleepBlock
+extern int meckLockSleepBlocker();
+extern const char* meckSleepBlockText(int code);
+#endif
 #ifdef MECK_UI_V2
   #include "ui2/Ui2Chrome.h"
   #include "ui2/Ui2List.h"
@@ -164,6 +170,9 @@ enum SettingsRowType : uint8_t {
   ROW_FONT_STYLE,     // Font style: Classic / Noto Sans / Montserrat
 #if defined(LilyGo_TDeck_Pro)
   ROW_AUTO_LOCK,      // Auto-lock timeout picker (None/2/5/10/15/30 min)
+#endif
+#if defined(LilyGo_TDeck_Pro_Max) && !defined(MECK_40MHZ_TEST)
+  ROW_LOCK_SLEEP,     // Power saving (light sleep) while locked
 #endif
   ROW_GPS_BAUD,       // GPS baud rate picker (requires reboot)
   ROW_PATH_HASH_SIZE, // Path hash size (1, 2, or 3 bytes per hop)
@@ -578,6 +587,9 @@ private:
       addRow(ROW_FONT_STYLE);
 #if defined(LilyGo_TDeck_Pro)
       addRow(ROW_AUTO_LOCK);
+#endif
+#if defined(LilyGo_TDeck_Pro_Max) && !defined(MECK_40MHZ_TEST)
+      addRow(ROW_LOCK_SLEEP);
 #endif
       #ifdef MECK_WIFI_COMPANION
       addRow(ROW_WIFI_SETUP);
@@ -2152,6 +2164,30 @@ public:
         }
         display.print(tmp);
         break;
+#endif
+
+#if defined(LilyGo_TDeck_Pro_Max) && !defined(MECK_40MHZ_TEST)
+      case ROW_LOCK_SLEEP: {
+        snprintf(tmp, sizeof(tmp), MECK_TR("Power saving when locked: %s", "\xC3\x89" "conomie si verrouill\xC3\xA9 : %s"),
+                 _prefs->lock_sleep ? MECK_TR("ON", "OUI") : MECK_TR("OFF", "NON"));
+        display.print(tmp);
+  #ifdef MECK_UI_V2
+        // Sub-line: what keeps the device awake right now, or how the phone
+        // behaves (BLE pauses while asleep and reconnects after unlock).
+        char hint[48];
+        int why = meckLockSleepBlocker();
+        if (!_prefs->lock_sleep) {
+          snprintf(hint, sizeof(hint), "%s", MECK_TR("Phone stays reachable", "T\xC3\xA9l\xC3\xA9phone joignable"));
+        } else if (why != 0 /* MECK_SLEEP_OK */) {
+          snprintf(hint, sizeof(hint), MECK_TR("Awake now: %s", "\xC3\x89veill\xC3\xA9 : %s"), meckSleepBlockText(why));
+        } else {
+          snprintf(hint, sizeof(hint), "%s", MECK_TR("Phone connects after unlock", "T\xC3\xA9l\xC3\xA9phone apr\xC3\xA8s d\xC3\xA9verrouillage"));
+        }
+        display.setCursor(display.width() - display.getTextWidth(hint) - 2, y);
+        display.print(hint);
+  #endif
+        break;
+      }
 #endif
 
       #ifdef MECK_WIFI_COMPANION
@@ -4390,6 +4426,14 @@ public:
 #if defined(LilyGo_TDeck_Pro)
         case ROW_AUTO_LOCK:
           startEditPicker(findAutoLockIndex(_prefs->auto_lock_minutes));
+          break;
+#endif
+#if defined(LilyGo_TDeck_Pro_Max) && !defined(MECK_40MHZ_TEST)
+        case ROW_LOCK_SLEEP:
+          _prefs->lock_sleep = _prefs->lock_sleep ? 0 : 1;
+          the_mesh.savePrefs();
+          Serial.printf("Settings: Lock power saving = %s\n",
+                        _prefs->lock_sleep ? "ON" : "OFF");
           break;
 #endif
         #ifdef MECK_WIFI_COMPANION

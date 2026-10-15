@@ -26,6 +26,19 @@
 #include "../AbstractUITask.h"
 #include "../NodePrefs.h"
 
+// Power saving when locked (T-Deck MAX): why the device stays awake.
+// main.cpp's meckLockSleepBlocker() returns one of these.
+enum MeckSleepBlock {
+  MECK_SLEEP_OK = 0,     // can sleep
+  MECK_SLEEP_OFF,        // "Power saving when locked" is switched off
+  MECK_SLEEP_USB,        // on USB power
+  MECK_SLEEP_PHONE,      // phone connected over BLE
+  MECK_SLEEP_GPS,        // GPS on
+  MECK_SLEEP_MODEM,      // 4G modem on
+  MECK_SLEEP_WIFI,       // Wi-Fi on
+  MECK_SLEEP_AUDIO,      // audio playing or recently used
+};
+
 #ifdef HAS_4G_MODEM
   #include "SMSScreen.h"
 #endif
@@ -119,6 +132,8 @@ class UITask : public AbstractUITask {
   UIScreen* lock_screen;     // Lock screen (big clock + battery + unread)
   UIScreen* _screenBeforeLock = nullptr;
   bool _locked = false;
+  unsigned long _lockPromptUntil = 0;   // lock warning shown until (0 = none)
+  int _lockPromptReason = 0;            // MeckSleepBlock shown in the warning
   unsigned long _lastInputMillis = 0;  // Auto-lock idle tracking
   unsigned long _lastLockRefresh = 0;  // Periodic lock screen clock update
 #endif
@@ -274,6 +289,12 @@ public:
   bool isLocked() const { return _locked; }
   void lockScreen();
   void unlockScreen();
+  // Manual lock (button): when something keeps the device from sleeping,
+  // first shows a warning for a few seconds (GPS: Enter turns it off),
+  // then locks. Keys go to lockPromptKey() while the warning is up.
+  void requestLock();
+  bool isLockPromptActive() const { return _lockPromptUntil != 0; }
+  void lockPromptKey(char c);
 #endif
 #ifdef MECK_WEB_READER
   bool isOnWebReader() const { return curr == web_reader; }

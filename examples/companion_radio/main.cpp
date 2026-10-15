@@ -1039,28 +1039,36 @@ static uint32_t _atoi(const char* sp) {
       // USB does not come back after light sleep, so both results are saved
       // in NVS (read back with "pwr" after the reset) and shown on the display.
       // The awake phase lasts 90 s so the gauge's average settles first.
+      // "pwrsleep <s> bt" keeps the Bluetooth controller running (only BLE
+      // advertising stops) and restarts advertising afterwards: tests whether
+      // light sleep is usable without tearing BLE down.
       int secs = constrain(atoi(cmd + 9), 10, 300);
-      Serial.printf("pwr: 90 s awake + light sleep %d s, BLE off; USB will drop\n", secs);
+      bool keepBt = strstr(cmd + 9, "bt") != nullptr;
+      Serial.printf("pwr: 90 s awake + light sleep %d s, BT controller %s; USB will drop\n",
+                    secs, keepBt ? "kept" : "stopped");
       Serial.flush();
       meckAwakeResult = meckSleepResult = 0;
       meckSaveSleepResults();
       serial_interface.disable();
-      btStop();
+      if (!keepBt) btStop();
       unsigned long until = millis() + 90000UL;
       while ((long)(millis() - until) < 0) delay(50);
       meckAwakeResult = board.getAvgCurrent();
       meckSaveSleepResults();
       until = millis() + secs * 1000UL;
+      int slept = 0, rejected = 0;
       while ((long)(millis() - until) < 0) {
         esp_sleep_enable_timer_wakeup(1000000ULL);
-        esp_light_sleep_start();
+        if (esp_light_sleep_start() == ESP_OK) slept++; else { rejected++; delay(1000); }
         delay(2);
       }
       meckSleepResult = board.getAvgCurrent();
       meckSaveSleepResults();
       meckSetHiz(false);   // charge again right away
-      char res[96];
-      snprintf(res, sizeof(res), "awake %d mA\nlight sleep %d mA\nPress reset", meckAwakeResult, meckSleepResult);
+      if (keepBt) serial_interface.enable();   // BLE advertising back after sleeping
+      char res[128];
+      snprintf(res, sizeof(res), "awake %d mA\nlight sleep %d mA\nslept %d, rejected %d%s\nPress reset",
+               meckAwakeResult, meckSleepResult, slept, rejected, keepBt ? "\nBT kept, BLE back on" : "");
       Serial.printf("pwr: %s\n", res);
 #ifdef MECK_UI_V2
       display.startFrame();
@@ -1132,7 +1140,7 @@ static uint32_t _atoi(const char* sp) {
 #if ENV_INCLUDE_GPS == 1
     else if (strcmp(name, "gps") == 0)      ui_task.toggleGPS();   // same as Enter on the GPS page
 #endif
-    else if (strcmp(name, "lock") == 0)     ui_task.lockScreen();
+    else if (strcmp(name, "lock") == 0)     ui_task.requestLock();   // warns like a double click
     else if (strcmp(name, "unlock") == 0)   ui_task.unlockScreen();
     else if (strcmp(name, "chatclr") == 0) {
       // Remove test messages: clears the whole Public history (channel 0),
@@ -3347,6 +3355,97 @@ static void meckImportPoll() {
 }
 #endif
 
+#if defined(LilyGo_TDeck_Pro_Max) && !defined(MECK_40MHZ_TEST)
+// ============================================================================
+// Power saving when locked (T-Deck MAX)
+//
+// While the lock screen is up the ESP32 light-sleeps. It wakes on a LoRa
+// packet (SX1262 DIO1, ext1), on the user button (double click unlocks) and
+// at each minute boundary for the clock; after a wake it stays up long
+// enough to handle the packet or the click. Measured on the battery: about
+// 35 mA locked and awake, 13 mA asleep.
+//
+// BLE advertising stops while the device may sleep (the Bluetooth controller
+// cannot sleep on this framework, so a phone could not connect anyway) and
+// restarts on unlock. Sleep is skipped entirely while one of
+// meckLockSleepBlocker()'s conditions holds.
+// ============================================================================
+#include <WiFi.h>
+#include <esp_sleep.h>
+
+static bool meckBleStoppedForSleep = false;
+static unsigned long meckAwakeUntil = 0;     // stay awake until (after a wake)
+
+// Why the device does not sleep while locked (MeckSleepBlock in UITask.h),
+// MECK_SLEEP_OK when it can. Shown on the lock screen and in the lock warning.
+int meckLockSleepBlocker() {
+  NodePrefs* p = the_mesh.getNodePrefs();
+  if (!p->lock_sleep) return MECK_SLEEP_OFF;
+  // Radios the user switched on come first: they still drain the battery
+  // once the cable is out, so the lock warning names them even on USB.
+  if (p->gps_enabled) return MECK_SLEEP_GPS;
+#ifdef HAS_4G_MODEM
+  if (modemManager.getState() != ModemState::OFF) return MECK_SLEEP_MODEM;
+#endif
+  if (WiFi.getMode() != WIFI_MODE_NULL) return MECK_SLEEP_WIFI;
+  if (board.isUsbPowered()) return MECK_SLEEP_USB;
+  if (serial_interface.isConnected()) return MECK_SLEEP_PHONE;
+#if defined(MECK_AUDIO_VARIANT) && defined(HAS_ES8311_AUDIO)
+  if (es8311_active()) return MECK_SLEEP_AUDIO;
+#endif
+  return MECK_SLEEP_OK;
+}
+
+// Called at the end of loop() instead of the plain locked-loop delay
+static void meckLockSleepStep() {
+  bool locked = ui_task.isLocked();
+  bool canSleep = locked && meckLockSleepBlocker() == MECK_SLEEP_OK;
+
+  // BLE advertising off while sleep is possible, back on otherwise
+  if (canSleep && !meckBleStoppedForSleep && serial_interface.isEnabled()) {
+    serial_interface.disable();
+    meckBleStoppedForSleep = true;
+    Serial.println("[Power] Locked: BLE advertising paused for power saving");
+  } else if (!canSleep && meckBleStoppedForSleep) {
+    serial_interface.enable();
+    meckBleStoppedForSleep = false;
+    Serial.println("[Power] BLE advertising resumed");
+  }
+
+  if (!locked) return;
+  if (!canSleep || the_mesh.hasPendingWork() || (long)(millis() - meckAwakeUntil) < 0) {
+    delay(50);   // locked but awake: yield as before
+    return;
+  }
+
+  // Sleep until just after the next minute boundary, a LoRa packet or the button
+  uint32_t secs = rtc_clock.getCurrentTime() % 60;
+  uint64_t us = (uint64_t)(60 - secs) * 1000000ULL + 300000ULL;
+  esp_sleep_enable_timer_wakeup(us);
+  esp_sleep_enable_ext1_wakeup(1ULL << P_LORA_DIO_1, ESP_EXT1_WAKEUP_ANY_HIGH);
+  gpio_wakeup_enable((gpio_num_t)PIN_USER_BTN, GPIO_INTR_LOW_LEVEL);
+  esp_sleep_enable_gpio_wakeup();
+  Serial.flush();
+  esp_light_sleep_start();
+  gpio_wakeup_disable((gpio_num_t)PIN_USER_BTN);
+  esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
+
+  switch (esp_sleep_get_wakeup_cause()) {
+    case ESP_SLEEP_WAKEUP_EXT1:
+      meckAwakeUntil = millis() + 2000;   // receive, maybe ACK / forward
+      break;
+    case ESP_SLEEP_WAKEUP_GPIO:
+      meckAwakeUntil = millis() + 3000;   // let the button handler see a double click
+      ui_task.keepAlive();
+      break;
+    default:                               // timer: redraw the clock
+      meckAwakeUntil = millis() + 300;
+      ui_task.forceRefresh();
+      break;
+  }
+}
+#endif
+
 void loop() {
   #ifdef HAS_SDCARD
   meckExportPoll();        // Settings export: runs once its popup is on screen
@@ -4518,7 +4617,9 @@ void loop() {
   // The RTOS idle task executes WFI (wait-for-interrupt) during delay(),
   // dramatically reducing CPU power draw.  50 ms gives 20 loop cycles/sec
   // which is ample for LoRa packet reception (radio has hardware FIFO).
-#if defined(LilyGo_TDeck_Pro)
+#if defined(LilyGo_TDeck_Pro_Max) && !defined(MECK_40MHZ_TEST)
+  meckLockSleepStep();   // light sleep while locked (MAX)
+#elif defined(LilyGo_TDeck_Pro)
   if (ui_task.isLocked()) {
     delay(50);
   }
@@ -4586,6 +4687,12 @@ void handleKeyboardInput() {
   // frees physical Q as an ordinary letter. Contexts that bind Shift+Del to a
   // non-back action (notes/contacts item delete) handle KEY_CANCEL explicitly.
   if (key == '\b' && keyboard.wasShiftConsumed()) key = KEY_CANCEL;
+
+  // Lock warning up: Enter / Q decide, other keys are swallowed
+  if (ui_task.isLockPromptActive()) {
+    ui_task.lockPromptKey(key);
+    return;
+  }
 
   // Block all keyboard input while lock screen is active.
   // Still read the key above to clear the TCA8418 buffer.

@@ -36,6 +36,43 @@
 #if defined(WIFI_SSID) || defined(MECK_WIFI_COMPANION)
   #include <WiFi.h>
 #endif
+
+#if defined(LilyGo_TDeck_Pro_Max) && !defined(MECK_40MHZ_TEST)
+// Power saving when locked: the reason the device stays awake (main.cpp)
+extern int meckLockSleepBlocker();
+
+const char* meckSleepBlockText(int code) {
+  switch (code) {
+    case MECK_SLEEP_OFF:   return MECK_TR("Power saving off", "\xC3\x89" "conomie d\xC3\xA9sactiv\xC3\xA9" "e");
+    case MECK_SLEEP_USB:   return MECK_TR("On USB power", "Sur alimentation USB");
+    case MECK_SLEEP_PHONE: return MECK_TR("Phone connected", "T\xC3\xA9l\xC3\xA9phone connect\xC3\xA9");
+    case MECK_SLEEP_GPS:   return MECK_TR("GPS is on", "GPS activ\xC3\xA9");
+    case MECK_SLEEP_MODEM: return MECK_TR("4G modem is on", "Modem 4G activ\xC3\xA9");
+    case MECK_SLEEP_WIFI:  return MECK_TR("Wi-Fi is on", "Wi-Fi activ\xC3\xA9");
+    case MECK_SLEEP_AUDIO: return MECK_TR("Audio in use", "Audio en cours");
+    default:               return "";
+  }
+}
+
+#ifdef MECK_UI_V2
+// Lock warning: what keeps the device awake and what the keys do
+static void drawLockPrompt(Ui2Canvas& c, int reason) {
+  if (reason == MECK_SLEEP_GPS) {
+    Ui2List::dialog(c, UI2_IC_GPS, MECK_TR("GPS is on", "GPS activ\xC3\xA9"),
+                    MECK_TR("It keeps the device awake and drains the battery while locked.",
+                            "Il emp\xC3\xAA" "che la mise en veille et vide la batterie."),
+                    MECK_TR("Lock", "Verrouiller"), MECK_TR("GPS off", "GPS off"));
+  } else {
+    char body[96];
+    snprintf(body, sizeof(body), "%s", reason == MECK_SLEEP_PHONE
+             ? MECK_TR("No power saving until it disconnects.", "Pas d'\xC3\xA9" "conomie tant qu'il est connect\xC3\xA9.")
+             : MECK_TR("The device stays awake while locked.", "L'appareil reste \xC3\xA9veill\xC3\xA9."));
+    Ui2List::dialog(c, UI2_IC_WARN, meckSleepBlockText(reason), body,
+                    MECK_TR("Cancel", "Annuler"), MECK_TR("Lock", "Verrouiller"));
+  }
+}
+#endif
+#endif
 #if defined(BLE_PIN_CODE) && defined(MECK_WIFI_COMPANION)
   // Combined BLE + WiFi companion (meck_max_ble_wifi): defined in main.cpp
   extern bool meckCompanionIsBLE();
@@ -2114,6 +2151,40 @@ public:
       if (missed > 0) c.chip(sx + aw + gap, 236, b, UI2_IC_PHONE, true);
     }
 #endif
+
+#if defined(LilyGo_TDeck_Pro_Max) && !defined(MECK_40MHZ_TEST)
+    // Power saving: either "Power saving" or what keeps the device awake,
+    // then the gauge's battery estimate (time to empty at the average draw)
+    {
+      int reason = meckLockSleepBlocker();
+      const char* status = reason == MECK_SLEEP_OK ? MECK_TR("Power saving", "\xC3\x89" "conomie d'\xC3\xA9nergie")
+                                                   : meckSleepBlockText(reason);
+      char line[48];
+      if (reason == MECK_SLEEP_OK || reason == MECK_SLEEP_OFF || reason == MECK_SLEEP_USB)
+        snprintf(line, sizeof(line), "%s", status);
+      else
+        snprintf(line, sizeof(line), MECK_TR("Awake: %s", "\xC3\x89veill\xC3\xA9 : %s"), status);
+      Ui2Icon ic = reason == MECK_SLEEP_OK ? UI2_IC_MOON : reason == MECK_SLEEP_USB ? UI2_IC_BOLT : UI2_IC_WARN;
+      int16_t tw = Ui2Canvas::textWidth(line, UI2_F_SMALL);
+      int16_t lx = (SCREEN_W - tw - 16) / 2;
+      c.icon(lx, 262, ic, 12);
+      c.text(lx + 16, 273, line, UI2_F_SMALL);
+
+      char est[40] = "";
+      if (board.isUsbPowered()) {
+        snprintf(est, sizeof(est), "%s", board.getBatteryPercent() >= 100 ? MECK_TR("Battery full", "Batterie pleine")
+                                                                          : MECK_TR("Charging", "En charge"));
+      } else {
+        uint16_t tte = board.getTimeToEmpty();     // minutes, 0xFFFF = not discharging
+        if (tte != 0xFFFF && tte > 0) {
+          if (tte >= 48 * 60) snprintf(est, sizeof(est), MECK_TR("About %u days left", "Environ %u jours"), (tte + 720) / 1440);
+          else if (tte >= 120) snprintf(est, sizeof(est), MECK_TR("About %u h left", "Environ %u h"), (tte + 30) / 60);
+          else snprintf(est, sizeof(est), MECK_TR("About %u min left", "Environ %u min"), tte);
+        }
+      }
+      if (est[0]) c.textFit(PAD, 290, SCREEN_W - 2 * PAD, est, UI2_F_META, true, UI2_CENTER);
+    }
+#endif
     return 30000;
   }
 #endif
@@ -3002,6 +3073,12 @@ if (curr) curr->poll();
         // Hint expired — auto-dismiss
         dismissBootHint();
         _next_refresh = millis() + 200;
+#if defined(LilyGo_TDeck_Pro_Max) && defined(MECK_UI_V2) && !defined(MECK_40MHZ_TEST)
+      } else if (_lockPromptUntil) {  // lock warning (requestLock)
+        Ui2Canvas c(*_display);
+        drawLockPrompt(c, _lockPromptReason);
+        _next_refresh = _lockPromptUntil;
+#endif
       } else if (millis() < _alert_expiry) {  // render alert popup
 #ifdef MECK_UI_V2
         {
@@ -3083,6 +3160,14 @@ if (curr) curr->poll();
     }
 #endif
   }
+
+  // Lock warning timed out: lock anyway
+#if defined(LilyGo_TDeck_Pro)
+  if (_lockPromptUntil && (long)(millis() - _lockPromptUntil) >= 0) {
+    _lockPromptUntil = 0;
+    lockScreen();
+  }
+#endif
 
   // Auto-lock idle timer — runs regardless of display on/off state
 #if defined(LilyGo_TDeck_Pro)
@@ -3193,11 +3278,15 @@ char UITask::handleLongPress(char c) {
 char UITask::handleDoubleClick(char c) {
   MESH_DEBUG_PRINTLN("UITask: double click triggered");
 #if defined(LilyGo_TDeck_Pro)
-  // Double-click boot button → lock/unlock screen
+  // Double-click boot button → lock/unlock screen (a second double click
+  // while the lock warning shows locks straight away)
   if (_locked) {
     unlockScreen();
-  } else {
+  } else if (_lockPromptUntil) {
+    _lockPromptUntil = 0;
     lockScreen();
+  } else {
+    requestLock();
   }
   c = 0;
 #endif
@@ -3232,6 +3321,39 @@ void UITask::lockScreen() {
   _auto_off = millis() + 60000;  // 60s before display off while locked
   _lastLockRefresh = millis();   // Start lock screen clock refresh cycle
   Serial.println("[UI] Screen locked — entering low-power mode");
+}
+
+void UITask::requestLock() {
+#if defined(LilyGo_TDeck_Pro_Max) && defined(MECK_UI_V2) && !defined(MECK_40MHZ_TEST)
+  if (_locked || _lockPromptUntil) return;
+  int reason = meckLockSleepBlocker();
+  // Warn only about things the user may have forgotten; "power saving off"
+  // is their choice, USB power and recent audio are fine.
+  if (reason == MECK_SLEEP_GPS || reason == MECK_SLEEP_PHONE ||
+      reason == MECK_SLEEP_MODEM || reason == MECK_SLEEP_WIFI) {
+    _lockPromptReason = reason;
+    _lockPromptUntil = millis() + 6000;   // then it locks anyway
+    _next_refresh = 0;
+    return;
+  }
+#endif
+  lockScreen();
+}
+
+void UITask::lockPromptKey(char c) {
+  if (!_lockPromptUntil) return;
+  bool enter = (c == '\r' || c == KEY_ENTER);
+  bool back = (c == 'q' || c == 'Q' || c == KEY_CANCEL);
+  if (!enter && !back) return;              // other keys: keep the warning
+  int reason = _lockPromptReason;
+  _lockPromptUntil = 0;
+  _next_refresh = 0;
+  if (reason == MECK_SLEEP_GPS) {
+    if (enter) toggleGPS();                  // "GPS off", then lock
+    lockScreen();                            // Q: lock anyway
+  } else if (enter) {
+    lockScreen();                            // Enter: lock; Q: cancel
+  }
 }
 
 void UITask::unlockScreen() {
