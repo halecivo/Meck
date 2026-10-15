@@ -888,6 +888,9 @@ static uint32_t _atoi(const char* sp) {
   // Serial "screendump" command: print the last drawn frame
   void meckScreenDump() { display.dumpScreen(Serial); }
 
+#if HAS_GPS
+  static void openMapScreen();
+#endif
   // Serial "uigo <screen> [contact idx]" command: open a screen directly.
   // Only screens that do not transmit when opened (no discovery, no admin login).
   void meckDebugGoto(const char* arg) {
@@ -911,7 +914,7 @@ static uint32_t _atoi(const char* sp) {
       admin->onLoginResult(true, 3, the_mesh.getRTCClock()->getCurrentTime() - 4);
     }
 #if HAS_GPS
-    else if (strcmp(name, "map") == 0)      ui_task.gotoMapScreen();
+    else if (strcmp(name, "map") == 0)      openMapScreen();
 #endif
 #ifdef MECK_WEB_READER
     else if (strcmp(name, "web") == 0)      ui_task.gotoWebReader();
