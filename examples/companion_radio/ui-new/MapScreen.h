@@ -86,6 +86,10 @@
 #include <helpers/ui/DisplayDriver.h>
 #include "MeckLang.h"
 #include <helpers/ui/GxEPDDisplay.h>
+#ifdef MECK_UI_V2
+  #include "ui2/Ui2Chrome.h"
+  #include "ui2/Ui2List.h"
+#endif
 
 // ---------------------------------------------------------------------------
 // Layout constants (physical pixel coordinates, 240×320 display)
@@ -95,8 +99,12 @@
 
 // Footer bar occupies the bottom — matches other screens' setTextSize(1) footer
 #define MAP_FOOTER_H        24      // ~24px at bottom for nav hints
+#ifdef MECK_UI_V2
+#define MAP_VIEWPORT_Y      24      // UI v2: map between the status header and the footer
+#else
 #define MAP_VIEWPORT_Y      0       // Map starts at top
-#define MAP_VIEWPORT_H      (MAP_DISPLAY_H - MAP_FOOTER_H)  // 296px for map
+#endif
+#define MAP_VIEWPORT_H      (MAP_DISPLAY_H - MAP_FOOTER_H - MAP_VIEWPORT_Y)
 
 #define MAP_TILE_SIZE       256     // Standard OSM tile size in pixels
 #define MAP_DEFAULT_ZOOM    13
@@ -257,6 +265,16 @@ public:
     }
 
     if (!_sdReady) {
+#ifdef MECK_UI_V2
+      Ui2Canvas c(display);
+      Ui2Chrome::statusHeader(c);
+      Ui2Chrome::titleBar(c, MECK_TR("Map", "Carte"));
+      Ui2List::emptyState(c, ui2::BODY_Y, ui2::FOOTER_Y, UI2_IC_SD, MECK_TR("SD card not found", "Carte SD introuvable"),
+                          MECK_TR("Insert an SD card with map tiles in /tiles/.", "Ins\xC3\xA9rez une SD avec des tuiles dans /tiles/."));
+      const Ui2Key keys[] = { ui2Key("Q", MECK_TR("Back", "Retour")) };
+      Ui2Chrome::footer(c, keys, 1);
+      return 5000;
+#endif
       display.setTextSize(1);
       display.setColor(DisplayDriver::LIGHT);
       display.setCursor(10, 20);
@@ -282,8 +300,12 @@ public:
     // Crosshair at viewport center
     renderCrosshair();
 
+#ifdef MECK_UI_V2
+    renderChromeV2(display);
+#else
     // Footer bar (uses normal display API with scaling)
     renderFooter(display);
+#endif
 
     // Raw pixel writes bypass CRC tracking — force refresh
     _einkDisplay->invalidateFrameCRC();
@@ -892,6 +914,37 @@ private:
   // ==========================================================================
   // Footer bar — zoom level, GPS status, navigation hints
   // ==========================================================================
+
+#ifdef MECK_UI_V2
+  // UI v2: status header above and keycap footer below the map, a zoom chip
+  // in the map corner, and a note when no tile covers the view
+  void renderChromeV2(DisplayDriver& display) {
+    using namespace ui2;
+    Ui2Canvas c(display);
+    c.fill(0, 0, SCREEN_W, MAP_VIEWPORT_Y, false);
+    Ui2Chrome::statusHeader(c);
+    c.hline(0, MAP_VIEWPORT_Y - 1, SCREEN_W);
+    if (!_tileFound) {
+      c.fill(PAD, 120, SCREEN_W - 2 * PAD, 64, false);
+      c.rect(PAD, 120, SCREEN_W - 2 * PAD, 64);
+      c.textFit(PAD + 8, 142, SCREEN_W - 2 * PAD - 16, MECK_TR("No map tiles here", "Pas de tuiles ici"), UI2_F_LABEL, true, UI2_CENTER);
+      c.textFit(PAD + 8, 162, SCREEN_W - 2 * PAD - 16, "/tiles/{z}/{x}/{y}.png", UI2_F_META, true, UI2_CENTER);
+      c.textFit(PAD + 8, 176, SCREEN_W - 2 * PAD - 16, MECK_TR("Zoom out or add tiles", "Zoom arri\xC3\xA8re ou ajoutez des tuiles"), UI2_F_META, true, UI2_CENTER);
+    }
+    char z[8];
+    snprintf(z, sizeof(z), "Z%d", _zoom);
+    int16_t zw = Ui2Canvas::chipWidth(z);
+    c.fillRoundRect(SCREEN_W - PAD - zw - 2, FOOTER_Y - 22, zw + 4, 18, 3, false);
+    c.chip(SCREEN_W - PAD - zw, FOOTER_Y - 20, z, UI2_NO_ICON, true);
+    c.fill(0, FOOTER_Y, SCREEN_W, SCREEN_H - FOOTER_Y, false);
+    const Ui2Key keys[] = {
+      ui2Key("WASD", MECK_TR("Pan", "Bouger"), true),
+      ui2Key("Z/X", MECK_TR("Zoom", "Zoom")),
+      ui2Key("Q", MECK_TR("Back", "Retour")),
+    };
+    Ui2Chrome::footer(c, keys, 3);
+  }
+#endif
 
   void renderFooter(DisplayDriver& display) {
     // Use the standard footer pattern: setTextSize(1) at height()-12
