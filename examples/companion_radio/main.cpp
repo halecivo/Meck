@@ -901,6 +901,16 @@ static uint32_t _atoi(const char* sp) {
     else if (strcmp(name, "settings") == 0) ui_task.gotoSettingsScreen();
     else if (strcmp(name, "rxlog") == 0)    ui_task.gotoRxLogScreen();
     else if (strcmp(name, "chat") == 0)     ui_task.gotoChannelScreen();
+#ifdef MECK_UI_V2
+    else if (strcmp(name, "busy") == 0) {
+      // Sample of the busy page used by the loading / indexing splashes
+      display.startFrame();
+      Ui2Canvas c(display);
+      Ui2List::busyPage(c, UI2_IC_BOOK, "Indexing books\xE2\x80\xA6", "3 / 8\nukazka.txt", 37, false);
+      display.endFrame();
+      return;
+    }
+#endif
     else if (strcmp(name, "lock") == 0)     ui_task.lockScreen();
     else if (strcmp(name, "unlock") == 0)   ui_task.unlockScreen();
     else if (strcmp(name, "chatclr") == 0) {
