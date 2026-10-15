@@ -901,6 +901,8 @@ static uint32_t _atoi(const char* sp) {
     else if (strcmp(name, "settings") == 0) ui_task.gotoSettingsScreen();
     else if (strcmp(name, "rxlog") == 0)    ui_task.gotoRxLogScreen();
     else if (strcmp(name, "chat") == 0)     ui_task.gotoChannelScreen();
+    else if (strcmp(name, "lock") == 0)     ui_task.lockScreen();
+    else if (strcmp(name, "unlock") == 0)   ui_task.unlockScreen();
     else if (strcmp(name, "chatclr") == 0) {
       // Remove test messages: clears the whole Public history (channel 0),
       // so check on screen first that it holds nothing but "uimsg" messages
