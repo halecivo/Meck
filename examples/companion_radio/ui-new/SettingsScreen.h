@@ -2533,7 +2533,8 @@ public:
 
   bool v2Handles() const {
     return _editMode == EDIT_NONE || _editMode == EDIT_TEXT || _editMode == EDIT_CANNED ||
-           _editMode == EDIT_PICKER || _editMode == EDIT_NUMBER || _editMode == EDIT_CONFIRM;
+           _editMode == EDIT_PICKER || _editMode == EDIT_NUMBER || _editMode == EDIT_CONFIRM ||
+           v2Special();
   }
 
   bool v2IsHeader(int i) const {
@@ -2607,10 +2608,231 @@ public:
     Ui2List::drawRow(c, y, r);
   }
 
+  // --- Full-screen v2 views for the multi-step modes -------------------------
+
+  bool v2Special() const {
+    return _editMode == EDIT_NOTIF_SOUND || _editMode == EDIT_SHARE_PICK || _editMode == EDIT_PURGE
+  #ifdef MECK_OTA_UPDATE
+        || _editMode == EDIT_OTA || _editMode == EDIT_FILEMGR
+  #endif
+        ;
+  }
+
+  // Icon, title and a wrapped body in the content area (status / warning pages)
+  void v2InfoPage(Ui2Canvas& c, Ui2Icon icon, const char* title, const char* body, int16_t top = 72) {
+    using namespace ui2;
+    c.icon((SCREEN_W - 32) / 2, top, icon, 32);
+    c.wrap(PAD, top + 58, SCREEN_W - 2 * PAD, 20, 2, title, UI2_F_TITLE, true, true, nullptr, UI2_CENTER);
+    if (body && body[0]) c.wrap(PAD, top + 96, SCREEN_W - 2 * PAD, 17, 7, body, UI2_F_BODY, true, true, nullptr, UI2_CENTER);
+  }
+
+  // Wi-Fi access point details while the OTA / file server waits
+  void v2ApDetails(Ui2Canvas& c, int16_t y) {
+    using namespace ui2;
+    char url[32];
+    snprintf(url, sizeof(url), "http://%s", WiFi.softAPIP().toString().c_str());
+    c.textFit(PAD, y, SCREEN_W - 2 * PAD, MECK_TR("1. Join this Wi-Fi network", "1. Rejoignez ce r\xC3\xA9seau Wi-Fi"), UI2_F_META);
+    c.textFit(PAD, y + 20, SCREEN_W - 2 * PAD, _otaApName, UI2_F_TITLE);
+    c.textFit(PAD, y + 46, SCREEN_W - 2 * PAD, MECK_TR("2. Open in a browser", "2. Ouvrez dans un navigateur"), UI2_F_META);
+    c.textFit(PAD, y + 66, SCREEN_W - 2 * PAD, url, UI2_F_TITLE);
+  }
+
+  int renderSpecialV2(Ui2Canvas& c) {
+    using namespace ui2;
+    char tmp[200];
+
+  #if defined(MECK_AUDIO_VARIANT) || defined(HAS_4G_MODEM)
+    if (_editMode == EDIT_NOTIF_SOUND) {
+      const auto& files = notifSounds.getSoundFiles();
+  #if defined(LilyGo_TDeck_Pro_Max)
+      const int base = 2;   // 0 default, 1 buzzer, then files
+  #else
+      const int base = 1;
+  #endif
+      const int total = base + (int)files.size();
+      char right[16];
+      Ui2List::pageLabel(right, sizeof(right), _notifSoundSelected, total, ROWS_PER_PAGE);
+      Ui2Chrome::titleBar(c, MECK_TR("Notification tone", "Son de notification"), right);
+      const int start = Ui2List::pageStart(_notifSoundSelected, ROWS_PER_PAGE);
+      for (int i = start; i < total && i < start + ROWS_PER_PAGE; i++) {
+        Ui2Row r;
+        String name;
+        if (i == 0) { r.icon = UI2_IC_MUTE; r.title = MECK_TR("Default (silent)", "D\xC3\xA9" "faut (silencieux)"); }
+  #if defined(LilyGo_TDeck_Pro_Max)
+        else if (i == 1) { r.icon = UI2_IC_SILENT; r.title = MECK_TR("Buzzer (vibrate)", "Buzzer (vibreur)"); }
+  #endif
+        else {
+          name = files[i - base];
+          int dot = name.lastIndexOf('.');
+          if (dot > 0) name = name.substring(0, dot);
+          r.icon = UI2_IC_AUDIO;
+          r.title = name.c_str();
+        }
+        r.selected = (i == _notifSoundSelected);
+        Ui2List::drawRow(c, BODY_Y + (i - start) * ROW_H, r);
+      }
+      const Ui2Key keys[] = {
+        ui2KeyIcon(UI2_IC_ENTER, MECK_TR("Pick", "Choisir")),
+        ui2Key("W/S", MECK_TR("Move", "D\xC3\xA9placer"), true),
+        ui2Key("Q", MECK_TR("Back", "Retour")),
+      };
+      Ui2Chrome::footer(c, keys, 3);
+      return 700;
+    }
+  #endif
+
+    if (_editMode == EDIT_SHARE_PICK) {
+      char right[16];
+      Ui2List::pageLabel(right, sizeof(right), _sharePickerIdx, _shareContactCount, ROWS_PER_PAGE);
+      Ui2Chrome::titleBar(c, MECK_TR("Share channel with", "Partager le canal avec"), right);
+      if (_shareContactCount == 0) {
+        Ui2List::emptyState(c, BODY_Y, FOOTER_Y, UI2_IC_CONTACT, MECK_TR("No contacts available", "Aucun contact disponible"), nullptr);
+        const Ui2Key keys[] = { ui2Key("Q", MECK_TR("Back", "Retour")) };
+        Ui2Chrome::footer(c, keys, 1);
+        return 700;
+      }
+      const int start = Ui2List::pageStart(_sharePickerIdx, ROWS_PER_PAGE);
+      for (int i = start; i < _shareContactCount && i < start + ROWS_PER_PAGE; i++) {
+        ContactInfo ci;
+        if (!the_mesh.getContactByIdx(_shareContacts[i], ci)) continue;
+        Ui2Row r;
+        r.icon = ui2NodeIcon(ci.type);
+        r.title = ci.name;
+        r.star = (ci.flags & 0x01) != 0;
+        r.selected = (i == _sharePickerIdx);
+        Ui2List::drawRow(c, BODY_Y + (i - start) * ROW_H, r);
+      }
+      const Ui2Key keys[] = {
+        ui2KeyIcon(UI2_IC_ENTER, MECK_TR("Send", "Envoyer")),
+        ui2Key("W/S", MECK_TR("Move", "D\xC3\xA9placer"), true),
+        ui2Key("Q", MECK_TR("Cancel", "Annuler")),
+      };
+      Ui2Chrome::footer(c, keys, 3);
+      return 700;
+    }
+
+    if (_editMode == EDIT_PURGE) {
+      Ui2Chrome::titleBar(c, MECK_TR("Delete all contacts", "Supprimer les contacts"));
+      if (_purgePhase == PURGE_CONFIRM || _purgePhase == PURGE_CONFIRM2) {
+        snprintf(tmp, sizeof(tmp),
+                 MECK_TR("All %d contact%s, with favourites and custom paths, and the DM history will be deleted. Channel messages are kept.",
+                         "Les %d contact%s (favoris et chemins inclus) et l'historique des MP seront effac\xC3\xA9s. Les canaux restent."),
+                 _purgeContacts, _purgeContacts == 1 ? "" : "s");
+        v2InfoPage(c, UI2_IC_WARN, MECK_TR("Delete all contacts?", "Supprimer tous les contacts ?"), tmp, 56);
+        c.textFit(PAD, 270, SCREEN_W - 2 * PAD, MECK_TR("The device will restart.", "L'appareil va red\xC3\xA9marrer."),
+                  UI2_F_LABEL, true, UI2_CENTER);
+        const Ui2Key keys[] = { ui2KeyIcon(UI2_IC_ENTER, MECK_TR("Delete", "Supprimer")), ui2Key("Q", MECK_TR("Cancel", "Annuler")) };
+        Ui2Chrome::footer(c, keys, 2);
+        if (_purgePhase == PURGE_CONFIRM2) {
+          Ui2List::dialog(c, UI2_IC_WARN, MECK_TR("Are you sure?", "\xC3\x8Ates-vous s\xC3\xBBr ?"),
+                          MECK_TR("This cannot be undone.", "Action irr\xC3\xA9versible."),
+                          MECK_TR("No", "Non"), MECK_TR("Delete", "Supprimer"));
+        }
+      } else if (_purgePhase == PURGE_RUNNING) {
+        v2InfoPage(c, UI2_IC_DEL, MECK_TR("Deleting\xE2\x80\xA6", "Suppression\xE2\x80\xA6"),
+                   MECK_TR("Do not switch off. The device restarts when done.", "Ne pas \xC3\xA9teindre. L'appareil red\xC3\xA9marre \xC3\xA0 la fin."));
+      } else {
+        bool ok = _purgeContactsOk && _purgeDMs >= 0;
+        if (ok) snprintf(tmp, sizeof(tmp), MECK_TR("%d contact%s and the DM history were deleted. Restarting\xE2\x80\xA6",
+                                                   "%d contact%s et l'historique des MP supprim\xC3\xA9s. Red\xC3\xA9marrage\xE2\x80\xA6"),
+                         _purgeContacts, _purgeContacts == 1 ? "" : "s");
+        else snprintf(tmp, sizeof(tmp), MECK_TR("Contacts file: %s. DM history: %s. Restarting\xE2\x80\xA6",
+                                                "Contacts : %s. Historique MP : %s. Red\xC3\xA9marrage\xE2\x80\xA6"),
+                      _purgeContactsOk ? "ok" : MECK_TR("failed", "\xC3\xA9" "chec"),
+                      _purgeDMs >= 0 ? "ok" : MECK_TR("SD not ready", "pas de SD"));
+        v2InfoPage(c, ok ? UI2_IC_CHECK : UI2_IC_WARN, ok ? MECK_TR("Contacts deleted", "Contacts supprim\xC3\xA9s")
+                                                          : MECK_TR("Purge failed", "\xC3\x89" "chec"), tmp);
+      }
+      return 700;
+    }
+
+  #ifdef MECK_OTA_UPDATE
+    if (_editMode == EDIT_OTA || _editMode == EDIT_FILEMGR) {
+      bool ota = (_editMode == EDIT_OTA);
+      Ui2Chrome::titleBar(c, ota ? MECK_TR("Firmware update", "Mise \xC3\xA0 jour") : MECK_TR("SD file manager", "Fichiers SD"));
+      const Ui2Key kStart[] = { ui2KeyIcon(UI2_IC_ENTER, MECK_TR("Start", "Lancer")), ui2Key("Q", MECK_TR("Cancel", "Annuler")) };
+      const Ui2Key kBack[]  = { ui2Key("Q", MECK_TR("Back", "Retour")) };
+      if (ota) {
+        switch (_otaPhase) {
+          case OTA_PHASE_CONFIRM:
+            v2InfoPage(c, UI2_IC_DOWNLOAD, MECK_TR("Update over Wi-Fi?", "Mettre \xC3\xA0 jour par Wi-Fi ?"),
+                       MECK_TR("Starts a Wi-Fi network; upload the .bin file from a phone or computer browser.",
+                               "Lance un r\xC3\xA9seau Wi-Fi ; envoyez le fichier .bin depuis un navigateur."));
+            Ui2Chrome::footer(c, kStart, 2);
+            break;
+          case OTA_PHASE_AP_START:
+            v2InfoPage(c, UI2_IC_WIFI, MECK_TR("Starting Wi-Fi\xE2\x80\xA6", "D\xC3\xA9marrage du Wi-Fi\xE2\x80\xA6"), nullptr);
+            break;
+          case OTA_PHASE_WAITING: {
+            v2ApDetails(c, BODY_Y + 24);
+            c.textFit(PAD, 250, SCREEN_W - 2 * PAD, MECK_TR("Waiting for the upload\xE2\x80\xA6", "En attente du fichier\xE2\x80\xA6"),
+                      UI2_F_BODY, true, UI2_CENTER);
+            const Ui2Key k[] = { ui2Key("Q", MECK_TR("Cancel", "Annuler")) };
+            Ui2Chrome::footer(c, k, 1);
+            pollOTAServer();
+            break;
+          }
+          case OTA_PHASE_RECEIVING:
+            snprintf(tmp, sizeof(tmp), "%d KB", (int)(_otaBytesReceived / 1024));
+            c.icon((SCREEN_W - 32) / 2, 80, UI2_IC_DOWNLOAD, 32);
+            c.textFit(PAD, 140, SCREEN_W - 2 * PAD, MECK_TR("Receiving firmware", "R\xC3\xA9" "ception"), UI2_F_TITLE, true, UI2_CENTER);
+            c.textFit(PAD, 180, SCREEN_W - 2 * PAD, tmp, UI2_F_NUM22, true, UI2_CENTER);
+            c.textFit(PAD, 210, SCREEN_W - 2 * PAD, MECK_TR("Keep the browser page open", "Gardez la page ouverte"), UI2_F_BODY, true, UI2_CENTER);
+            pollOTAServer();
+            break;
+          case OTA_PHASE_VERIFY:
+            v2InfoPage(c, UI2_IC_REFRESH, MECK_TR("Verifying the file\xE2\x80\xA6", "V\xC3\xA9rification\xE2\x80\xA6"), nullptr);
+            break;
+          case OTA_PHASE_FLASH:
+            v2InfoPage(c, UI2_IC_WARN, MECK_TR("Writing firmware", "\xC3\x89" "criture du firmware"),
+                       MECK_TR("Do not power off.", "Ne pas \xC3\xA9teindre."));
+            break;
+          default:
+            v2InfoPage(c, UI2_IC_WARN, MECK_TR("Update failed", "\xC3\x89" "chec de la mise \xC3\xA0 jour"), _otaError ? _otaError : "");
+            Ui2Chrome::footer(c, kBack, 1);
+            break;
+        }
+      } else {
+        switch (_fmPhase) {
+          case FM_PHASE_CONFIRM:
+            v2InfoPage(c, UI2_IC_SD, MECK_TR("Start the file server?", "Lancer le serveur ?"),
+                       MECK_TR("Upload and download SD card files from a browser over Wi-Fi. LoRa is paused meanwhile.",
+                               "Fichiers de la SD par navigateur via Wi-Fi. LoRa en pause pendant ce temps."));
+            Ui2Chrome::footer(c, kStart, 2);
+            break;
+          case FM_PHASE_WAITING: {
+            v2ApDetails(c, BODY_Y + 24);
+            c.textFit(PAD, 250, SCREEN_W - 2 * PAD, MECK_TR("File server running \xC2\xB7 LoRa paused", "Serveur actif \xC2\xB7 LoRa en pause"),
+                      UI2_F_BODY, true, UI2_CENTER);
+            const Ui2Key k[] = { ui2Key("Q", MECK_TR("Stop", "Arr\xC3\xAAter")) };
+            Ui2Chrome::footer(c, k, 1);
+            pollOTAServer();
+            break;
+          }
+          case FM_PHASE_ERROR:
+            v2InfoPage(c, UI2_IC_WARN, MECK_TR("File manager error", "Erreur"), _fmError ? _fmError : "");
+            Ui2Chrome::footer(c, kBack, 1);
+            break;
+          default:
+            v2InfoPage(c, UI2_IC_WIFI, MECK_TR("Please wait\xE2\x80\xA6", "Patientez\xE2\x80\xA6"), nullptr);
+            break;
+        }
+      }
+      if ((ota && (_otaPhase == OTA_PHASE_WAITING || _otaPhase == OTA_PHASE_RECEIVING)) ||
+          (!ota && _fmPhase == FM_PHASE_WAITING)) {
+        return 200;   // keep the web server responsive
+      }
+      return 700;
+    }
+  #endif
+    return 700;
+  }
+
   int renderV2(DisplayDriver& display) {
     using namespace ui2;
     Ui2Canvas c(display);
     Ui2Chrome::statusHeader(c);
+    if (v2Special()) return renderSpecialV2(c);
 
     const char* title = MECK_TR("Settings", "R\xC3\xA9glages");
     if (_onboarding) title = MECK_TR("Setup", "Configuration");
