@@ -894,6 +894,10 @@ static uint32_t _atoi(const char* sp) {
   // runs from the battery while the USB data link stays up and the gauge
   // shows the real consumption. It switches back off by itself after 15 min.
   static unsigned long meckHizUntil = 0;
+  // Gauge avgI at the end of the awake and the sleep phase of "pwrsleep";
+  // RTC_NOINIT so they survive the reset that USB recovery needs
+  RTC_NOINIT_ATTR static int meckAwakeResult;
+  RTC_NOINIT_ATTR static int meckSleepResult;
 
   static int meckChgRead(uint8_t reg) {
     Wire.beginTransmission(I2C_ADDR_SY6970);
@@ -926,25 +930,74 @@ static uint32_t _atoi(const char* sp) {
     if (strncmp(cmd, "pwrhiz ", 7) == 0) {
       bool on = cmd[7] == '1';
       Serial.printf("pwr: HIZ %s %s\n", on ? "on" : "off", meckSetHiz(on) ? "ok" : "FAILED");
+    } else if (strncmp(cmd, "pwrcpu ", 7) == 0) {
+      // Temporary CPU clock for measuring (80 / 160 / 240; 40 MHz breaks I2C)
+      int mhz = atoi(cmd + 7);
+      if (mhz == 80 || mhz == 160 || mhz == 240) setCpuFrequencyMhz(mhz);
+    } else if (strncmp(cmd, "pwrsleep ", 9) == 0) {
+      // Light-sleep experiment: stop BLE, then sleep in 1 s timer cycles for
+      // the given seconds and keep the gauge's average current from the end
+      // (USB drops while asleep; read it later with "pwr"). Restart afterwards.
+      // USB does not come back after light sleep, so both results are kept in
+      // RTC memory (survives the reset button) and shown on the display.
+      int secs = constrain(atoi(cmd + 9), 10, 300);
+      Serial.printf("pwr: 60 s awake + light sleep %d s, BLE off; USB will drop\n", secs);
+      Serial.flush();
+      serial_interface.disable();
+      btStop();
+      unsigned long until = millis() + 60000UL;
+      while ((long)(millis() - until) < 0) delay(50);
+      meckAwakeResult = board.getAvgCurrent();
+      until = millis() + secs * 1000UL;
+      while ((long)(millis() - until) < 0) {
+        esp_sleep_enable_timer_wakeup(1000000ULL);
+        esp_light_sleep_start();
+        delay(2);
+      }
+      meckSleepResult = board.getAvgCurrent();
+      meckSetHiz(false);   // charge again right away
+      char res[96];
+      snprintf(res, sizeof(res), "awake %d mA\nlight sleep %d mA\nPress reset", meckAwakeResult, meckSleepResult);
+      Serial.printf("pwr: %s\n", res);
+#ifdef MECK_UI_V2
+      display.startFrame();
+      Ui2Canvas c(display);
+      Ui2List::busyPage(c, UI2_IC_BOLT, "Light sleep test", res, -1, false);
+      display.endFrame();
+#endif
+      for (;;) delay(1000);   // keep the result on screen until the reset button
+    } else if (strcmp(cmd, "pwrbtstop") == 0) {
+      // Stop the whole Bluetooth controller; only a restart brings BLE back
+      serial_interface.disable();
+      btStop();
+      Serial.println("pwr: BT controller stopped (restart to restore)");
+    } else if (strncmp(cmd, "pwrble ", 7) == 0) {
+      // Stop / restart the BLE companion interface (advertising + service)
+      if (cmd[7] == '1') serial_interface.enable(); else serial_interface.disable();
+      Serial.printf("pwr: BLE %s\n", cmd[7] == '1' ? "on" : "off");
     } else if (strncmp(cmd, "pwrxl ", 6) == 0) {
-      // Only the supplies that are safe to cut: GPS and the 1.8 V sensor rail
+      // GPS and the 1.8 V sensor rail can be switched freely. "lora" (radio
+      // power) and "touch" (touch controller held in reset) are for measuring
+      // only: restart afterwards, the drivers are not re-initialised.
       char what[8] = "";
       int v = 0;
       sscanf(cmd + 6, "%7s %d", what, &v);
-      uint8_t pin = !strcmp(what, "gps") ? XL_PIN_GPS_EN : !strcmp(what, "1v8") ? XL_PIN_1V8_EN : 0xFF;
-      if (pin == 0xFF) { Serial.println("pwr: pwrxl gps|1v8 0|1"); return; }
+      uint8_t pin = !strcmp(what, "gps") ? XL_PIN_GPS_EN : !strcmp(what, "1v8") ? XL_PIN_1V8_EN
+                  : !strcmp(what, "lora") ? XL_PIN_LORA_EN : !strcmp(what, "touch") ? XL_PIN_TOUCH_RST : 0xFF;
+      if (pin == 0xFF) { Serial.println("pwr: pwrxl gps|1v8|lora|touch 0|1"); return; }
       board.xl9555_digitalWrite(pin, v != 0);
       Serial.printf("pwr: %s %s\n", what, v ? "on" : "off");
     }
     int r0 = meckChgRead(0x00), r0b = meckChgRead(0x0B);
     Serial.printf("pwr: V=%umV avgI=%dmA soc=%u%% | hiz=%d vbus=%d | cpu=%uMHz locked=%d ble=%d | "
-                  "lora=%d gps=%d 1v8=%d modem=%d motor=%d bl=%d\n",
+                  "lora=%d gps=%d 1v8=%d modem=%d motor=%d amp=%d bl=%d | last test awake=%d sleep=%d\n",
                   board.getBattMilliVolts(), board.getAvgCurrent(), board.getBatteryPercent(),
                   r0 >= 0 ? (r0 >> 7) & 1 : -1, r0b >= 0 ? (r0b >> 2) & 1 : -1,
                   (unsigned)getCpuFrequencyMhz(), ui_task.isLocked(), serial_interface.isConnected(),
                   board.xl9555_digitalRead(XL_PIN_LORA_EN), board.xl9555_digitalRead(XL_PIN_GPS_EN),
                   board.xl9555_digitalRead(XL_PIN_1V8_EN), board.xl9555_digitalRead(XL_PIN_6609_EN),
-                  board.xl9555_digitalRead(XL_PIN_MOTOR_EN), board.isBacklightOn());
+                  board.xl9555_digitalRead(XL_PIN_MOTOR_EN), board.xl9555_digitalRead(XL_PIN_AMPLIFIER),
+                  board.isBacklightOn(), meckAwakeResult, meckSleepResult);
   }
 #endif
 
