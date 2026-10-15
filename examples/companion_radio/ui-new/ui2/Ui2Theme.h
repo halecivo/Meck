@@ -42,8 +42,8 @@ static const int16_t TILE_RADIUS = 3;
 
 // Header layout
 static const int16_t HDR_NODE_MAX_W = 90;
-static const int16_t HDR_CLOCK_X    = 104;
-static const int16_t HDR_CLOCK_W    = 32;
+static const int16_t HDR_CLOCK_X    = 102;   // centred on 120; "04:44" is 34 px in Montserrat 11
+static const int16_t HDR_CLOCK_W    = 36;
 static const int16_t HDR_RIGHT_X    = 140;
 
 // Dialog
