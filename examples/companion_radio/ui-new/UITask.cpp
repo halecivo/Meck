@@ -3318,6 +3318,11 @@ void UITask::lockScreen() {
   if (board.isBacklightOn()) board.backlightOff();
 #endif
   _next_refresh = 0;  // Draw lock screen immediately
+#if defined(LilyGo_TDeck_Pro) && defined(DISPLAY_CLASS)
+  // Full refresh: a partial update can leave ghosts of the previous screen
+  // (an open chat, a password) visible behind the lock screen.
+  if (_display != NULL) static_cast<GxEPDDisplay*>(_display)->requestFullRefresh();
+#endif
   _auto_off = millis() + 60000;  // 60s before display off while locked
   _lastLockRefresh = millis();   // Start lock screen clock refresh cycle
   Serial.println("[UI] Screen locked — entering low-power mode");
