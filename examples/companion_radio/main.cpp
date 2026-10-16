@@ -946,6 +946,15 @@ static uint32_t _atoi(const char* sp) {
   }
 
   void meckPowerCmd(const char* cmd) {
+#if !defined(MECK_40MHZ_TEST)
+    extern void meckPwrLogPrint();
+    extern bool meckPwrLogFlush();
+    if (strcmp(cmd, "pwrlog") == 0) { meckPwrLogPrint(); return; }
+    if (strcmp(cmd, "pwrlog flush") == 0) {
+      Serial.printf("pwrlog: flush %s\n", meckPwrLogFlush() ? "ok" : "FAILED");
+      return;
+    }
+#endif
     if (strncmp(cmd, "pwrhiz ", 7) == 0) {
       bool on = cmd[7] == '1';
       Serial.printf("pwr: HIZ %s %s\n", on ? "on" : "off", meckSetHiz(on) ? "ok" : "FAILED");
@@ -3376,6 +3385,10 @@ static void meckImportPoll() {
 static bool meckBleStoppedForSleep = false;
 static unsigned long meckAwakeUntil = 0;     // stay awake until (after a wake)
 
+// Sleep statistics for the power log, reset with each logged minute
+static uint64_t meckSleptUs = 0;
+static uint16_t meckWakeLora = 0, meckWakeBtn = 0, meckWakeTimer = 0;
+
 // Why the device does not sleep while locked (MeckSleepBlock in UITask.h),
 // MECK_SLEEP_OK when it can. Shown on the lock screen and in the lock warning.
 int meckLockSleepBlocker() {
@@ -3426,22 +3439,246 @@ static void meckLockSleepStep() {
   gpio_wakeup_enable((gpio_num_t)PIN_USER_BTN, GPIO_INTR_LOW_LEVEL);
   esp_sleep_enable_gpio_wakeup();
   Serial.flush();
+  int64_t sleepStart = esp_timer_get_time();   // esp_timer keeps counting through light sleep
   esp_light_sleep_start();
+  meckSleptUs += (uint64_t)(esp_timer_get_time() - sleepStart);
   gpio_wakeup_disable((gpio_num_t)PIN_USER_BTN);
   esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
 
   switch (esp_sleep_get_wakeup_cause()) {
     case ESP_SLEEP_WAKEUP_EXT1:
       meckAwakeUntil = millis() + 2000;   // receive, maybe ACK / forward
+      meckWakeLora++;
       break;
     case ESP_SLEEP_WAKEUP_GPIO:
       meckAwakeUntil = millis() + 3000;   // let the button handler see a double click
       ui_task.keepAlive();
+      meckWakeBtn++;
       break;
     default:                               // timer: redraw the clock
       meckAwakeUntil = millis() + 300;
       ui_task.forceRefresh();
+      meckWakeTimer++;
       break;
+  }
+}
+
+// ============================================================================
+// Power log (T-Deck MAX)
+//
+// One record per clock minute, kept in RAM: battery state from the gauge and
+// the charger, how long the device slept and what woke it, what was switched
+// on, packet and display refresh counts, and any clock change. Once an hour
+// (60 records) the records are appended to a daily CSV file on the SD card,
+// /meshcore/powerlog/YYYYMMDD.csv (local date). Records not yet written are
+// lost on a reset or power-off. Debug CLI: "pwrlog" prints the records in
+// RAM, "pwrlog flush" writes them now.
+//
+// Cost: the readings are taken while the device is awake anyway (the minute
+// wake), and one SD write an hour.
+// ============================================================================
+#include <SD.h>
+
+struct MeckPwrRec {
+  uint32_t t;          // UTC epoch at the end of the interval
+  int32_t  jump;       // clock change seen during the interval, s (0 = none)
+  uint16_t secs;       // interval length by millis(), s
+  uint16_t sleptDs;    // time asleep, 0.1 s
+  uint16_t mv;         // battery voltage
+  int16_t  avgMa;      // gauge average current (negative = discharging)
+  int16_t  tempDc;     // battery temperature, 0.1 C
+  uint16_t flags;      // MECK_PWR_F_*
+  uint8_t  pct;        // state of charge
+  uint8_t  chg;        // charger state: 0 off, 1 pre, 2 fast, 3 done
+  uint8_t  blocker;    // MeckSleepBlock: why it could not sleep (at the end)
+  int8_t   utc;        // UTC offset, hours
+  uint8_t  wLora, wBtn, wTimer;     // wakes from light sleep by cause
+  uint8_t  rx, tx;     // LoRa packets received / sent
+  uint8_t  refresh, full;           // display refreshes / of which full
+};
+
+enum {
+  MECK_PWR_F_LOCKED = 1 << 0, MECK_PWR_F_USB = 1 << 1, MECK_PWR_F_GPS = 1 << 2,
+  MECK_PWR_F_MODEM = 1 << 3, MECK_PWR_F_WIFI = 1 << 4, MECK_PWR_F_PHONE = 1 << 5,
+  MECK_PWR_F_BLE = 1 << 6, MECK_PWR_F_AUDIO = 1 << 7, MECK_PWR_F_LIGHT = 1 << 8,
+  MECK_PWR_F_SAVING = 1 << 9,
+};
+
+#define MECK_PWR_CAP   120   // two hours, in case an SD write fails
+#define MECK_PWR_FLUSH 60    // write once this many records wait
+
+static MeckPwrRec meckPwrBuf[MECK_PWR_CAP];
+static int meckPwrHead = 0, meckPwrCount = 0;   // ring: oldest at head
+static uint32_t meckPwrMinute = 0, meckPwrRefEpoch = 0;
+static unsigned long meckPwrRefMs = 0, meckPwrStartMs = 0;
+static int32_t meckPwrJump = 0;
+static uint32_t meckPwrRx0 = 0, meckPwrTx0 = 0, meckPwrRef0 = 0, meckPwrFull0 = 0;
+static unsigned long meckPwrLastFlushTry = 0;
+
+static void meckPwrCounters(uint32_t& rx, uint32_t& tx, uint32_t& ref, uint32_t& full) {
+  rx = the_mesh.getNumRecvFlood() + the_mesh.getNumRecvDirect();
+  tx = the_mesh.getNumSentFlood() + the_mesh.getNumSentDirect();
+  ref = display.refreshCount();
+  full = display.fullRefreshCount();
+}
+
+static void meckPwrRecord(uint32_t now, unsigned long ms) {
+  MeckPwrRec r = {};
+  r.t = now;
+  r.jump = meckPwrJump;
+  r.secs = (uint16_t)min((ms - meckPwrStartMs + 500) / 1000, 65535UL);
+  r.sleptDs = (uint16_t)min(meckSleptUs / 100000ULL, 65535ULL);
+  r.mv = board.getBattMilliVolts();
+  r.avgMa = board.getAvgCurrent();
+  r.tempDc = board.getBattTemperature();
+  r.pct = board.getBatteryPercent();
+  r.chg = board.getChargeState();
+  r.blocker = (uint8_t)meckLockSleepBlocker();
+  NodePrefs* p = the_mesh.getNodePrefs();
+  r.utc = p->utc_offset_hours;
+  r.wLora = min(meckWakeLora, (uint16_t)255);
+  r.wBtn = min(meckWakeBtn, (uint16_t)255);
+  r.wTimer = min(meckWakeTimer, (uint16_t)255);
+
+  uint16_t f = 0;
+  if (ui_task.isLocked()) f |= MECK_PWR_F_LOCKED;
+  if (board.isUsbPowered()) f |= MECK_PWR_F_USB;
+  if (p->gps_enabled) f |= MECK_PWR_F_GPS;
+#ifdef HAS_4G_MODEM
+  if (modemManager.getState() != ModemState::OFF) f |= MECK_PWR_F_MODEM;
+#endif
+  if (WiFi.getMode() != WIFI_MODE_NULL) f |= MECK_PWR_F_WIFI;
+  if (serial_interface.isConnected()) f |= MECK_PWR_F_PHONE;
+  if (serial_interface.isEnabled()) f |= MECK_PWR_F_BLE;
+#if defined(MECK_AUDIO_VARIANT) && defined(HAS_ES8311_AUDIO)
+  if (es8311_active()) f |= MECK_PWR_F_AUDIO;
+#endif
+  if (board.isBacklightOn()) f |= MECK_PWR_F_LIGHT;
+  if (p->lock_sleep) f |= MECK_PWR_F_SAVING;
+  r.flags = f;
+
+  uint32_t rx, tx, ref, full;
+  meckPwrCounters(rx, tx, ref, full);
+  r.rx = (uint8_t)min(rx - meckPwrRx0, 255U);
+  r.tx = (uint8_t)min(tx - meckPwrTx0, 255U);
+  r.refresh = (uint8_t)min(ref - meckPwrRef0, 255U);
+  r.full = (uint8_t)min(full - meckPwrFull0, 255U);
+  meckPwrRx0 = rx; meckPwrTx0 = tx; meckPwrRef0 = ref; meckPwrFull0 = full;
+
+  // Append; when full, drop the oldest record
+  int idx = (meckPwrHead + meckPwrCount) % MECK_PWR_CAP;
+  meckPwrBuf[idx] = r;
+  if (meckPwrCount < MECK_PWR_CAP) meckPwrCount++;
+  else meckPwrHead = (meckPwrHead + 1) % MECK_PWR_CAP;
+
+  meckSleptUs = 0;
+  meckWakeLora = meckWakeBtn = meckWakeTimer = 0;
+  meckPwrJump = 0;
+  meckPwrStartMs = ms;
+}
+
+static void meckPwrLocalDate(uint32_t t, int8_t utc, char* date, size_t dlen, char* hm, size_t hlen) {
+  int32_t local = (int32_t)t + utc * 3600;
+  int32_t z = local / 86400 + 719468;        // civil date (Howard Hinnant)
+  int32_t era = z / 146097, doe = z - era * 146097;
+  int32_t yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+  int32_t y = yoe + era * 400;
+  int32_t doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+  int32_t mp = (5 * doy + 2) / 153;
+  int d = doy - (153 * mp + 2) / 5 + 1, m = mp < 10 ? mp + 3 : mp - 9;
+  if (m <= 2) y++;
+  snprintf(date, dlen, "%04d%02d%02d", (int)y, m, d);
+  snprintf(hm, hlen, "%02d:%02d", (int)((local / 3600) % 24), (int)((local / 60) % 60));
+}
+
+static const char MECK_PWR_HEADER[] =
+  "utc,local_date,local_time,secs,asleep_s,wake_lora,wake_btn,wake_timer,"
+  "pct,mv,avg_ma,temp_c,usb,charge,locked,blocker,saving,gps,modem,wifi,"
+  "phone,ble,audio,light,rx,tx,refresh,full_refresh,clock_jump_s,utc_offset";
+
+static int meckPwrCsv(const MeckPwrRec& r, char* buf, size_t len, char* date, size_t dlen) {
+  char hm[8];
+  meckPwrLocalDate(r.t, r.utc, date, dlen, hm, sizeof(hm));
+  uint16_t f = r.flags;
+  return snprintf(buf, len,
+    "%lu,%s,%s,%u,%u.%u,%u,%u,%u,%u,%u,%d,%d.%d,%d,%u,%d,%u,%d,%d,%d,%d,%d,%d,%d,%d,%u,%u,%u,%u,%ld,%d",
+    (unsigned long)r.t, date, hm, r.secs, r.sleptDs / 10, r.sleptDs % 10,
+    r.wLora, r.wBtn, r.wTimer, r.pct, r.mv, r.avgMa, r.tempDc / 10, abs(r.tempDc % 10),
+    (f & MECK_PWR_F_USB) ? 1 : 0, r.chg, (f & MECK_PWR_F_LOCKED) ? 1 : 0, r.blocker,
+    (f & MECK_PWR_F_SAVING) ? 1 : 0, (f & MECK_PWR_F_GPS) ? 1 : 0, (f & MECK_PWR_F_MODEM) ? 1 : 0,
+    (f & MECK_PWR_F_WIFI) ? 1 : 0, (f & MECK_PWR_F_PHONE) ? 1 : 0, (f & MECK_PWR_F_BLE) ? 1 : 0,
+    (f & MECK_PWR_F_AUDIO) ? 1 : 0, (f & MECK_PWR_F_LIGHT) ? 1 : 0,
+    r.rx, r.tx, r.refresh, r.full, (long)r.jump, r.utc);
+}
+
+// Append all records in RAM to the SD card. True when the buffer was written.
+bool meckPwrLogFlush() {
+  if (meckPwrCount == 0) return true;
+  if (!sdCardReady) return false;
+  if (!SD.exists("/meshcore")) SD.mkdir("/meshcore");
+  if (!SD.exists("/meshcore/powerlog")) SD.mkdir("/meshcore/powerlog");
+  File f;
+  char openDate[12] = "", date[12], line[200], path[48];
+  int written = 0;
+  for (; written < meckPwrCount; written++) {
+    const MeckPwrRec& r = meckPwrBuf[(meckPwrHead + written) % MECK_PWR_CAP];
+    meckPwrCsv(r, line, sizeof(line), date, sizeof(date));
+    if (strcmp(date, openDate) != 0) {     // a new day: switch files
+      if (f) f.close();
+      snprintf(path, sizeof(path), "/meshcore/powerlog/%s.csv", date);
+      f = SD.open(path, FILE_APPEND);
+      if (!f) break;
+      if (f.size() == 0) f.println(MECK_PWR_HEADER);
+      strcpy(openDate, date);
+    }
+    if (f.println(line) == 0) break;
+  }
+  if (f) f.close();
+  meckPwrHead = (meckPwrHead + written) % MECK_PWR_CAP;
+  meckPwrCount -= written;
+  Serial.printf("[PowerLog] wrote %d records to SD%s\n", written, meckPwrCount ? " (incomplete)" : "");
+  return meckPwrCount == 0;
+}
+
+void meckPwrLogPrint() {
+  Serial.println(MECK_PWR_HEADER);
+  char line[200], date[12];
+  for (int i = 0; i < meckPwrCount; i++) {
+    meckPwrCsv(meckPwrBuf[(meckPwrHead + i) % MECK_PWR_CAP], line, sizeof(line), date, sizeof(date));
+    Serial.println(line);
+  }
+  Serial.printf("pwrlog: %d records in RAM\n", meckPwrCount);
+}
+
+// Called every loop: notes clock changes, records each new clock minute,
+// writes to the SD card once an hour
+static void meckPwrLogTick() {
+  uint32_t now = rtc_clock.getCurrentTime();
+  unsigned long ms = millis();
+  if (meckPwrStartMs == 0) {               // first call
+    meckPwrMinute = now / 60;
+    meckPwrRefEpoch = now; meckPwrRefMs = ms; meckPwrStartMs = ms ? ms : 1;
+    meckPwrCounters(meckPwrRx0, meckPwrTx0, meckPwrRef0, meckPwrFull0);
+    return;
+  }
+  // The clock and millis() run from the same timer, so any difference
+  // between them is a clock change (phone, GPS, modem or serial sync)
+  int32_t expected = (int32_t)(meckPwrRefEpoch + (ms - meckPwrRefMs + 500) / 1000);
+  int32_t diff = (int32_t)now - expected;
+  if (diff >= 5 || diff <= -5) {
+    meckPwrJump += diff;
+    Serial.printf("[PowerLog] clock changed by %+ld s (%lu -> %lu)\n",
+                  (long)diff, (unsigned long)expected, (unsigned long)now);
+    meckPwrRefEpoch = now; meckPwrRefMs = ms;
+  }
+  if (now / 60 != meckPwrMinute) {
+    meckPwrMinute = now / 60;
+    meckPwrRecord(now, ms);
+  }
+  if (meckPwrCount >= MECK_PWR_FLUSH &&
+      (meckPwrLastFlushTry == 0 || ms - meckPwrLastFlushTry >= 10UL * 60 * 1000)) {
+    meckPwrLastFlushTry = ms;              // on failure retry in 10 min
+    if (meckPwrLogFlush()) meckPwrLastFlushTry = 0;
   }
 }
 #endif
@@ -4618,6 +4855,7 @@ void loop() {
   // dramatically reducing CPU power draw.  50 ms gives 20 loop cycles/sec
   // which is ample for LoRa packet reception (radio has hardware FIFO).
 #if defined(LilyGo_TDeck_Pro_Max) && !defined(MECK_40MHZ_TEST)
+  meckPwrLogTick();      // power log: one record per minute, SD hourly
   meckLockSleepStep();   // light sleep while locked (MAX)
 #elif defined(LilyGo_TDeck_Pro)
   if (ui_task.isLocked()) {
