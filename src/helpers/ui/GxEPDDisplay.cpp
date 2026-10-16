@@ -830,6 +830,8 @@ void GxEPDDisplay::endFrame() {
     _windowNext = false;
     display.display(false);
     last_display_crc_value = crc;
+    _refreshCount++;
+    _fullRefreshCount++;
     return;
   }
   if (_windowNext) {
@@ -837,15 +839,18 @@ void GxEPDDisplay::endFrame() {
     _windowNext = false;
     display.displayWindow(_wx, _wy, _ww, _wh);
     last_display_crc_value = crc;
+    _refreshCount++;
     return;
   }
   if (crc != last_display_crc_value) {
 #ifdef EINK_FULL_REFRESH_ONLY
     display.display(false);  // Full refresh (SSD1681 doesn't support partial)
+    _fullRefreshCount++;
 #else
     display.display(true);   // Partial refresh
 #endif
     last_display_crc_value = crc;
+    _refreshCount++;
   }
 }
 

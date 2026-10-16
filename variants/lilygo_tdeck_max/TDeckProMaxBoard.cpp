@@ -879,15 +879,26 @@ static int sy6970_readReg(uint8_t reg) {
   return Wire.read();
 }
 
-bool TDeckProMaxBoard::isUsbPowered() {
+// SY6970 REG0B (system status), cached for 2 s. -1 until the first good read.
+static int sy6970Reg0bCached() {
   static unsigned long lastRead = 0;
-  static bool powered = true;   // until read: assume powered (never sleep blind)
+  static int reg = -1;
   if (lastRead == 0 || millis() - lastRead >= 2000) {
     lastRead = millis();
-    int r = sy6970_readReg(0x0B);              // REG0B bit 2: PG_STAT (power good)
-    if (r >= 0) powered = (r >> 2) & 1;
+    int r = sy6970_readReg(0x0B);
+    if (r >= 0) reg = r;
   }
-  return powered;
+  return reg;
+}
+
+bool TDeckProMaxBoard::isUsbPowered() {
+  int r = sy6970Reg0bCached();
+  return r < 0 ? true : ((r >> 2) & 1);        // bit 2: PG_STAT; unknown: assume powered (never sleep blind)
+}
+
+uint8_t TDeckProMaxBoard::getChargeState() {
+  int r = sy6970Reg0bCached();
+  return r < 0 ? 0 : ((r >> 3) & 3);           // bits 4:3: CHRG_STAT
 }
 
 void TDeckProMaxBoard::chargerDebugPrint() {

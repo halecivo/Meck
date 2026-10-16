@@ -109,6 +109,8 @@ class GxEPDDisplay : public DisplayDriver {
   int last_display_crc_value = 0;
   const GFXfont* _currentFont = nullptr;  // Track for UTF-8 rendering
   bool _fullNext = false;                 // Next endFrame() does a full refresh
+  uint32_t _refreshCount = 0;             // panel refreshes pushed (power log)
+  uint32_t _fullRefreshCount = 0;         // of which full refreshes
   bool _windowNext = false;               // Next endFrame() refreshes only a window
   int16_t _wx = 0, _wy = 0, _ww = 0, _wh = 0;   // that window, physical pixels
   uint8_t _currentTextScale = 1;          // Track glyph scale factor
@@ -240,6 +242,11 @@ public:
   // residue that builds up over many partial refreshes. The Game Boy
   // emulator requests one when a game quits and periodically during play.
   void requestFullRefresh() { _fullNext = true; }
+
+  // Panel refreshes pushed so far (full, window and partial), for the
+  // power log. Frames whose content did not change are not counted.
+  uint32_t refreshCount() const { return _refreshCount; }
+  uint32_t fullRefreshCount() const { return _fullRefreshCount; }
 
   // Make the next endFrame() push and refresh only the given window of the
   // panel (physical pixels; x and w are rounded out to byte boundaries by

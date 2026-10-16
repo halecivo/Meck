@@ -132,6 +132,8 @@ public:
   // True while USB (or another input) powers the device: the SY6970
   // power-good bit. Cached for 2 s; it is read from the power-saving loop.
   bool     isUsbPowered();
+  // SY6970 charge state: 0 not charging, 1 pre-charge, 2 fast charge, 3 done
+  uint8_t  getChargeState();
   uint16_t getRemainingCapacity();
   uint16_t getFullChargeCapacity();
   uint16_t getDesignCapacity();
