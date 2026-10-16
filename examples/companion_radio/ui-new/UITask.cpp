@@ -2080,6 +2080,15 @@ class LockScreen : public UIScreen {
   UITask* _task;
   mesh::RTCClock* _rtc;
   NodePrefs* _node_prefs;
+#ifdef MECK_UI_V2
+  // Battery figures are read once per clock minute (or when USB power
+  // changes) and kept until then, so a redraw between minute ticks (a new
+  // message) never changes them without the time changing too.
+  uint32_t _snapMinute = 0xFFFFFFFF;
+  bool _snapUsb = false;
+  int _snapPct = 0;
+  char _snapEst[40] = "";
+#endif
 
 public:
   LockScreen(UITask* task, mesh::RTCClock* rtc, NodePrefs* node_prefs)
@@ -2092,6 +2101,37 @@ public:
     using namespace ui2;
     Ui2Canvas c(display);
     uint32_t now = _rtc->getCurrentTime();
+
+    // Battery snapshot: once per clock minute, or when USB power changes
+    bool usb = false;
+#if defined(LilyGo_TDeck_Pro_Max) && !defined(MECK_40MHZ_TEST)
+    usb = board.isUsbPowered();
+#endif
+    if (now / 60 != _snapMinute || usb != _snapUsb) {
+      _snapMinute = now / 60;
+      _snapUsb = usb;
+#if HAS_BQ27220
+      _snapPct = _task->getBatteryPercent();
+#else
+      uint16_t mv = _task->getBattMilliVolts();
+      _snapPct = mv > 0 ? constrain(((int)mv - 3000) * 100 / 1200, 0, 100) : 0;
+#endif
+      _snapEst[0] = 0;
+#if defined(LilyGo_TDeck_Pro_Max) && !defined(MECK_40MHZ_TEST)
+      if (usb) {
+        snprintf(_snapEst, sizeof(_snapEst), "%s", _snapPct >= 100 ? MECK_TR("Battery full", "Batterie pleine")
+                                                                   : MECK_TR("Charging", "En charge"));
+      } else {
+        uint16_t tte = board.getTimeToEmpty();     // minutes, 0xFFFF = not discharging
+        if (tte != 0xFFFF && tte > 0) {
+          if (tte >= 48 * 60) snprintf(_snapEst, sizeof(_snapEst), MECK_TR("About %u days left", "Environ %u jours"), (tte + 720) / 1440);
+          else if (tte >= 120) snprintf(_snapEst, sizeof(_snapEst), MECK_TR("About %u h left", "Environ %u h"), (tte + 30) / 60);
+          else snprintf(_snapEst, sizeof(_snapEst), MECK_TR("About %u min left", "Environ %u min"), tte);
+        }
+      }
+#endif
+    }
+
     char timeBuf[6] = "--:--", dateBuf[24] = "";
     if (now > 1700000000) {
       int32_t local = (int32_t)now + ((int32_t)_node_prefs->utc_offset_hours * 3600);
@@ -2116,14 +2156,8 @@ public:
     c.textFit(0, 146, SCREEN_W, timeBuf, UI2_F_NUM40, true, UI2_CENTER);
     if (dateBuf[0]) c.textFit(PAD, 174, SCREEN_W - 2 * PAD, dateBuf, UI2_F_BODY, true, UI2_CENTER);
 
-    // Battery and unread messages
-    int pct = 0;
-#if HAS_BQ27220
-    pct = _task->getBatteryPercent();
-#else
-    uint16_t mv = _task->getBattMilliVolts();
-    if (mv > 0) pct = constrain(((int)mv - 3000) * 100 / 1200, 0, 100);
-#endif
+    // Battery (minute snapshot) and unread messages (live)
+    int pct = _snapPct;
     char batt[8], unread[24];
     snprintf(batt, sizeof(batt), "%d%%", pct);
     int u = _task->getUnreadMsgCount();
@@ -2170,21 +2204,12 @@ public:
       c.icon(lx, 262, ic, 12);
       c.text(lx + 16, 273, line, UI2_F_SMALL);
 
-      char est[40] = "";
-      if (board.isUsbPowered()) {
-        snprintf(est, sizeof(est), "%s", board.getBatteryPercent() >= 100 ? MECK_TR("Battery full", "Batterie pleine")
-                                                                          : MECK_TR("Charging", "En charge"));
-      } else {
-        uint16_t tte = board.getTimeToEmpty();     // minutes, 0xFFFF = not discharging
-        if (tte != 0xFFFF && tte > 0) {
-          if (tte >= 48 * 60) snprintf(est, sizeof(est), MECK_TR("About %u days left", "Environ %u jours"), (tte + 720) / 1440);
-          else if (tte >= 120) snprintf(est, sizeof(est), MECK_TR("About %u h left", "Environ %u h"), (tte + 30) / 60);
-          else snprintf(est, sizeof(est), MECK_TR("About %u min left", "Environ %u min"), tte);
-        }
-      }
-      if (est[0]) c.textFit(PAD, 290, SCREEN_W - 2 * PAD, est, UI2_F_META, true, UI2_CENTER);
+      if (_snapEst[0]) c.textFit(PAD, 290, SCREEN_W - 2 * PAD, _snapEst, UI2_F_META, true, UI2_CENTER);
     }
 #endif
+    // Next redraw at the next minute boundary, not on a fixed period: a
+    // wake for a LoRa packet mid-minute then has nothing to redraw.
+    if (now > 1700000000) return (int)(60 - now % 60) * 1000 + 300;
     return 30000;
   }
 #endif
