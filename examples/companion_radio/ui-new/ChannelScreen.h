@@ -60,7 +60,9 @@ struct __attribute__((packed)) MsgFileRecord {
   uint32_t timestamp;
   uint8_t  path_len;
   uint8_t  channel_idx;
-  uint8_t  valid;
+  uint8_t  valid;        // bit 0: slot in use; bits 4-5: final DM send status
+                         // (DM_SEND_DELIVERED / DM_SEND_FAILED, 0 = none). Older
+                         // firmware treats any non-zero value as valid.
   int8_t   snr;          // Receive SNR x 4 (was reserved; 0 = unknown)
   uint32_t dm_peer_hash; // DM peer name hash (v4+, for conversation filtering)
   uint8_t  path[MSG_PATH_MAX];  // Repeater hop hashes (first byte of pub key)
@@ -521,6 +523,7 @@ public:
       m->dm_status = status;
       m->dm_attempt = attempt;
       m->dm_total = total;
+      if (status == DM_SEND_DELIVERED || status == DM_SEND_FAILED) saveToSD();   // keep it across restarts
       return true;
     }
     return false;
@@ -597,7 +600,9 @@ public:
       rec.timestamp   = _messages[i].timestamp;
       rec.path_len    = _messages[i].path_len;
       rec.channel_idx = _messages[i].channel_idx;
-      rec.valid       = _messages[i].valid ? 1 : 0;
+      uint8_t st = _messages[i].dm_status;
+      if (st != DM_SEND_DELIVERED && st != DM_SEND_FAILED) st = 0;   // in flight: unknown after a restart
+      rec.valid       = _messages[i].valid ? (uint8_t)(1 | (st << 4)) : 0;
       rec.snr         = _messages[i].snr;
       rec.dm_peer_hash = _messages[i].dm_peer_hash;
       memcpy(rec.path, _messages[i].path, MSG_PATH_MAX);
@@ -688,15 +693,17 @@ public:
       _messages[i].timestamp   = rec.timestamp;
       _messages[i].path_len    = rec.path_len;
       _messages[i].channel_idx = rec.channel_idx;
-      _messages[i].valid       = (rec.valid != 0);
+      _messages[i].valid       = (rec.valid & 1) != 0;
       _messages[i].snr         = rec.snr;
       _messages[i].dm_peer_hash = rec.dm_peer_hash;
       memcpy(_messages[i].path, rec.path, MSG_PATH_MAX);
       memcpy(_messages[i].text, rec.text, CHANNEL_MSG_TEXT_LEN);
       _messages[i].scope_idx = 0xFF;  // region scope is session-only, not stored on SD
-      // DM send status is session-only, not stored on SD
+      // Only the final DM send status is stored on SD (in rec.valid)
       _messages[i].send_ref = 0;
-      _messages[i].dm_status = DM_SEND_NONE;
+      _messages[i].dm_status = (rec.valid >> 4) & 3;
+      _messages[i].has_fp = false;
+      _messages[i].heard = 0;
       _messages[i].dm_attempt = 0;
       _messages[i].dm_total = 0;
       if (_messages[i].valid) loaded++;
@@ -847,10 +854,13 @@ public:
   static const int16_t V2_BUBBLE_MAXW = 196;
   static const int16_t V2_TEXT_PAD = 6;
 
-  // Header text of a sent channel message: "sent 12:30", or with the repeats
-  // heard back "sent 12:30 · heard 2x"
+  // Header text of a sent message with no DM send status: a channel message
+  // "sent 12:30" (with the repeats heard back "sent 12:30 · heard 2x"), or a
+  // DM from history saved before send status was kept: just the time
   static void v2SentMeta(const ChannelMessage* m, const char* t, char* out, size_t len) {
-    if (m->heard > 0)
+    if (m->channel_idx == 0xFF)      // DM without a known send status (older history)
+      snprintf(out, len, "%s", t);
+    else if (m->heard > 0)
       snprintf(out, len, MECK_TR("sent %s \xC2\xB7 heard %ux", "envoy\xC3\xA9 %s \xC2\xB7 r\xC3\xA9p\xC3\xA9t\xC3\xA9 %ux"), t, m->heard);
     else
       snprintf(out, len, MECK_TR("sent %s", "envoy\xC3\xA9 %s"), t);
