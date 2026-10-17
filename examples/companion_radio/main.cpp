@@ -1183,6 +1183,12 @@ static uint32_t _atoi(const char* sp) {
       ChannelScreen* cs = (ChannelScreen*)ui_task.getChannelScreen();
       if (cs) Serial.printf("uigo: cleared %d Public messages\n", cs->clearHistoryForChannel(0));
     }
+    else if (strcmp(name, "histsave") == 0) {
+      // Rewrite the newest history record in place (same data): exercises
+      // the per-record SD save without adding or removing messages
+      ChannelScreen* cs = (ChannelScreen*)ui_task.getChannelScreen();
+      if (cs) { cs->saveNewestRecordToSD(); Serial.println("uigo: newest history record saved"); }
+    }
     else if (strcmp(name, "trace") == 0)    ui_task.gotoTraceScreen();
     else if (strcmp(name, "pathed") == 0)   ui_task.gotoPathEditor(idx);
     else if (strcmp(name, "admin") == 0)    ui_task.gotoRepeaterAdmin(idx);

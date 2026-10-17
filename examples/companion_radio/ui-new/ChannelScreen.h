@@ -258,8 +258,8 @@ public:
       }
     }
 
-    // Persist to SD card
-    saveToSD();
+    // Persist to SD card: only this slot and the header
+    saveRecordToSD(_newestIdx);
   }
 
   // Get count of messages for the currently viewed channel
@@ -523,7 +523,7 @@ public:
       m->dm_status = status;
       m->dm_attempt = attempt;
       m->dm_total = total;
-      if (status == DM_SEND_DELIVERED || status == DM_SEND_FAILED) saveToSD();   // keep it across restarts
+      if (status == DM_SEND_DELIVERED || status == DM_SEND_FAILED) saveRecordToSD(i);   // keep it across restarts
       return true;
     }
     return false;
@@ -568,6 +568,59 @@ public:
   // SD card persistence
   // -----------------------------------------------------------------------
 
+  void fillHeader(MsgFileHeader& hdr) const {
+    hdr.magic    = MSG_FILE_MAGIC;
+    hdr.version  = MSG_FILE_VERSION;
+    hdr.capacity = CHANNEL_MSG_HISTORY_SIZE;
+    hdr.count    = (uint16_t)_msgCount;
+    hdr.newestIdx = (int16_t)_newestIdx;
+  }
+
+  void fillRecord(int i, MsgFileRecord& rec) const {
+    rec.timestamp   = _messages[i].timestamp;
+    rec.path_len    = _messages[i].path_len;
+    rec.channel_idx = _messages[i].channel_idx;
+    uint8_t st = _messages[i].dm_status;
+    if (st != DM_SEND_DELIVERED && st != DM_SEND_FAILED) st = 0;   // in flight: unknown after a restart
+    rec.valid       = _messages[i].valid ? (uint8_t)(1 | (st << 4)) : 0;
+    rec.snr         = _messages[i].snr;
+    rec.dm_peer_hash = _messages[i].dm_peer_hash;
+    memcpy(rec.path, _messages[i].path, MSG_PATH_MAX);
+    memcpy(rec.text, _messages[i].text, CHANNEL_MSG_TEXT_LEN);
+  }
+
+  void saveNewestRecordToSD() { if (_newestIdx >= 0) saveRecordToSD(_newestIdx); }   // debug "uigo histsave"
+
+  // Save one message slot (and the header) in place: about 200 bytes instead
+  // of rewriting the whole ~58 KB file for every new message. Falls back to a
+  // full save when the file is missing or not the expected size.
+  void saveRecordToSD(int idx) {
+#if defined(HAS_SDCARD) && defined(ESP32)
+    if (!_sdReady) return;
+    const size_t fullSize = sizeof(MsgFileHeader) + (size_t)CHANNEL_MSG_HISTORY_SIZE * sizeof(MsgFileRecord);
+    File f = SD.open(MSG_FILE_PATH, "r+");
+    if (!f || f.size() != fullSize) {
+      if (f) f.close();
+      Serial.println("ChannelScreen: history file missing or another size, saving all");
+      saveToSD();
+      return;
+    }
+    MsgFileHeader hdr;
+    fillHeader(hdr);
+    MsgFileRecord rec;
+    fillRecord(idx, rec);
+    bool ok = f.seek(0) && f.write((uint8_t*)&hdr, sizeof(hdr)) == sizeof(hdr) &&
+              f.seek(sizeof(MsgFileHeader) + (size_t)idx * sizeof(MsgFileRecord)) &&
+              f.write((uint8_t*)&rec, sizeof(rec)) == sizeof(rec);
+    f.close();
+    digitalWrite(SDCARD_CS, HIGH);  // Release SD CS
+    if (!ok) {
+      Serial.println("ChannelScreen: SD record write failed, saving all");
+      saveToSD();
+    }
+#endif
+  }
+
   // Save the entire message buffer to SD card.
   // File: /meshcore/messages.bin  (~50 KB for 300 messages)
   void saveToSD() {
@@ -587,26 +640,13 @@ public:
 
     // Write header
     MsgFileHeader hdr;
-    hdr.magic    = MSG_FILE_MAGIC;
-    hdr.version  = MSG_FILE_VERSION;
-    hdr.capacity = CHANNEL_MSG_HISTORY_SIZE;
-    hdr.count    = (uint16_t)_msgCount;
-    hdr.newestIdx = (int16_t)_newestIdx;
+    fillHeader(hdr);
     f.write((uint8_t*)&hdr, sizeof(hdr));
 
     // Write all message slots (including invalid ones - preserves circular buffer layout)
     for (int i = 0; i < CHANNEL_MSG_HISTORY_SIZE; i++) {
       MsgFileRecord rec;
-      rec.timestamp   = _messages[i].timestamp;
-      rec.path_len    = _messages[i].path_len;
-      rec.channel_idx = _messages[i].channel_idx;
-      uint8_t st = _messages[i].dm_status;
-      if (st != DM_SEND_DELIVERED && st != DM_SEND_FAILED) st = 0;   // in flight: unknown after a restart
-      rec.valid       = _messages[i].valid ? (uint8_t)(1 | (st << 4)) : 0;
-      rec.snr         = _messages[i].snr;
-      rec.dm_peer_hash = _messages[i].dm_peer_hash;
-      memcpy(rec.path, _messages[i].path, MSG_PATH_MAX);
-      memcpy(rec.text, _messages[i].text, CHANNEL_MSG_TEXT_LEN);
+      fillRecord(i, rec);
       f.write((uint8_t*)&rec, sizeof(rec));
     }
 
