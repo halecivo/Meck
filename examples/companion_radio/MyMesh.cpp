@@ -273,6 +273,7 @@ bool MyMesh::Frame::isChannelMsg() const {
 }
 
 void MyMesh::addToOfflineQueue(const uint8_t frame[], int len) {
+  if (!offline_queue) return;   // before begin()
   if (offline_queue_len >= OFFLINE_QUEUE_SIZE) {
     MESH_DEBUG_PRINTLN("WARN: offline_queue is full!");
     int pos = 0;
@@ -1756,6 +1757,7 @@ MyMesh::MyMesh(mesh::Radio &radio, mesh::RNG &rng, mesh::RTCClock &rtc, SimpleMe
   _iter_started = false;
   _cli_rescue = false;
   offline_queue_len = 0;
+  offline_queue = nullptr;   // allocated in begin()
   app_target_ver = 0;
 #ifdef MECK_WATCH_EXT
   _meck_client = false;
@@ -1802,6 +1804,8 @@ MyMesh::MyMesh(mesh::Radio &radio, mesh::RNG &rng, mesh::RTCClock &rtc, SimpleMe
 void MyMesh::begin(bool has_display) {
   advert_paths = (AdvertPath*)ps_calloc(ADVERT_PATH_TABLE_SIZE, sizeof(AdvertPath));
   _rxlog = (RxLogEntry*)ps_calloc(RXLOG_SIZE, sizeof(RxLogEntry));
+  offline_queue = (Frame*)ps_calloc(OFFLINE_QUEUE_SIZE, sizeof(Frame));
+  if (!offline_queue) offline_queue = (Frame*)calloc(OFFLINE_QUEUE_SIZE, sizeof(Frame));   // no PSRAM
   BaseChatMesh::begin();
 
   if (!_store->loadMainIdentity(self_id)) {

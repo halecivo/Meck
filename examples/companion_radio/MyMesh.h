@@ -426,7 +426,9 @@ private:
     bool isChannelMsg() const;
   };
   int offline_queue_len;
-  Frame offline_queue[OFFLINE_QUEUE_SIZE];
+  // Allocated in begin(), in PSRAM where there is some: at 256 frames it is
+  // 65 KB, which in internal RAM leaves no room for WiFi next to Bluetooth
+  Frame* offline_queue;
 
   struct AckTableEntry {
     unsigned long msg_sent;
