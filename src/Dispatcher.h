@@ -141,7 +141,7 @@ protected:
   {
     outbound = NULL;
     total_air_time = rx_air_time = 0;
-    next_tx_time = 0;
+    next_tx_time = ms.getMillis();
     tx_budget_ms = 0;
     last_budget_update = 0;
     duty_cycle_window_ms = 3600000;   // 1 hour; begin() sets the real starting budget
