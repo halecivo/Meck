@@ -949,7 +949,10 @@ static uint32_t _atoi(const char* sp) {
 #if !defined(MECK_40MHZ_TEST)
     extern void meckPwrLogPrint();
     extern bool meckPwrLogFlush();
+    extern void meckPwrLogDumpSd(const char* date);
     if (strcmp(cmd, "pwrlog") == 0) { meckPwrLogPrint(); return; }
+    if (strcmp(cmd, "pwrlog sd") == 0) { meckPwrLogDumpSd(""); return; }
+    if (strncmp(cmd, "pwrlog sd ", 10) == 0) { meckPwrLogDumpSd(cmd + 10); return; }
     if (strcmp(cmd, "pwrlog flush") == 0) {
       Serial.printf("pwrlog: flush %s\n", meckPwrLogFlush() ? "ok" : "FAILED");
       return;
@@ -3648,6 +3651,31 @@ void meckPwrLogPrint() {
     Serial.println(line);
   }
   Serial.printf("pwrlog: %d records in RAM\n", meckPwrCount);
+}
+
+// "pwrlog sd" lists the log files on the SD card, "pwrlog sd YYYYMMDD"
+// prints one of them
+void meckPwrLogDumpSd(const char* date) {
+  if (!sdCardReady) { Serial.println("pwrlog: no SD card"); return; }
+  if (!date[0]) {
+    File dir = SD.open("/meshcore/powerlog");
+    if (!dir) { Serial.println("pwrlog: no log files"); return; }
+    for (File f = dir.openNextFile(); f; f = dir.openNextFile()) {
+      Serial.printf("%s %lu\n", f.name(), (unsigned long)f.size());
+      f.close();
+    }
+    dir.close();
+    return;
+  }
+  char path[48];
+  snprintf(path, sizeof(path), "/meshcore/powerlog/%s.csv", date);
+  File f = SD.open(path, FILE_READ);
+  if (!f) { Serial.printf("pwrlog: %s not found\n", path); return; }
+  uint8_t buf[256];
+  int n;
+  while ((n = f.read(buf, sizeof(buf))) > 0) Serial.write(buf, n);
+  f.close();
+  Serial.println("pwrlog: end");
 }
 
 // Called every loop: notes clock changes, records each new clock minute,
