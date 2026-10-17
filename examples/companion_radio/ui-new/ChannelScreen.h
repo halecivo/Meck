@@ -90,6 +90,7 @@ public:
     uint8_t dm_status;   // DM_SEND_NONE / SENDING / DELIVERED / FAILED
     uint8_t dm_attempt;  // attempts sent so far (for "Sending x/N")
     uint8_t dm_total;    // planned attempts (3 or 5)
+    uint8_t heard;       // sent channel message: repeats heard so far (session only)
   };
 
   // Simple hash for DM peer matching
@@ -205,7 +206,8 @@ public:
     msg->dm_status = send_ref ? DM_SEND_SENDING : DM_SEND_NONE;
     msg->dm_attempt = send_ref ? 1 : 0;
     msg->dm_total = send_total;
-    
+    msg->heard = 0;
+
     // Set DM peer hash for conversation filtering
     if (channel_idx == 0xFF) {
       msg->dm_peer_hash = peerHash(peer_name ? peer_name : sender);
@@ -898,7 +900,20 @@ public:
         snprintf(meta, sizeof(meta), "%s", MECK_TR("failed", "\xC3\xA9" "chec"));
         ic = UI2_IC_WARN;
       } else {
-        snprintf(meta, sizeof(meta), MECK_TR("sent %s", "envoy\xC3\xA9 %s"), t);
+        // Channel message: how many repeats of it were heard back. The
+        // sent-track keeps them for 10 minutes; the bubble keeps the highest
+        // count for the session.
+        if (m->has_fp) {
+          uint8_t bph = 0, srcs = 0;
+          uint8_t n = the_mesh.getHeardBy(m->path, 12, bph, srcs, nullptr, nullptr, 0);
+          if (n > m->heard) m->heard = n;
+        }
+        if (m->heard > 0) {
+          snprintf(meta, sizeof(meta), MECK_TR("sent %s \xC2\xB7 heard %ux", "envoy\xC3\xA9 %s \xC2\xB7 r\xC3\xA9p\xC3\xA9t\xC3\xA9 %ux"), t, m->heard);
+          ic = UI2_IC_CHECK;
+        } else {
+          snprintf(meta, sizeof(meta), MECK_TR("sent %s", "envoy\xC3\xA9 %s"), t);
+        }
       }
       int16_t rx = x + bb.w - V2_TEXT_PAD;
       if (ic != UI2_NO_ICON) { rx -= 12; c.icon(rx, y + 2, ic, 12, false); rx -= 3; }
