@@ -847,6 +847,15 @@ public:
   static const int16_t V2_BUBBLE_MAXW = 196;
   static const int16_t V2_TEXT_PAD = 6;
 
+  // Header text of a sent channel message: "sent 12:30", or with the repeats
+  // heard back "sent 12:30 · heard 2x"
+  static void v2SentMeta(const ChannelMessage* m, const char* t, char* out, size_t len) {
+    if (m->heard > 0)
+      snprintf(out, len, MECK_TR("sent %s \xC2\xB7 heard %ux", "envoy\xC3\xA9 %s \xC2\xB7 r\xC3\xA9p\xC3\xA9t\xC3\xA9 %ux"), t, m->heard);
+    else
+      snprintf(out, len, MECK_TR("sent %s", "envoy\xC3\xA9 %s"), t);
+  }
+
   void v2Layout(V2Bubble& bb, int idx, int chrono) {
     ChannelMessage* m = &_messages[idx];
     bb.msgIdx = idx;
@@ -867,6 +876,23 @@ public:
     for (int k = 0; k < bb.nLines; k++) if (bb.lines[k].w > cw) cw = bb.lines[k].w;
     if (bb.more) cw = textMax;
     int16_t hw = bb.own ? 110 : Ui2Canvas::textWidth(bb.sender, UI2_F_LABEL);
+    if (bb.own && m->dm_status == DM_SEND_NONE) {
+      // Sent channel message: the header tab holds "You", "sent 12:30 ·
+      // heard 2x" and the check icon; widen the bubble so all of it fits
+      if (m->has_fp) {
+        uint8_t bph = 0, srcs = 0;
+        uint8_t n = the_mesh.getHeardBy(m->path, 12, bph, srcs, nullptr, nullptr, 0);
+        if (n > m->heard) m->heard = n;   // the sent-track forgets after 10 min
+      }
+      if (m->heard > 0) {
+        char meta[48], t[8];
+        v2MsgTime(m->timestamp, t, sizeof(t));
+        v2SentMeta(m, t, meta, sizeof(meta));
+        int16_t need = Ui2Canvas::textWidth(MECK_TR("You", "Vous"), UI2_F_CHIP) + 6 +
+                       Ui2Canvas::textWidth(meta, UI2_F_META) + 15;
+        if (need > hw) hw = need;
+      }
+    }
     if (hw > cw) cw = hw;
     if (!bb.own && cw < 84) cw = 84;      // room for the time / hops line
     bb.w = cw + 2 + 2 * V2_TEXT_PAD;
@@ -900,20 +926,9 @@ public:
         snprintf(meta, sizeof(meta), "%s", MECK_TR("failed", "\xC3\xA9" "chec"));
         ic = UI2_IC_WARN;
       } else {
-        // Channel message: how many repeats of it were heard back. The
-        // sent-track keeps them for 10 minutes; the bubble keeps the highest
-        // count for the session.
-        if (m->has_fp) {
-          uint8_t bph = 0, srcs = 0;
-          uint8_t n = the_mesh.getHeardBy(m->path, 12, bph, srcs, nullptr, nullptr, 0);
-          if (n > m->heard) m->heard = n;
-        }
-        if (m->heard > 0) {
-          snprintf(meta, sizeof(meta), MECK_TR("sent %s \xC2\xB7 heard %ux", "envoy\xC3\xA9 %s \xC2\xB7 r\xC3\xA9p\xC3\xA9t\xC3\xA9 %ux"), t, m->heard);
-          ic = UI2_IC_CHECK;
-        } else {
-          snprintf(meta, sizeof(meta), MECK_TR("sent %s", "envoy\xC3\xA9 %s"), t);
-        }
+        // Channel message: repeats heard back (m->heard, set in v2Layout)
+        v2SentMeta(m, t, meta, sizeof(meta));
+        if (m->heard > 0) ic = UI2_IC_CHECK;
       }
       int16_t rx = x + bb.w - V2_TEXT_PAD;
       if (ic != UI2_NO_ICON) { rx -= 12; c.icon(rx, y + 2, ic, 12, false); rx -= 3; }
