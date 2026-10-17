@@ -1,0 +1,92 @@
+name: Build T-Deck MAX Firmwares
+
+# Builds the T-Deck MAX firmwares of this fork.
+# - every push to `next` and every pull request into it: the firmwares are
+#   kept as workflow artifacts (Actions tab > run > Artifacts)
+# - a tag `max-v*` (e.g. max-v1.15.1): also a draft GitHub release with the
+#   firmwares attached, published by hand after a look
+# - "Run workflow" on the Actions tab builds any branch on demand
+
+permissions:
+  contents: write
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - next
+    tags:
+      - 'max-v*'
+  pull_request:
+    branches:
+      - next
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        env:
+          - meck_max_ble_ui2        # new UI, Bluetooth companion
+          - meck_max_ble            # classic UI, Bluetooth companion
+          - meck_max_ble_wifi       # classic UI, Bluetooth or WiFi companion
+          - meck_max_standalone     # classic UI, no phone connection
+    steps:
+
+      - name: Clone Repo
+        uses: actions/checkout@v4
+
+      - name: Setup Build Environment
+        uses: ./.github/actions/setup-build-environment
+
+      - name: Build ${{ matrix.env }}
+        run: pio run -e ${{ matrix.env }}
+
+      # firmware-merged.bin: first flash, written at 0x0 (bootloader, partitions,
+      # app and an empty file system); firmware.bin: app only, for updates
+      # (OTA, Launcher, or 0x10000)
+      - name: Collect Binaries
+        shell: bash
+        run: |
+          mkdir -p out
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then VER="${GITHUB_REF#refs/tags/}"; else VER="$(git rev-parse --short HEAD)"; fi
+          cp .pio/build/${{ matrix.env }}/firmware.bin        out/${{ matrix.env }}-${VER}.bin
+          cp .pio/build/${{ matrix.env }}/firmware-merged.bin out/${{ matrix.env }}-${VER}-merged.bin
+
+      - name: Upload Workflow Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.env }}
+          path: out
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/max-v')
+    runs-on: ubuntu-latest
+    steps:
+
+      - name: Download Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: out
+          merge-multiple: true
+
+      - name: Create Draft Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: T-Deck MAX ${{ github.ref_name }}
+          draft: true
+          body: |
+            T-Deck MAX firmwares built from `${{ github.ref_name }}`.
+
+            - `*-merged.bin`: first flash, write at 0x0
+            - `*.bin`: update (OTA, Launcher, or write at 0x10000)
+
+            `meck_max_ble_ui2` is the new UI; the others keep the classic UI.
+          files: out/*

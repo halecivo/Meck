@@ -1,3 +1,32 @@
+> ### This is halecivo's fork of Meck (branch `next`)
+>
+> Everything from [pelgraine/Meck](https://github.com/pelgraine/Meck), plus
+> work for the **LilyGo T-Deck MAX** that is offered upstream but not merged
+> there yet:
+>
+> - **New UI (UI v2)**: redesigned screens for the 240x320 e-ink, message
+>   menu (reply with @mention, copy, path, repeated by, send again),
+>   full-screen reader. Build `meck_max_ble_ui2`; the other builds keep the
+>   classic UI.
+> - **Battery life**: the switched-off GPS is no longer powered through its
+>   data pin, the ES8311 codec sleeps when idle, and the device light-sleeps
+>   while the screen is locked. Locked current goes from 82 mA to about
+>   13 mA. Settings > "Power saving when locked".
+> - **Direct messages**: longer wait for the ACK on long flood routes, late
+>   ACKs still mark a message delivered, the final status survives a
+>   restart.
+> - **Hardening**: OTA checks the board and the battery, safer file manager
+>   and web reader downloads, no private key export over WiFi.
+>
+> **Download:** the firmwares are built by GitHub Actions on every push to
+> `next` (Actions tab, latest run, Artifacts) and attached to the releases
+> tagged `max-v*`. Flash `*-merged.bin` at 0x0 the first time; `*.bin`
+> updates an existing install (OTA, Launcher, or 0x10000).
+>
+> Branches: `next` is this fork's release branch, `main` mirrors
+> pelgraine/Meck, and each change also lives on its own branch for pull
+> requests upstream.
+
 ## Meshcore + Fork = Meck
 
 A fork created specifically to focus on enabling BLE & WiFi companion firmware for the LilyGo T-Deck Pro & LilyGo T-Deck Max. Created wholly with Claude AI using Meshcore v1.11 code. 100% vibecoded.
