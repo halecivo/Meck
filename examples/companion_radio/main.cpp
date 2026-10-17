@@ -149,6 +149,9 @@
   void drawComposeScreen();
   void drawEmojiPicker();
   void sendComposedMessage();
+  #ifdef MECK_UI_V2
+  void meckRunMessageAction(ChannelScreen* cs);   // chat message menu (Enter)
+  #endif
 
   // SD-backed persistence state
   static bool sdCardReady = false;
@@ -6447,6 +6450,23 @@ void handleKeyboardInput() {
           break;
         }
 
+#ifdef MECK_UI_V2
+        // Message menu: Enter on a selected message opens the menu, Enter in
+        // the menu runs the action; Enter closes the "Repeated by" view
+        if (chScr2 && chScr2->isShowingHeardBy()) {
+          ui_task.injectKey(KEY_CANCEL);
+          break;
+        }
+        if (chScr2 && chScr2->isReplySelectMode()) {
+          if (!chScr2->isMenuOpen()) {
+            if (chScr2->openMenu()) ui_task.forceRefresh();
+          } else {
+            meckRunMessageAction(chScr2);
+          }
+          break;
+        }
+#endif
+
         // DM inbox mode: pass Enter to ChannelScreen to open the selected conversation
         if (chScr2 && chScr2->isDMInboxMode()) {
           ui_task.injectKey('\r');
@@ -6491,8 +6511,9 @@ void handleKeyboardInput() {
         char replySender[32];
         if (chScr2 && chScr2->isReplySelectMode()
             && chScr2->getReplySelectSender(replySender, sizeof(replySender))) {
+          // Mention as the MeshCore app writes it: @[name] (names may hold spaces)
           int prefixLen = snprintf(composeBuffer, sizeof(composeBuffer),
-                                   "@%s ", replySender);
+                                   "@[%s] ", replySender);
           composePos = prefixLen;
           chScr2->exitReplySelect();
           Serial.printf("Reply compose to @%s, channel %d\n",
@@ -7102,6 +7123,85 @@ void sendComposedMessage() {
     ui_task.showAlert(MECK_TR("No channel!", "Aucun canal !"), 1500);
   }
 }
+
+#ifdef MECK_UI_V2
+// Copy text into the compose buffer, cut at a character boundary if too long
+static void meckComposeSet(const char* text) {
+  size_t n = strlen(text);
+  if (n > sizeof(composeBuffer) - 1) {
+    n = sizeof(composeBuffer) - 1;
+    while (n > 0 && ((uint8_t)text[n] & 0xC0) == 0x80) n--;   // not inside a UTF-8 sequence
+  }
+  memcpy(composeBuffer, text, n);
+  composeBuffer[n] = '\0';
+  composePos = (int)n;
+}
+
+// Run the action picked in the chat's message menu (ChannelScreen::openMenu)
+void meckRunMessageAction(ChannelScreen* cs) {
+  int act = cs->menuAction();
+  ChannelScreen::ChannelMessage* m = cs->menuMsg();
+  if (!m || act == 0) { cs->exitReplySelect(); return; }
+
+  // Views shown by the chat screen itself
+  if (act == ChannelScreen::MSG_ACT_PATH)  { cs->showPathForMenuMsg();  ui_task.forceRefresh(); return; }
+  if (act == ChannelScreen::MSG_ACT_HEARD) { cs->showHeardForMenuMsg(); ui_task.forceRefresh(); return; }
+
+  // The rest writes to the same place: the message's channel, or the contact
+  // of the open DM conversation
+  bool dm = (m->channel_idx == 0xFF);
+  if (dm) {
+    const char* name = cs->getDMFilterName();
+    int cidx = cs->getDMContactIdx();
+    if (cidx < 0 || !name || !name[0]) {
+      ui_task.showAlert(MECK_TR("Contact not found", "Contact introuvable"), 1200);
+      cs->exitReplySelect();
+      return;
+    }
+    composeDM = true;
+    composeDMContactIdx = cidx;
+    strncpy(composeDMName, name, sizeof(composeDMName) - 1);
+    composeDMName[sizeof(composeDMName) - 1] = '\0';
+  } else {
+    composeDM = false;
+    composeDMContactIdx = -1;
+    composeChannelIdx = m->channel_idx;
+  }
+
+  const char* body = ChannelScreen::msgBody(m);
+  if (act == ChannelScreen::MSG_ACT_RESEND) {
+    // The same text as a new message (new timestamp, new attempts)
+    meckComposeSet(body);
+    cs->exitReplySelect();
+    Serial.printf("Message menu: send again (%s)\n", dm ? "DM" : "channel");
+    sendComposedMessage();
+    composeBuffer[0] = '\0';
+    composePos = 0;
+    return;
+  }
+
+  if (act == ChannelScreen::MSG_ACT_REPLY && !dm) {
+    // Channel reply: mention the sender the way the MeshCore app does
+    char sender[32], mention[40];
+    if (ChannelScreen::extractSenderName(m->text, sender, sizeof(sender))) {
+      snprintf(mention, sizeof(mention), "@[%s] ", sender);
+      meckComposeSet(mention);
+    } else {
+      meckComposeSet("");
+    }
+  } else if (act == ChannelScreen::MSG_ACT_COPY) {
+    meckComposeSet(body);
+  } else {
+    meckComposeSet("");   // DM reply: the contact is the addressee
+  }
+  cs->exitReplySelect();
+  composeMode = true;
+  if (dm) ui_task.clearDMUnread(composeDMContactIdx);
+  Serial.printf("Message menu: compose (%s), prefill %d bytes\n", dm ? "DM" : "channel", composePos);
+  drawComposeScreen();
+  lastComposeRefresh = millis();
+}
+#endif
 
 // ============================================================================
 // ESP32-audioI2S CALLBACKS

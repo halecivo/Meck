@@ -121,6 +121,16 @@ private:
   bool _replySelectMode;       // True when user is picking a message to reply to
   int  _replySelectPos;        // Index into chronological channelMsgs[] (0=oldest)
   int  _replyChannelMsgCount;  // Cached count from last render (for input bounds)
+  int  _pathMsgIdx = -1;       // _messages[] slot shown in the path view (-1: newest received)
+
+  // Message menu (UI v2): R selects a message, Enter opens the menu for it
+  bool _menuOpen = false;
+  int  _menuSel = 0;
+  int  _menuMsgIdx = -1;       // _messages[] slot the menu is for
+  uint8_t _menuItems[6];
+  int  _menuCount = 0;
+  bool _showHeardBy = false;   // "Repeated by" view for a sent channel message
+  int  _heardMsgIdx = -1;
 
   // DM tab (channel_idx == 0xFF) two-level view:
   //   Inbox mode: list of contacts you have DMs from
@@ -329,7 +339,7 @@ public:
   uint8_t getDMContactPerms() const { return _dmContactPerms; }
   void setDMContactPerms(uint8_t p) { _dmContactPerms = p; }
   bool isShowingPathOverlay() const { return _showPathOverlay; }
-  void dismissPathOverlay() { _showPathOverlay = false; _pathScrollPos = 0; }
+  void dismissPathOverlay() { _showPathOverlay = false; _pathScrollPos = 0; _pathMsgIdx = -1; }
 
   // --- Canned messages overlay ---
   bool isCannedOpen() const { return _cannedOpen; }
@@ -380,7 +390,80 @@ public:
 
   // --- Reply select mode (R key → pick a message → Enter to @mention reply) ---
   bool isReplySelectMode() const { return _replySelectMode; }
-  void exitReplySelect() { _replySelectMode = false; _replySelectPos = -1; }
+  void exitReplySelect() { _replySelectMode = false; _replySelectPos = -1; _menuOpen = false; }
+
+  // --- Message menu (UI v2) -------------------------------------------------
+  // R selects a message (as for a reply), Enter opens this menu for it. The
+  // actions that open the composer or send run in main.cpp
+  // (meckRunMessageAction); the views (path, repeats) are shown here.
+  enum { MSG_ACT_REPLY = 1, MSG_ACT_COPY, MSG_ACT_PATH, MSG_ACT_HEARD, MSG_ACT_RESEND };
+
+  // Sent by this device: same rule as the chat bubbles
+  bool msgIsOwn(const ChannelMessage& m) {
+    if (m.dm_status != DM_SEND_NONE) return true;
+    char sender[32];
+    return m.path_len == 0 && m.snr == 0 && extractSenderName(m.text, sender, sizeof(sender)) &&
+           strcmp(sender, the_mesh.getNodePrefs()->node_name) == 0;
+  }
+
+  bool isMenuOpen() const { return _menuOpen; }
+  bool isShowingHeardBy() const { return _showHeardBy; }
+
+  // Open the menu for the selected message; false if nothing is selected
+  bool openMenu() {
+    ChannelMessage* m = getReplySelectMsg();
+    if (!m) return false;
+    _menuMsgIdx = (int)(m - _messages);
+    bool own = msgIsOwn(*m);
+    bool dm = (m->channel_idx == 0xFF);
+    _menuCount = 0;
+    if (!own) _menuItems[_menuCount++] = MSG_ACT_REPLY;
+    _menuItems[_menuCount++] = MSG_ACT_COPY;
+    if (!own && m->path_len != 0) _menuItems[_menuCount++] = MSG_ACT_PATH;
+    if (own && !dm && (m->has_fp || m->heard > 0)) _menuItems[_menuCount++] = MSG_ACT_HEARD;
+    if (own) _menuItems[_menuCount++] = MSG_ACT_RESEND;
+    _menuSel = 0;
+    _menuOpen = true;
+    return true;
+  }
+
+  // The highlighted action and its message (nullptr when the menu is closed)
+  int menuAction() const { return _menuOpen ? _menuItems[_menuSel] : 0; }
+  ChannelMessage* menuMsg() {
+    if (_menuMsgIdx < 0 || _menuMsgIdx >= CHANNEL_MSG_HISTORY_SIZE || !_messages[_menuMsgIdx].valid) return nullptr;
+    return &_messages[_menuMsgIdx];
+  }
+  // Message text without the "Sender: " prefix
+  static const char* msgBody(const ChannelMessage* m) {
+    const char* colon = strstr(m->text, ": ");
+    return colon ? colon + 2 : m->text;
+  }
+
+  // Views opened from the menu; closing them returns to the selection
+  void showPathForMenuMsg() {
+    if (!menuMsg()) return;
+    _pathMsgIdx = _menuMsgIdx;
+    _menuOpen = false;
+    _showPathOverlay = true;
+    _pathScrollPos = 0;
+  }
+  void showHeardForMenuMsg() {
+    if (!menuMsg()) return;
+    _heardMsgIdx = _menuMsgIdx;
+    _menuOpen = false;
+    _showHeardBy = true;
+  }
+
+  static const char* menuLabel(int act) {
+    switch (act) {
+      case MSG_ACT_REPLY:  return MECK_TR("Reply", "R\xC3\xA9pondre");
+      case MSG_ACT_COPY:   return MECK_TR("Copy to new message", "Copier dans un message");
+      case MSG_ACT_PATH:   return MECK_TR("Path", "Chemin");
+      case MSG_ACT_HEARD:  return MECK_TR("Repeated by", "R\xC3\xA9p\xC3\xA9t\xC3\xA9 par");
+      case MSG_ACT_RESEND: return MECK_TR("Send again", "Renvoyer");
+    }
+    return "";
+  }
 
   // Extract sender name from a "Sender: message" formatted text.
   // Returns true if a sender was found, fills senderBuf (null-terminated).
@@ -490,11 +573,19 @@ public:
     return nullptr;
   }
 
+  // Message shown in the path view: the one picked from the message menu
+  // (or with V in select mode), else the newest received message
+  ChannelMessage* pathViewMsg() {
+    if (_pathMsgIdx >= 0 && _pathMsgIdx < CHANNEL_MSG_HISTORY_SIZE && _messages[_pathMsgIdx].valid)
+      return &_messages[_pathMsgIdx];
+    return getNewestReceivedMsg();
+  }
+
   // Format the path of the newest received message as paste-ready text
   // Output: comma-separated hex prefixes e.g. "30, 3b, 9b, 05, e8, 36"
   // Returns length written (0 if no path available)
   int formatPathAsText(char* buf, int bufLen) {
-    ChannelMessage* msg = getNewestReceivedMsg();
+    ChannelMessage* msg = pathViewMsg();
     if (!msg || msg->path_len == 0 || msg->path_len == 0xFF) return 0;
     
     int pos = 0;
@@ -1105,7 +1196,7 @@ public:
     char right[12];
     snprintf(right, sizeof(right), "%d", n);
     Ui2Chrome::titleBar(c, title, n ? right : nullptr,
-                        _replySelectMode ? MECK_TR("Reply", "R\xC3\xA9ponse") : nullptr, UI2_NO_ICON, _replySelectMode);
+                        _replySelectMode ? MECK_TR("Select", "Choix") : nullptr, UI2_NO_ICON, _replySelectMode);
 
     if (n == 0) {
       if (_viewChannelIdx == 0xFF) {
@@ -1151,24 +1242,24 @@ public:
       // The title bar is drawn again over a bubble that does not fully fit
       if (count > 0 && ys[count - 1] < BODY_Y + 2) {
         c.fill(0, TITLE_Y, SCREEN_W, TITLE_H, false);
-        Ui2Chrome::titleBar(c, title, right, _replySelectMode ? MECK_TR("Reply", "R\xC3\xA9ponse") : nullptr, UI2_NO_ICON, _replySelectMode);
+        Ui2Chrome::titleBar(c, title, right, _replySelectMode ? MECK_TR("Select", "Choix") : nullptr, UI2_NO_ICON, _replySelectMode);
       }
     }
 
     if (_replySelectMode) {
-      const Ui2Key keys[] = { ui2KeyIcon(UI2_IC_ENTER, MECK_TR("Reply", "R\xC3\xA9pondre")), ui2Key("W/S", MECK_TR("Select", "Choisir"), true),
-                              ui2Key("V", MECK_TR("Path", "Chemin")), ui2Key("Q", MECK_TR("Cancel", "Annuler")) };
-      Ui2Chrome::footer(c, keys, 4);
+      const Ui2Key keys[] = { ui2KeyIcon(UI2_IC_ENTER, MECK_TR("Options", "Options")), ui2Key("W/S", MECK_TR("Select", "Choisir"), true),
+                              ui2Key("Q", MECK_TR("Cancel", "Annuler")) };
+      Ui2Chrome::footer(c, keys, 3);
     } else if (_viewChannelIdx == 0xFF && _dmContactPerms > 0) {
-      const Ui2Key keys[] = { ui2KeyIcon(UI2_IC_ENTER, MECK_TR("Reply", "R\xC3\xA9pondre")), ui2Key("W/S", MECK_TR("Scroll", "D\xC3\xA9" "filer"), true),
+      const Ui2Key keys[] = { ui2KeyIcon(UI2_IC_ENTER, MECK_TR("Reply", "R\xC3\xA9pondre")), ui2Key("R", MECK_TR("Select", "Choisir")),
                               ui2Key("L", "Admin"), ui2Key("Q", MECK_TR("Back", "Retour")) };
       Ui2Chrome::footer(c, keys, 4);
     } else if (_viewChannelIdx == 0xFF) {
-      const Ui2Key keys[] = { ui2KeyIcon(UI2_IC_ENTER, MECK_TR("Reply", "R\xC3\xA9pondre")), ui2Key("W/S", MECK_TR("Scroll", "D\xC3\xA9" "filer"), true),
-                              ui2Key("Q", MECK_TR("Back", "Retour")) };
-      Ui2Chrome::footer(c, keys, 3);
+      const Ui2Key keys[] = { ui2KeyIcon(UI2_IC_ENTER, MECK_TR("Reply", "R\xC3\xA9pondre")), ui2Key("R", MECK_TR("Select", "Choisir")),
+                              ui2Key("W/S", MECK_TR("Scroll", "D\xC3\xA9" "filer"), true), ui2Key("Q", MECK_TR("Back", "Retour")) };
+      Ui2Chrome::footer(c, keys, 4);
     } else {
-      const Ui2Key keys[] = { ui2KeyIcon(UI2_IC_ENTER, MECK_TR("Write", "\xC3\x89" "crire")), ui2Key("R", MECK_TR("Reply", "R\xC3\xA9pondre")),
+      const Ui2Key keys[] = { ui2KeyIcon(UI2_IC_ENTER, MECK_TR("Write", "\xC3\x89" "crire")), ui2Key("R", MECK_TR("Select", "Choisir")),
                               ui2Key("W/S", MECK_TR("Scroll", "D\xC3\xA9" "filer"), true), ui2Key("Q", MECK_TR("Back", "Retour")) };
       Ui2Chrome::footer(c, keys, 4);
     }
@@ -1184,7 +1275,7 @@ public:
     using namespace ui2;
     Ui2Canvas c(display);
     Ui2Chrome::statusHeader(c);
-    ChannelMessage* msg = getNewestReceivedMsg();
+    ChannelMessage* msg = pathViewMsg();
     uint8_t plen = msg ? msg->path_len : 0;
     int hops = (msg && plen != 0xFF) ? (plen & 63) : 0;
     int bph = (plen >> 6) + 1;
@@ -1281,8 +1372,145 @@ public:
   }
 #endif
 
+#ifdef MECK_UI_V2
+  // Name of the contact whose public key starts with hb[0..bph), repeaters
+  // first; false when none matches
+  static bool resolveHashName(const uint8_t* hb, int bph, char* name, size_t len) {
+    ContactInfo ci;
+    int numContacts = the_mesh.getNumContacts();
+    for (int pass = 0; pass < 2; pass++) {
+      for (int k = 0; k < numContacts; k++) {
+        if (the_mesh.getContactByIdx(k, ci) && memcmp(ci.id.pub_key, hb, bph) == 0 &&
+            (pass == 1 || ci.type == ADV_TYPE_REPEATER)) {
+          snprintf(name, len, "%s", ci.name);
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  // Message menu: the message, then one row per action
+  int renderMenuV2(DisplayDriver& display) {
+    using namespace ui2;
+    Ui2Canvas c(display);
+    Ui2Chrome::statusHeader(c);
+    ChannelMessage* m = menuMsg();
+    if (!m) {
+      _menuOpen = false;
+      Ui2Chrome::titleBar(c, MECK_TR("Message", "Message"));
+      return 100;
+    }
+    bool own = msgIsOwn(*m);
+    char sender[32] = "", t[8];
+    extractSenderName(m->text, sender, sizeof(sender));
+    v2MsgTime(m->timestamp, t, sizeof(t));
+    Ui2Chrome::titleBar(c, own ? MECK_TR("Your message", "Votre message")
+                               : (sender[0] ? sender : MECK_TR("Message", "Message")), t);
+
+    // The message, up to three lines
+    int16_t y = BODY_Y + 4;
+    const char* body = msgBody(m);
+    Ui2RtLine lines[3];
+    bool more = false;
+    int n = ui2RtWrap(body, strlen(body), SCREEN_W - 2 * PAD, UI2_F_BODY, lines, 3, &more);
+    for (int i = 0; i < n; i++) {
+      int16_t x = ui2RtDraw(c, PAD, y + 13, body, lines[i].a, lines[i].b, UI2_F_BODY);
+      if (more && i == n - 1) c.text(x + 2, y + 13, "...", UI2_F_BODY);
+      y += 16;
+    }
+    y += 6;
+    c.hline(0, y, SCREEN_W);
+    y += 1;
+
+    bool dm = (m->channel_idx == 0xFF);
+    for (int i = 0; i < _menuCount && y + ROW_H <= FOOTER_Y; i++) {
+      Ui2Row r;
+      switch (_menuItems[i]) {
+        case MSG_ACT_REPLY:  r.icon = UI2_IC_MSG; break;
+        case MSG_ACT_COPY:   r.icon = UI2_IC_EDIT; break;
+        case MSG_ACT_PATH:   r.icon = UI2_IC_TRACE; break;
+        case MSG_ACT_HEARD:  r.icon = UI2_IC_REPEATER; break;
+        case MSG_ACT_RESEND: r.icon = UI2_IC_REFRESH; break;
+      }
+      r.title = menuLabel(_menuItems[i]);
+      char sub[32] = "";
+      if (_menuItems[i] == MSG_ACT_REPLY && !dm && sender[0]) {
+        snprintf(sub, sizeof(sub), "@%s", sender);
+        r.sub = sub;
+      } else if (_menuItems[i] == MSG_ACT_HEARD && m->heard > 0) {
+        snprintf(sub, sizeof(sub), MECK_TR("%ux", "%ux"), m->heard);
+        r.right = sub;
+      }
+      r.selected = (i == _menuSel);
+      r.chevron = (_menuItems[i] == MSG_ACT_PATH || _menuItems[i] == MSG_ACT_HEARD);
+      Ui2List::drawRow(c, y, r);
+      y += ROW_H;
+    }
+
+    const Ui2Key keys[] = { ui2KeyIcon(UI2_IC_ENTER, MECK_TR("Select", "Choisir")),
+                            ui2Key("W/S", MECK_TR("Move", "D\xC3\xA9placer"), true),
+                            ui2Key("Q", MECK_TR("Back", "Retour")) };
+    Ui2Chrome::footer(c, keys, 3);
+    return 5000;
+  }
+
+  // Repeaters heard repeating a sent channel message, with their SNR. The
+  // sources are kept for 10 minutes after sending; after that only the count.
+  int renderHeardV2(DisplayDriver& display) {
+    using namespace ui2;
+    Ui2Canvas c(display);
+    Ui2Chrome::statusHeader(c);
+    ChannelMessage* m = (_heardMsgIdx >= 0 && _heardMsgIdx < CHANNEL_MSG_HISTORY_SIZE &&
+                         _messages[_heardMsgIdx].valid) ? &_messages[_heardMsgIdx] : nullptr;
+    uint8_t bph = 0, cnt = 0;
+    uint8_t hashes[SENT_ECHO_MAX * 2];
+    int8_t snrs[SENT_ECHO_MAX];
+    if (m && m->has_fp) {
+      uint8_t total = the_mesh.getHeardBy(m->path, 12, bph, cnt, hashes, snrs, SENT_ECHO_MAX);
+      if (total > m->heard) m->heard = total;
+    }
+    char right[12] = "";
+    if (m && m->heard > 0) snprintf(right, sizeof(right), "%ux", m->heard);
+    Ui2Chrome::titleBar(c, MECK_TR("Repeated by", "R\xC3\xA9p\xC3\xA9t\xC3\xA9 par"), right[0] ? right : nullptr);
+
+    if (cnt == 0 || bph == 0) {
+      bool some = m && m->heard > 0;
+      Ui2List::emptyState(c, BODY_Y, FOOTER_Y, UI2_IC_REPEATER,
+                          some ? MECK_TR("Repeats heard", "R\xC3\xA9p\xC3\xA9titions entendues")
+                               : MECK_TR("No repeats heard yet", "Aucune r\xC3\xA9p\xC3\xA9tition"),
+                          some ? MECK_TR("Which repeaters is kept for 10 minutes after sending.",
+                                         "Le d\xC3\xA9tail est gard\xC3\xA9 10 minutes apr\xC3\xA8s l'envoi.")
+                               : MECK_TR("Only repeaters this device can hear are counted.",
+                                         "Seuls les r\xC3\xA9p\xC3\xA9teurs \xC3\xA0 port\xC3\xA9" "e sont compt\xC3\xA9s."));
+    } else {
+      int16_t y = BODY_Y;
+      for (int e = 0; e < cnt && y + ROW_H <= FOOTER_Y; e++) {
+        const uint8_t* hb = &hashes[e * bph];
+        char hex[8], name[33] = "", snr[16];
+        if (bph == 1) snprintf(hex, sizeof(hex), "%02X", hb[0]);
+        else snprintf(hex, sizeof(hex), "%02X%02X", hb[0], hb[1]);
+        bool known = resolveHashName(hb, bph, name, sizeof(name));
+        snprintf(snr, sizeof(snr), "%.1f dB", snrs[e] / 4.0f);
+        Ui2Row r;
+        r.icon = UI2_IC_REPEATER;
+        r.title = known ? name : hex;
+        r.sub = known ? hex : MECK_TR("Unknown repeater", "R\xC3\xA9p\xC3\xA9teur inconnu");
+        r.right = snr;
+        Ui2List::drawRow(c, y, r);
+        y += ROW_H;
+      }
+    }
+    const Ui2Key keys[] = { ui2Key("Q", MECK_TR("Back", "Retour")) };
+    Ui2Chrome::footer(c, keys, 1);
+    return 5000;
+  }
+#endif
+
   int render(DisplayDriver& display) override {
 #ifdef MECK_UI_V2
+    if (_showHeardBy) return renderHeardV2(display);
+    if (_menuOpen) return renderMenuV2(display);
     return _showPathOverlay ? renderPathV2(display) : renderV2(display);
 #endif
     char tmp[40];
@@ -1441,7 +1669,7 @@ public:
       int lineH = the_mesh.getNodePrefs()->smallLineH();
       int y = 14;
       
-      ChannelMessage* msg = getNewestReceivedMsg();
+      ChannelMessage* msg = pathViewMsg();
       if (!msg) {
         display.setCursor(0, y);
         display.setColor(DisplayDriver::LIGHT);
@@ -2157,11 +2385,28 @@ public:
       _cannedOpen = false;
       return true;
     }
+    // "Repeated by" view: Back or Enter returns to the selection
+    if (_showHeardBy) {
+      if (c == KEY_CANCEL || c == '\r' || c == 13) {
+        _showHeardBy = false;
+        _heardMsgIdx = -1;
+      }
+      return true;
+    }
+    // Message menu: W/S move, Back closes, Enter runs the action (main.cpp)
+    if (_menuOpen) {
+      if (c == KEY_CANCEL) { _menuOpen = false; return true; }
+      if (c == 'w' || c == 'W' || c == 0xF2) { if (_menuSel > 0) _menuSel--; return true; }
+      if (c == 's' || c == 'S' || c == 0xF1) { if (_menuSel < _menuCount - 1) _menuSel++; return true; }
+      if (c == '\r' || c == 13) return false;
+      return true;
+    }
     // If overlay is showing, handle scroll and dismiss
     if (_showPathOverlay) {
       if (c == KEY_CANCEL || c == 'v' || c == 'V') {
         _showPathOverlay = false;
         _pathScrollPos = 0;
+        _pathMsgIdx = -1;
         return true;
       }
       if (c == '\r' || c == 13) {
@@ -2176,7 +2421,7 @@ public:
       }
       // S - scroll down in hop list
       if (c == 's' || c == 'S' || c == 0xF1) {
-        ChannelMessage* msg = getNewestReceivedMsg();
+        ChannelMessage* msg = pathViewMsg();
         if (msg && msg->path_len > 0 && msg->path_len != 0xFF) {
           int totalHops = msg->path_len & 63;
           if (_pathScrollPos < totalHops - _pathHopsVisible) {
@@ -2223,10 +2468,9 @@ public:
       }
       // V - view path for the SELECTED message (not just newest received)
       if (c == 'v' || c == 'V') {
-        // Path overlay will use getNewestReceivedMsg() — for v1 this is fine.
-        // The user can see the selected message's hop count in the > marker.
         ChannelMessage* selMsg = getReplySelectMsg();
         if (selMsg && selMsg->path_len != 0) {
+          _pathMsgIdx = (int)(selMsg - _messages);
           _showPathOverlay = true;
           _pathScrollPos = 0;
         }
@@ -2324,7 +2568,12 @@ public:
 
     // R - enter reply select mode (group channels only — DM tab uses Enter to reply)
     if (c == 'r' || c == 'R') {
+#ifdef MECK_UI_V2
+      // DM conversation: R selects a message for the message menu
+      if (_viewChannelIdx == 0xFF && _dmInboxMode) return false;
+#else
       if (_viewChannelIdx == 0xFF) return false;  // Not applicable on DM tab
+#endif
       if (channelMsgCount > 0) {
         _replySelectMode = true;
         // Start with newest message selected

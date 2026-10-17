@@ -12,10 +12,26 @@
 
 struct Ui2RtLine { int16_t a, b, w; };   // bytes [a, b) and their width
 
+// A mention as the MeshCore app writes it, "@[name]", at pos in body text:
+// returns its byte length (0 when there is none). It is drawn bold as
+// "@name" and wraps as one unit.
+static inline int ui2RtMention(const char* s, int pos, int len, Ui2Font font) {
+  if (font != UI2_F_BODY || s[pos] != '@' || pos + 2 >= len || s[pos + 1] != '[') return 0;
+  for (int i = pos + 2; i < len && i < pos + 2 + 32; i++) {
+    if (s[i] == ']') return i > pos + 2 ? i - pos + 1 : 0;
+  }
+  return 0;
+}
+
 // Byte length of the token at pos and its width in `font`
 static inline int ui2RtToken(const char* s, int pos, int len, Ui2Font font, int16_t* w) {
   uint8_t b = (uint8_t)s[pos];
   if (b == EMOJI_PAD_BYTE) { *w = 0; return 1; }
+  int ml = ui2RtMention(s, pos, len, font);
+  if (ml) {
+    *w = Ui2Canvas::textWidth("@", UI2_F_LABEL) + Ui2Canvas::textWidth(s + pos + 2, UI2_F_LABEL, ml - 3);
+    return ml;
+  }
   bool utf8 = (b >= 0xC2 && pos + 1 < len && ((uint8_t)s[pos + 1] & 0xC0) == 0x80);
   if (!utf8 && isEmojiEscape(b)) { *w = EMOJI_LG_W + 1; return 1; }
   int cl = utf8 ? ((b < 0xE0) ? 2 : (b < 0xF0) ? 3 : 4) : 1;
@@ -64,6 +80,15 @@ static inline int16_t ui2RtDraw(Ui2Canvas& c, int16_t x, int16_t baseline, const
     int16_t tw;
     int cl = ui2RtToken(s, i, b, font, &tw);
     uint8_t ch = (uint8_t)s[i];
+    if (cl > 3 && ui2RtMention(s, i, b, font) == cl) {
+      // "@[name]" -> bold "@name"
+      if (i > run) x = c.text(x, baseline, s + run, font, ink, i - run);
+      x = c.text(x, baseline, "@", UI2_F_LABEL, ink);
+      x = c.text(x, baseline, s + i + 2, UI2_F_LABEL, ink, cl - 3);
+      i += cl;
+      run = i;
+      continue;
+    }
     bool emoji = (cl == 1 && ch != EMOJI_PAD_BYTE && tw == EMOJI_LG_W + 1 && isEmojiEscape(ch));
     if (emoji || ch == EMOJI_PAD_BYTE) {
       if (i > run) x = c.text(x, baseline, s + run, font, ink, i - run);
