@@ -5,6 +5,8 @@
 #include "RadioPresets.h"        // Shared radio presets (serial CLI + settings screen)
 #include "MeckTxLog.h"
 
+static uint32_t dmAttemptTimeout(int result, uint32_t est_timeout);   // DM ack wait, below
+
 #ifdef HAS_4G_MODEM
   #include "ModemManager.h"      // Serial CLI modem commands
 #endif
@@ -555,6 +557,31 @@ void MyMesh::resolvePendingDMSend(uint32_t ack) {
       break;
     }
   }
+  // An ack for a DM already marked failed: it was delivered after all
+  for (int i = 0; i < LATE_ACK_SLOTS; i++) {
+    LateAckWatch& w = late_acks[i];
+    if (!w.active) continue;
+    if (millisHasNowPassed(w.until)) { w.active = false; continue; }
+    for (int a = 0; a < w.attempts && a < 5; a++) {
+      if (w.acks[a] != ack) continue;
+      w.active = false;
+      Serial.printf("[DM] late ack after failure, ref=0x%08X\n", (unsigned)w.send_ref);
+      meckTxLog(MECK_TXLOG_DM_ACK, w.attempts, w.total, 1);   // c = 1: late
+      if (_ui) _ui->dmSendStatus(w.send_ref, DM_SEND_DELIVERED, w.attempts, w.total);
+      break;
+    }
+  }
+}
+
+void MyMesh::watchLateAck(const PendingDMSend& p) {
+  LateAckWatch& w = late_acks[late_ack_next];
+  late_ack_next = (late_ack_next + 1) % LATE_ACK_SLOTS;   // full: reuse the oldest
+  w.active = true;
+  w.attempts = p.attempt;
+  w.total = p.total;
+  w.send_ref = p.send_ref;
+  memcpy(w.acks, p.acks, sizeof(w.acks));
+  w.until = futureMillis(LATE_ACK_WINDOW_MS);
 }
 
 ContactInfo*  MyMesh::processAck(const uint8_t *data) {
@@ -1193,7 +1220,7 @@ bool MyMesh::uiSendDirectMessage(uint32_t contact_idx, const char* text,
       p.timestamp = timestamp;
       p.send_ref = expected_ack ? expected_ack : 1;
       p.acks[0] = expected_ack;
-      p.deadline = futureMillis(est_timeout);
+      p.deadline = futureMillis(dmAttemptTimeout(result, est_timeout));
       StrHelper::strncpy(p.text, text, sizeof(p.text));
       *out_send_ref = p.send_ref;
       if (out_total) *out_total = p.total;
@@ -1736,6 +1763,7 @@ MyMesh::MyMesh(mesh::Radio &radio, mesh::RNG &rng, mesh::RTCClock &rtc, SimpleMe
   clearPendingReqs();
   next_ack_idx = 0;
   memset(pending_dm, 0, sizeof(pending_dm));
+  memset(late_acks, 0, sizeof(late_acks));
   sign_data = NULL;
   dirty_contacts_expiry = 0;
   _nextContactSaveDue = 0;
@@ -4220,6 +4248,17 @@ void MyMesh::checkSerialInterface() {
 // has elapsed either resends with the attempt counter bumped, or is marked
 // failed once its planned attempts are exhausted. Before the final attempt of
 // a 5-attempt (path set) plan, the path is reset so the last try goes flood.
+// How long the device-side retry engine waits for the ack of one DM attempt.
+// The stock estimate (500 ms + 16x airtime for flood, about 3 s at SF7 /
+// 62.5 kHz) is far too short for a flood over 8 hops and back; a DM failed
+// after 10 s while its ack was still on the way. Use it only as a floor.
+#define DM_FLOOD_ACK_MIN_MS   15000
+#define DM_DIRECT_ACK_MIN_MS  6000
+static uint32_t dmAttemptTimeout(int result, uint32_t est_timeout) {
+  uint32_t floor_ms = (result == MSG_SEND_SENT_FLOOD) ? DM_FLOOD_ACK_MIN_MS : DM_DIRECT_ACK_MIN_MS;
+  return est_timeout > floor_ms ? est_timeout : floor_ms;
+}
+
 void MyMesh::logTx(mesh::Packet* pkt, int len) {
   meckTxLog(MECK_TXLOG_TX_OK, pkt->getPayloadType(), pkt->isRouteFlood() ? 0 : 1, (int16_t)len);
 }
@@ -4240,6 +4279,7 @@ void MyMesh::sweepPendingDMSends() {
       p.active = false;
       MESH_DEBUG_PRINTLN("UI: DM failed after %d attempts, ref=0x%08X", p.attempt, p.send_ref);
       meckTxLog(MECK_TXLOG_DM_FAIL, p.attempt, p.total, 1);
+      watchLateAck(p);
       if (_ui) _ui->dmSendStatus(p.send_ref, DM_SEND_FAILED, p.attempt, p.total);
       continue;
     }
@@ -4275,7 +4315,7 @@ void MyMesh::sweepPendingDMSends() {
 
     p.attempt = next_attempt;
     p.acks[next_attempt - 1] = expected_ack;
-    p.deadline = futureMillis(est_timeout);
+    p.deadline = futureMillis(dmAttemptTimeout(result, est_timeout));
 
     if (expected_ack) {
       expected_ack_table[next_ack_idx].msg_sent = _ms->getMillis();

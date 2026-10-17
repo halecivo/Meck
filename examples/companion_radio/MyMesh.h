@@ -459,6 +459,22 @@ private:
   PendingDMSend pending_dm[MAX_PENDING_DM_SENDS];
   void sweepPendingDMSends();
 
+  // A DM marked failed can still be delivered: on a long flood route the ack
+  // may come back after the last attempt timed out. Its acks are kept here
+  // for a while, and a late ack turns the message into "delivered".
+  #define LATE_ACK_SLOTS     8
+  #define LATE_ACK_WINDOW_MS (5UL * 60 * 1000)
+  struct LateAckWatch {
+    bool active;
+    uint8_t attempts, total;
+    uint32_t send_ref;
+    uint32_t acks[5];
+    unsigned long until;
+  };
+  LateAckWatch late_acks[LATE_ACK_SLOTS];
+  int late_ack_next = 0;
+  void watchLateAck(const PendingDMSend& p);
+
   // TX log (MeckTxLog.h): every finished or failed transmission
   void logTx(mesh::Packet* pkt, int len) override;
   void logTxFail(mesh::Packet* pkt, int len) override;
