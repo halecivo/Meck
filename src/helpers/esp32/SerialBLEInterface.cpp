@@ -203,10 +203,11 @@ void SerialBLEInterface::onMtuChanged(BLEServer* pServer, esp_ble_gatts_cb_param
 void SerialBLEInterface::onDisconnect(BLEServer* pServer) {
   BLE_DEBUG_PRINTLN("onDisconnect()");
   _auth_ok = false;
+  // Mark the link down right away (MeshCore #3005): a bonded phone can
+  // reconnect before loop() polls getConnectedCount() and sees it at 0
+  deviceConnected = false;
   if (_isEnabled) {
     adv_restart_time = millis() + ADVERT_RESTART_DELAY;
-
-    // loop() will detect this on next loop, and set deviceConnected to false
   }
 }
 
