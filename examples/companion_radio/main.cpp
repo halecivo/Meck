@@ -953,6 +953,7 @@ static uint32_t _atoi(const char* sp) {
     extern bool meckPwrLogFlush();
     extern void meckPwrLogDumpSd(const char* date);
     if (strcmp(cmd, "pwrlog") == 0) { meckPwrLogPrint(); return; }
+    if (strcmp(cmd, "pwrchg") == 0) { board.chargerDebugPrint(); return; }   // charger + gauge, read-only
     if (strcmp(cmd, "pwrcal") == 0) {
       // RC slow clock: the calibration in use vs fresh measurements
       // (values are the RC period in microseconds, Q13.19 fixed point)
