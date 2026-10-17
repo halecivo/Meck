@@ -2,7 +2,9 @@ name: Build T-Deck MAX Firmwares
 
 # Builds the T-Deck MAX firmwares of this fork.
 # - every push to `next` and every pull request into it: the firmwares are
-#   kept as workflow artifacts (Actions tab > run > Artifacts)
+#   kept as workflow artifacts for 30 days (Actions tab > run > Artifacts)
+# - every push to `next`: the pre-release "Latest build (next)" (tag
+#   `next-latest`) is replaced with the new firmwares
 # - a tag `max-v*` (e.g. max-v1.15.1): also a draft GitHub release with the
 #   firmwares attached, published by hand after a look
 # - "Run workflow" on the Actions tab builds any branch on demand
@@ -64,6 +66,56 @@ jobs:
         with:
           name: ${{ matrix.env }}
           path: out
+          retention-days: 30
+
+  # Every push to next replaces one pre-release, tag `next-latest`, with the
+  # new binaries (fixed file names), so the newest build always has a
+  # permanent link. Versioned releases (max-v*) are separate and kept.
+  latest:
+    needs: build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/next'
+    runs-on: ubuntu-latest
+    steps:
+
+      - name: Download Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: in
+          merge-multiple: true
+
+      - name: Fixed File Names
+        shell: bash
+        run: |
+          mkdir -p out
+          for f in in/*.bin; do
+            b=$(basename "$f")
+            env=${b%%-*}
+            if [[ "$b" == *-merged.bin ]]; then cp "$f" "out/${env}-merged.bin"; else cp "$f" "out/${env}.bin"; fi
+          done
+          ls -l out
+
+      - name: Remove the Previous Latest Build
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release delete next-latest --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag || true
+
+      - name: Publish Latest Build
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: next-latest
+          target_commitish: ${{ github.sha }}
+          name: Latest build (next)
+          prerelease: true
+          make_latest: false
+          body: |
+            Newest build of the `next` branch, commit ${{ github.sha }}.
+            Replaced on every push; versioned releases (max-v*) stay.
+
+            - `*-merged.bin`: first flash, write at 0x0
+            - `*.bin`: update (OTA, Launcher, or write at 0x10000)
+
+            `meck_max_ble_ui2` is the new UI; the others keep the classic UI.
+          files: out/*
 
   release:
     needs: build

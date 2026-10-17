@@ -18,10 +18,11 @@
 > - **Hardening**: OTA checks the board and the battery, safer file manager
 >   and web reader downloads, no private key export over WiFi.
 >
-> **Download:** the firmwares are built by GitHub Actions on every push to
-> `next` (Actions tab, latest run, Artifacts) and attached to the releases
-> tagged `max-v*`. Flash `*-merged.bin` at 0x0 the first time; `*.bin`
-> updates an existing install (OTA, Launcher, or 0x10000).
+> **Download:** [Releases](https://github.com/halecivo/Meck/releases).
+> "Latest build (next)" is the newest build of `next`, replaced on every
+> change; the `max-v*` releases are fixed versions and stay. Flash
+> `*-merged.bin` at 0x0 the first time; `*.bin` updates an existing
+> install (OTA, Launcher, or 0x10000).
 >
 > Branches: `next` is this fork's release branch, `main` mirrors
 > pelgraine/Meck, and each change also lives on its own branch for pull
