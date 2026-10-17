@@ -895,6 +895,8 @@ static uint32_t _atoi(const char* sp) {
   // shows the real consumption. It switches back off by itself after 15 min.
   static unsigned long meckHizUntil = 0;
   #include <Preferences.h>
+  #include <soc/rtc.h>                 // RC slow clock calibration ("pwrcal")
+  #include <esp_private/esp_clk.h>
   // Gauge avgI at the end of the awake and the sleep phase of "pwrsleep",
   // kept in NVS: the reset button that USB recovery needs clears RTC memory
   static int meckAwakeResult = 0;
@@ -951,6 +953,18 @@ static uint32_t _atoi(const char* sp) {
     extern bool meckPwrLogFlush();
     extern void meckPwrLogDumpSd(const char* date);
     if (strcmp(cmd, "pwrlog") == 0) { meckPwrLogPrint(); return; }
+    if (strcmp(cmd, "pwrcal") == 0) {
+      // RC slow clock: the calibration in use vs fresh measurements
+      // (values are the RC period in microseconds, Q13.19 fixed point)
+      uint32_t inUse = esp_clk_slowclk_cal_get();
+      uint32_t c1 = rtc_clk_cal(RTC_CAL_RTC_MUX, 1024);
+      uint32_t c2 = rtc_clk_cal(RTC_CAL_RTC_MUX, 16384);
+      auto ppm = [](uint32_t a, uint32_t b) { return b ? (long)(((int64_t)a - b) * 1000000LL / b) : 0L; };
+      Serial.printf("pwr: slow clock cal in use %lu, fresh 1024 %lu (%+ld ppm), fresh 16384 %lu (%+ld ppm), %.1f Hz\n",
+                    (unsigned long)inUse, (unsigned long)c1, ppm(c1, inUse), (unsigned long)c2, ppm(c2, inUse),
+                    c2 ? 1000000.0 * (1 << 19) / c2 : 0.0);
+      return;
+    }
     if (strcmp(cmd, "pwrlog sd") == 0) { meckPwrLogDumpSd(""); return; }
     if (strncmp(cmd, "pwrlog sd ", 10) == 0) { meckPwrLogDumpSd(cmd + 10); return; }
     if (strcmp(cmd, "pwrlog flush") == 0) {
@@ -3387,6 +3401,35 @@ static void meckImportPoll() {
 
 static bool meckBleStoppedForSleep = false;
 static unsigned long meckAwakeUntil = 0;     // stay awake until (after a wake)
+static int meckRxPasses = -1;                // loop passes since a LoRa wake (-1: none)
+
+// After a LoRa wake the device only needs to stay up until the packet is
+// handled: the SX1262 receives on its own while the ESP32 sleeps, so all
+// that matters is that the packet was read (DIO1 back low), the radio is
+// listening again, and nothing waits to be sent or drawn. meckAwakeUntil
+// (2 s) stays as the upper bound.
+static bool meckRxHandled() {
+  if (meckRxPasses < 0) return true;
+  if (++meckRxPasses < 2) return false;               // one full loop pass first
+  if (digitalRead(P_LORA_DIO_1) == HIGH) return false; // IRQ not serviced yet
+  if (!radio_driver.isInRecvMode()) return false;     // not listening again yet
+  if (ui_task.needsAwake()) return false;             // redraw / kb flash due
+  meckRxPasses = -1;
+  return true;
+}
+
+// Light sleep is timed by the RC slow clock (the MAX has no 32 kHz crystal),
+// which drifts with temperature; the clock ran about 10 s/hour fast. Measure
+// it against the 40 MHz crystal again at each minute wake (1024 RC cycles,
+// about 7.5 ms) so the time kept while asleep follows the current frequency.
+#include <soc/rtc.h>
+#include <esp_private/esp_clk.h>
+static uint32_t meckBootSlowCal = 0;         // calibration at the first log tick
+
+static void meckCalibrateSlowClock() {
+  uint32_t cal = rtc_clk_cal(RTC_CAL_RTC_MUX, 1024);
+  if (cal) esp_clk_slowclk_cal_set(cal);
+}
 
 // Sleep statistics for the power log, reset with each logged minute
 static uint64_t meckSleptUs = 0;
@@ -3429,10 +3472,13 @@ static void meckLockSleepStep() {
   }
 
   if (!locked) return;
-  if (!canSleep || the_mesh.hasPendingWork() || (long)(millis() - meckAwakeUntil) < 0) {
+  bool inWindow = (long)(millis() - meckAwakeUntil) < 0;
+  if (inWindow && meckRxPasses >= 0 && meckRxHandled()) inWindow = false;   // packet done early
+  if (!canSleep || the_mesh.hasPendingWork() || inWindow) {
     delay(50);   // locked but awake: yield as before
     return;
   }
+  meckRxPasses = -1;
 
   // Sleep until just after the next minute boundary, a LoRa packet or the button
   uint32_t secs = rtc_clock.getCurrentTime() % 60;
@@ -3450,7 +3496,8 @@ static void meckLockSleepStep() {
 
   switch (esp_sleep_get_wakeup_cause()) {
     case ESP_SLEEP_WAKEUP_EXT1:
-      meckAwakeUntil = millis() + 2000;   // receive, maybe ACK / forward
+      meckAwakeUntil = millis() + 2000;   // at most: receive, maybe ACK / forward
+      meckRxPasses = 0;                    // usually ends early (meckRxHandled)
       meckWakeLora++;
       break;
     case ESP_SLEEP_WAKEUP_GPIO:
@@ -3461,6 +3508,7 @@ static void meckLockSleepStep() {
     default:                               // timer: redraw the clock
       meckAwakeUntil = millis() + 300;
       ui_task.forceRefresh();
+      meckCalibrateSlowClock();
       meckWakeTimer++;
       break;
   }
@@ -3498,6 +3546,7 @@ struct MeckPwrRec {
   uint8_t  wLora, wBtn, wTimer;     // wakes from light sleep by cause
   uint8_t  rx, tx;     // LoRa packets received / sent
   uint8_t  refresh, full;           // display refreshes / of which full
+  int16_t  rcPpm;      // RC slow clock calibration vs the first one, ppm
 };
 
 enum {
@@ -3567,6 +3616,10 @@ static void meckPwrRecord(uint32_t now, unsigned long ms) {
   r.refresh = (uint8_t)min(ref - meckPwrRef0, 255U);
   r.full = (uint8_t)min(full - meckPwrFull0, 255U);
   meckPwrRx0 = rx; meckPwrTx0 = tx; meckPwrRef0 = ref; meckPwrFull0 = full;
+  if (meckBootSlowCal) {
+    int64_t d = ((int64_t)esp_clk_slowclk_cal_get() - meckBootSlowCal) * 1000000LL / meckBootSlowCal;
+    r.rcPpm = (int16_t)constrain(d, -32000LL, 32000LL);
+  }
 
   // Append; when full, drop the oldest record
   int idx = (meckPwrHead + meckPwrCount) % MECK_PWR_CAP;
@@ -3597,21 +3650,21 @@ static void meckPwrLocalDate(uint32_t t, int8_t utc, char* date, size_t dlen, ch
 static const char MECK_PWR_HEADER[] =
   "utc,local_date,local_time,secs,asleep_s,wake_lora,wake_btn,wake_timer,"
   "pct,mv,avg_ma,temp_c,usb,charge,locked,blocker,saving,gps,modem,wifi,"
-  "phone,ble,audio,light,rx,tx,refresh,full_refresh,clock_jump_s,utc_offset";
+  "phone,ble,audio,light,rx,tx,refresh,full_refresh,clock_jump_s,utc_offset,rc_ppm";
 
 static int meckPwrCsv(const MeckPwrRec& r, char* buf, size_t len, char* date, size_t dlen) {
   char hm[8];
   meckPwrLocalDate(r.t, r.utc, date, dlen, hm, sizeof(hm));
   uint16_t f = r.flags;
   return snprintf(buf, len,
-    "%lu,%s,%s,%u,%u.%u,%u,%u,%u,%u,%u,%d,%d.%d,%d,%u,%d,%u,%d,%d,%d,%d,%d,%d,%d,%d,%u,%u,%u,%u,%ld,%d",
+    "%lu,%s,%s,%u,%u.%u,%u,%u,%u,%u,%u,%d,%d.%d,%d,%u,%d,%u,%d,%d,%d,%d,%d,%d,%d,%d,%u,%u,%u,%u,%ld,%d,%d",
     (unsigned long)r.t, date, hm, r.secs, r.sleptDs / 10, r.sleptDs % 10,
     r.wLora, r.wBtn, r.wTimer, r.pct, r.mv, r.avgMa, r.tempDc / 10, abs(r.tempDc % 10),
     (f & MECK_PWR_F_USB) ? 1 : 0, r.chg, (f & MECK_PWR_F_LOCKED) ? 1 : 0, r.blocker,
     (f & MECK_PWR_F_SAVING) ? 1 : 0, (f & MECK_PWR_F_GPS) ? 1 : 0, (f & MECK_PWR_F_MODEM) ? 1 : 0,
     (f & MECK_PWR_F_WIFI) ? 1 : 0, (f & MECK_PWR_F_PHONE) ? 1 : 0, (f & MECK_PWR_F_BLE) ? 1 : 0,
     (f & MECK_PWR_F_AUDIO) ? 1 : 0, (f & MECK_PWR_F_LIGHT) ? 1 : 0,
-    r.rx, r.tx, r.refresh, r.full, (long)r.jump, r.utc);
+    r.rx, r.tx, r.refresh, r.full, (long)r.jump, r.utc, r.rcPpm);
 }
 
 // Append all records in RAM to the SD card. True when the buffer was written.
@@ -3687,6 +3740,7 @@ static void meckPwrLogTick() {
     meckPwrMinute = now / 60;
     meckPwrRefEpoch = now; meckPwrRefMs = ms; meckPwrStartMs = ms ? ms : 1;
     meckPwrCounters(meckPwrRx0, meckPwrTx0, meckPwrRef0, meckPwrFull0);
+    meckBootSlowCal = esp_clk_slowclk_cal_get();
     return;
   }
   // The clock and millis() run from the same timer, so any difference

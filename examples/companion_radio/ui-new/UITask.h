@@ -294,6 +294,12 @@ public:
   // then locks. Keys go to lockPromptKey() while the warning is up.
   void requestLock();
   bool isLockPromptActive() const { return _lockPromptUntil != 0; }
+  // True while the UI has work the CPU must stay awake for right now: a
+  // redraw that is already due, or the keyboard notification flash.
+  bool needsAwake() {
+    if (_kb_flash_off_at != 0) return true;
+    return _display != NULL && _display->isOn() && (long)(_next_refresh - millis()) <= 0;
+  }
   void lockPromptKey(char c);
 #endif
 #ifdef MECK_WEB_READER
