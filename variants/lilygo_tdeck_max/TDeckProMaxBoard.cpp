@@ -886,6 +886,17 @@ static int sy6970_readReg(uint8_t reg) {
   return Wire.read();
 }
 
+bool TDeckProMaxBoard::isUsbPowered() {
+  static unsigned long lastRead = 0;
+  static bool powered = true;   // until read: assume powered (never sleep blind)
+  if (lastRead == 0 || millis() - lastRead >= 2000) {
+    lastRead = millis();
+    int r = sy6970_readReg(0x0B);              // REG0B bit 2: PG_STAT (power good)
+    if (r >= 0) powered = (r >> 2) & 1;
+  }
+  return powered;
+}
+
 void TDeckProMaxBoard::chargerDebugPrint() {
   static const char* const kInput[8] = { "none", "USB-SDP", "USB-CDP", "USB-DCP",
                                          "HVDCP", "adapter", "non-std-adapter", "OTG" };
