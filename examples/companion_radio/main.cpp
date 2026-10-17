@@ -3428,22 +3428,19 @@ static bool meckRxHandled() {
 }
 
 // Light sleep is timed by the RC slow clock (the MAX has no 32 kHz crystal),
-// which drifts with temperature; the clock ran about 10 s/hour fast. Measure
-// it against the 40 MHz crystal again at each minute wake (1024 RC cycles,
-// about 7.5 ms) so the time kept while asleep follows the current frequency.
+// which drifts with temperature; the clock ran about 10 s/hour fast. Applying
+// a fresh calibration at each minute wake made it worse (about -37 s/hour:
+// the reading right after a wake is off by some 0.5%), so the RC clock is
+// only measured here, for the power log's rc_ppm column, and the ESP-IDF
+// calibration stays in use.
 #include <soc/rtc.h>
 #include <esp_private/esp_clk.h>
 static uint32_t meckBootSlowCal = 0;         // calibration at the first log tick
+static uint32_t meckLastSlowCal = 0;         // last measurement (0 = none yet)
 
-static void meckCalibrateSlowClock() {
-  uint32_t cal = rtc_clk_cal(RTC_CAL_RTC_MUX, 1024);
-  if (!cal) return;
-  // A new calibration rescales the whole RTC time base (the clock jumped by
-  // -32 s after 3 h of uptime), so keep the wall clock where it was
-  struct timeval tv;
-  gettimeofday(&tv, NULL);
-  esp_clk_slowclk_cal_set(cal);
-  settimeofday(&tv, NULL);
+static void meckMeasureSlowClock() {
+  uint32_t cal = rtc_clk_cal(RTC_CAL_RTC_MUX, 1024);   // about 7.5 ms
+  if (cal) meckLastSlowCal = cal;
 }
 
 // Sleep statistics for the power log, reset with each logged minute
@@ -3523,7 +3520,7 @@ static void meckLockSleepStep() {
     default:                               // timer: redraw the clock
       meckAwakeUntil = millis() + 300;
       ui_task.forceRefresh();
-      meckCalibrateSlowClock();
+      meckMeasureSlowClock();
       meckWakeTimer++;
       break;
   }
@@ -3561,7 +3558,7 @@ struct MeckPwrRec {
   uint8_t  wLora, wBtn, wTimer;     // wakes from light sleep by cause
   uint8_t  rx, tx;     // LoRa packets received / sent
   uint8_t  refresh, full;           // display refreshes / of which full
-  int16_t  rcPpm;      // RC slow clock calibration vs the first one, ppm
+  int16_t  rcPpm;      // last RC slow clock measurement vs the boot calibration, ppm
 };
 
 enum {
@@ -3632,7 +3629,7 @@ static void meckPwrRecord(uint32_t now, unsigned long ms) {
   r.full = (uint8_t)min(full - meckPwrFull0, 255U);
   meckPwrRx0 = rx; meckPwrTx0 = tx; meckPwrRef0 = ref; meckPwrFull0 = full;
   if (meckBootSlowCal) {
-    int64_t d = ((int64_t)esp_clk_slowclk_cal_get() - meckBootSlowCal) * 1000000LL / meckBootSlowCal;
+    int64_t d = ((int64_t)(meckLastSlowCal ? meckLastSlowCal : esp_clk_slowclk_cal_get()) - meckBootSlowCal) * 1000000LL / meckBootSlowCal;
     r.rcPpm = (int16_t)constrain(d, -32000LL, 32000LL);
   }
 
