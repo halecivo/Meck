@@ -135,7 +135,9 @@ public:
   void startInterface(BaseSerialInterface &serial);
 
   // True while packets are queued for sending (retries, forwards, ACKs):
-  // power saving waits for the queue to drain before sleeping
+  // power saving waits for the queue to drain before sleeping. (MeshCore
+  // b259fbd0 also waits for unsaved contacts; Meck defers contact saves for
+  // up to 12 hours, so that would keep the device awake almost always.)
   bool hasPendingWork() const { return _mgr->getOutboundCount(0xFFFFFFFF) > 0; }
 
   const char *getNodeName();
