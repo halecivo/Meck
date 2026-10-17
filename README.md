@@ -8,6 +8,8 @@
 >   menu (reply with @mention, copy, path, repeated by, send again),
 >   full-screen reader. Build `meck_max_ble_ui2`; the other builds keep the
 >   classic UI.
+>
+>   <img src="docs/images/ui-v2-home.jpg" alt="UI v2 home screen on a T-Deck MAX" width="270">
 > - **Battery life**: the switched-off GPS is no longer powered through its
 >   data pin, the ES8311 codec sleeps when idle, and the device light-sleeps
 >   while the screen is locked. Locked current goes from 82 mA to about

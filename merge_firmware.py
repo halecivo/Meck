@@ -132,8 +132,20 @@ def merge_bin(source, target, env):
     freq_map = {"80000000": "80m", "40000000": "40m", "26000000": "26m", "20000000": "20m"}
     flash_freq_str = freq_map.get(flash_freq, "80m")
 
-    cmd = [
-        env.subst("$PYTHONEXE"), "-m", "esptool",
+    # esptool as a Python module where it is installed, otherwise the copy
+    # PlatformIO keeps as a tool package (a plain PlatformIO install, e.g. CI)
+    python = env.subst("$PYTHONEXE")
+    esptool = [python, "-m", "esptool"]
+    if subprocess.run(esptool + ["version"], capture_output=True).returncode != 0:
+        pkg = env.PioPlatform().get_package_dir("tool-esptoolpy") or ""
+        script = os.path.join(pkg, "esptool.py")
+        if os.path.isfile(script):
+            esptool = [python, script]
+        else:
+            print("[merge] WARNING: esptool not found, skipping merge")
+            return
+
+    cmd = esptool + [
         "--chip", mcu,
         "merge_bin",
         "-o", output,
