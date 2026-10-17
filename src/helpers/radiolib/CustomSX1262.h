@@ -77,9 +77,83 @@ class CustomSX1262 : public SX1262 {
       return true;  // success
     }
 
+    // Receive with the PREAMBLE_DETECTED IRQ reported as well (RadioLib's
+    // default flags leave it out), so isReceiving() sees a packet starting.
+    // Also refreshes the activity deadlines from the current modem settings.
+    int16_t startReceive() override {
+      updateActivityDeadlines();
+      return SX1262::startReceive(RADIOLIB_SX126X_RX_TIMEOUT_INF,
+                                  RADIOLIB_IRQ_RX_DEFAULT_FLAGS | (1UL << RADIOLIB_IRQ_PREAMBLE_DETECTED),
+                                  RADIOLIB_IRQ_RX_DEFAULT_MASK, 0);
+    }
+
+    // True while a packet is arriving (listen before talk). A preamble that
+    // never turns into a header, or a header whose packet never completes,
+    // would otherwise keep this true and hold back transmitting; such flags
+    // are cleared once they are older than the longest valid packet allows.
+    // From MeshCore #2977, #3000, #3036, #3062.
     bool isReceiving() {
-      uint16_t irq = getIrqFlags();
-      bool detected = (irq & SX126X_IRQ_HEADER_VALID) || (irq & SX126X_IRQ_PREAMBLE_DETECTED);
-      return detected;
+      uint32_t irq = getIrqFlags();
+      bool preamble = irq & RADIOLIB_SX126X_IRQ_PREAMBLE_DETECTED;
+      bool header   = irq & RADIOLIB_SX126X_IRQ_HEADER_VALID;
+      bool hdrErr   = irq & RADIOLIB_SX126X_IRQ_HEADER_ERR;
+      const uint32_t activityFlags = RADIOLIB_SX126X_IRQ_PREAMBLE_DETECTED | RADIOLIB_SX126X_IRQ_HEADER_VALID |
+                                     RADIOLIB_SX126X_IRQ_HEADER_ERR | RADIOLIB_SX126X_IRQ_SYNC_WORD_VALID;
+      uint32_t now = millis();
+      if (hdrErr) {
+        clearIrqFlags(activityFlags);
+        _activityAt = 0; _headerSeen = false;
+        return false;
+      }
+      if (!header && _headerSeen) {   // something else cleared the header flag
+        _activityAt = 0; _headerSeen = false;
+        return false;
+      }
+      if (header) {
+        if (!_headerSeen) { _headerSeen = true; _activityAt = now; }
+        if (now - _activityAt > _maxPayloadMillis) {
+          clearIrqFlags(activityFlags);
+          _activityAt = 0; _headerSeen = false;
+          return false;
+        }
+        return true;
+      }
+      if (preamble) {
+        if (_activityAt == 0) _activityAt = now;
+        if (now - _activityAt > _preambleMillis) {
+          clearIrqFlags(RADIOLIB_SX126X_IRQ_PREAMBLE_DETECTED);
+          _activityAt = 0;
+          return false;
+        }
+        return true;
+      }
+      _activityAt = 0; _headerSeen = false;
+      return false;
+    }
+
+  private:
+    uint32_t _preambleMillis = 66;     // preamble detected -> header valid, at most
+    uint32_t _maxPayloadMillis = 3934; // header valid -> packet done, at most
+    uint32_t _activityAt = 0;
+    bool _headerSeen = false;
+
+    // The two deadlines for the current SF / bandwidth / coding rate /
+    // preamble, as MeshCore's RadioLibWrapper::calcMaxPacketMillis()
+    // computes them (from RadioLib's time-on-air formula). Computing them
+    // here keeps them right after any change of radio settings.
+    void updateActivityDeadlines() {
+      if (spreadingFactor == 0 || bandwidthKhz <= 0) return;   // not configured yet
+      uint32_t tsym_us = ((uint32_t)10000 << spreadingFactor) / (uint32_t)(bandwidthKhz * 10);
+      uint32_t sfCoeff1_x4 = (spreadingFactor == 5 || spreadingFactor == 6) ? 25 : 17;
+      // preamble + sync word + SFD + header
+      uint32_t preamble_us = (((uint32_t)(preambleLengthLoRa + 8) * 4 + sfCoeff1_x4) * tsym_us) / 4;
+      // the rest of a maximum-size packet at the current settings
+      uint32_t total_us = getTimeOnAir(255);
+      uint32_t payload_us = total_us > preamble_us ? total_us - preamble_us : 4000000;
+      // scaled to the slowest coding rate (4/8) a sender might use
+      uint8_t cr = codingRate + 4;   // RadioLib stores 1..4 for 4/5..4/8
+      if (cr >= 5 && cr < 8) payload_us = (payload_us * 8) / cr;
+      _preambleMillis = (preamble_us + 999) / 1000;
+      _maxPayloadMillis = (payload_us + 999) / 1000;
     }
 };
