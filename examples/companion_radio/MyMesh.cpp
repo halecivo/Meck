@@ -3,6 +3,7 @@
 #include <Arduino.h> // needed for PlatformIO
 #include <Mesh.h>
 #include "RadioPresets.h"        // Shared radio presets (serial CLI + settings screen)
+#include "MeckTxLog.h"
 
 #ifdef HAS_4G_MODEM
   #include "ModemManager.h"      // Serial CLI modem commands
@@ -549,6 +550,7 @@ void MyMesh::resolvePendingDMSend(uint32_t ack) {
       p.active = false;
       MESH_DEBUG_PRINTLN("UI: DM delivered (attempt %d/%d), ref=0x%08X",
                          p.attempt, p.total, p.send_ref);
+      meckTxLog(MECK_TXLOG_DM_ACK, p.attempt, p.total);
       if (_ui) _ui->dmSendStatus(p.send_ref, DM_SEND_DELIVERED, p.attempt, p.total);
       break;
     }
@@ -1163,8 +1165,10 @@ bool MyMesh::uiSendDirectMessage(uint32_t contact_idx, const char* text,
 
   if (result == MSG_SEND_FAILED) {
     MESH_DEBUG_PRINTLN("UI: DM send failed to %s", recipient->name);
+    meckTxLog(MECK_TXLOG_DM_FAIL, 0, total, 3);
     return false;
   }
+  meckTxLog(MECK_TXLOG_DM_SEND, 1, total, result);
 
   // Track expected ACK for delivery confirmation
   if (expected_ack) {
@@ -2158,6 +2162,7 @@ void MyMesh::handleCmdFrame(size_t len) {
       ChannelDetails channel;
       bool success = getChannel(channel_idx, channel);
       if (success && sendGroupMessage(msg_timestamp, channel.channel, _prefs.node_name, text, len - i)) {
+        meckTxLog(MECK_TXLOG_CH_SEND, channel_idx);
         writeOKFrame();
         #ifdef DISPLAY_CLASS
         if (_ui) {
@@ -4215,6 +4220,15 @@ void MyMesh::checkSerialInterface() {
 // has elapsed either resends with the attempt counter bumped, or is marked
 // failed once its planned attempts are exhausted. Before the final attempt of
 // a 5-attempt (path set) plan, the path is reset so the last try goes flood.
+void MyMesh::logTx(mesh::Packet* pkt, int len) {
+  meckTxLog(MECK_TXLOG_TX_OK, pkt->getPayloadType(), pkt->isRouteFlood() ? 0 : 1, (int16_t)len);
+}
+
+void MyMesh::logTxFail(mesh::Packet* pkt, int len) {
+  Serial.printf("[TX] failed: type=%d len=%d (radio did not start or finish)\n", pkt->getPayloadType(), len);
+  meckTxLog(MECK_TXLOG_TX_FAIL, pkt->getPayloadType(), pkt->isRouteFlood() ? 0 : 1, (int16_t)len);
+}
+
 void MyMesh::sweepPendingDMSends() {
   for (int i = 0; i < MAX_PENDING_DM_SENDS; i++) {
     PendingDMSend& p = pending_dm[i];
@@ -4225,6 +4239,7 @@ void MyMesh::sweepPendingDMSends() {
       // All attempts exhausted without an ack
       p.active = false;
       MESH_DEBUG_PRINTLN("UI: DM failed after %d attempts, ref=0x%08X", p.attempt, p.send_ref);
+      meckTxLog(MECK_TXLOG_DM_FAIL, p.attempt, p.total, 1);
       if (_ui) _ui->dmSendStatus(p.send_ref, DM_SEND_FAILED, p.attempt, p.total);
       continue;
     }
@@ -4233,6 +4248,7 @@ void MyMesh::sweepPendingDMSends() {
     if (recipient == NULL) {
       // Contact removed mid-flight -- nothing left to send to
       p.active = false;
+      meckTxLog(MECK_TXLOG_DM_FAIL, p.attempt, p.total, 2);
       if (_ui) _ui->dmSendStatus(p.send_ref, DM_SEND_FAILED, p.attempt, p.total);
       continue;
     }
@@ -4249,6 +4265,7 @@ void MyMesh::sweepPendingDMSends() {
       if (next_attempt >= p.total) {
         // Final attempt never left the radio -- give up now
         p.active = false;
+        meckTxLog(MECK_TXLOG_DM_FAIL, p.attempt, p.total, 3);
         if (_ui) _ui->dmSendStatus(p.send_ref, DM_SEND_FAILED, p.attempt, p.total);
       } else {
         p.deadline = futureMillis(2000);  // packet pool busy -- retry this attempt shortly
@@ -4267,6 +4284,7 @@ void MyMesh::sweepPendingDMSends() {
       next_ack_idx = (next_ack_idx + 1) % EXPECTED_ACK_TABLE_SIZE;
     }
 
+    meckTxLog(MECK_TXLOG_DM_SEND, p.attempt, p.total, result);
     MESH_DEBUG_PRINTLN("UI: DM retry %d/%d to %s (%s)", p.attempt, p.total, recipient->name,
                        result == MSG_SEND_SENT_FLOOD ? "flood" : "direct");
     if (_ui) _ui->dmSendStatus(p.send_ref, DM_SEND_SENDING, p.attempt, p.total);

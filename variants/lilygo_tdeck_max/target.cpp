@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include "variant.h"
 #include "target.h"
+#include "../../examples/companion_radio/MeckTxLog.h"
 
 #ifdef HAS_ES8311_AUDIO
   #include "ES8311.h"   // MAX: native ES8311 codec init (Arduino Wire)
@@ -85,8 +86,13 @@ void radio_set_params(float freq, float bw, uint8_t sf, uint8_t cr) {
   MESH_DEBUG_PRINTLN("radio_set_params() - bw=%.1f sf=%u preamble=%u", bw, sf, preamble);
 }
 
+// main.cpp records TX log events where the log is built; a no-op elsewhere
+__attribute__((weak)) void meckTxLogEvent(uint8_t, uint8_t, uint8_t, int16_t) {}
+
 void radio_set_tx_power(uint8_t dbm) {
-  radio.setOutputPower(dbm);
+  int err = radio.setOutputPower(dbm);
+  if (err != RADIOLIB_ERR_NONE) Serial.printf("[Radio] setOutputPower(%u) failed: %d\n", dbm, err);
+  meckTxLog(MECK_TXLOG_TX_POWER, dbm, 0, (int16_t)err);
 }
 
 mesh::LocalIdentity radio_new_identity() {

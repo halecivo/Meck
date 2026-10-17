@@ -10,6 +10,7 @@
 #endif
 #include <Mesh.h>
 #include "MyMesh.h"
+#include "MeckTxLog.h"
 #include "variant.h"   // Board-specific defines (HAS_GPS, etc.)
 #include "target.h"    // For sensors, board, etc.
 #include "CPUPowerManager.h"
@@ -951,7 +952,9 @@ static uint32_t _atoi(const char* sp) {
 #if !defined(MECK_40MHZ_TEST)
     extern void meckPwrLogPrint();
     extern bool meckPwrLogFlush();
-    extern void meckPwrLogDumpSd(const char* date);
+    extern void meckLogDumpSd(const char* dirPath, const char* date);
+    extern void meckTxLogPrint();
+    extern bool meckTxLogFlush();
     if (strcmp(cmd, "pwrlog") == 0) { meckPwrLogPrint(); return; }
     if (strcmp(cmd, "pwrchg") == 0) { board.chargerDebugPrint(); return; }   // charger + gauge, read-only
     if (strcmp(cmd, "pwrcal") == 0) {
@@ -966,10 +969,15 @@ static uint32_t _atoi(const char* sp) {
                     c2 ? 1000000.0 * (1 << 19) / c2 : 0.0);
       return;
     }
-    if (strcmp(cmd, "pwrlog sd") == 0) { meckPwrLogDumpSd(""); return; }
-    if (strncmp(cmd, "pwrlog sd ", 10) == 0) { meckPwrLogDumpSd(cmd + 10); return; }
+    if (strcmp(cmd, "pwrlog sd") == 0) { meckLogDumpSd("/meshcore/powerlog", ""); return; }
+    if (strncmp(cmd, "pwrlog sd ", 10) == 0) { meckLogDumpSd("/meshcore/powerlog", cmd + 10); return; }
+    if (strcmp(cmd, "pwrtx") == 0) { meckTxLogPrint(); return; }
+    if (strcmp(cmd, "pwrtx sd") == 0) { meckLogDumpSd("/meshcore/txlog", ""); return; }
+    if (strncmp(cmd, "pwrtx sd ", 9) == 0) { meckLogDumpSd("/meshcore/txlog", cmd + 9); return; }
     if (strcmp(cmd, "pwrlog flush") == 0) {
-      Serial.printf("pwrlog: flush %s\n", meckPwrLogFlush() ? "ok" : "FAILED");
+      bool okPwr = meckPwrLogFlush();
+      bool okTx = meckTxLogFlush();
+      Serial.printf("pwrlog: flush %s\n", okPwr && okTx ? "ok" : "FAILED");
       return;
     }
 #endif
@@ -3429,7 +3437,13 @@ static uint32_t meckBootSlowCal = 0;         // calibration at the first log tic
 
 static void meckCalibrateSlowClock() {
   uint32_t cal = rtc_clk_cal(RTC_CAL_RTC_MUX, 1024);
-  if (cal) esp_clk_slowclk_cal_set(cal);
+  if (!cal) return;
+  // A new calibration rescales the whole RTC time base (the clock jumped by
+  // -32 s after 3 h of uptime), so keep the wall clock where it was
+  struct timeval tv;
+  gettimeofday(&tv, NULL);
+  esp_clk_slowclk_cal_set(cal);
+  settimeofday(&tv, NULL);
 }
 
 // Sleep statistics for the power log, reset with each logged minute
@@ -3707,12 +3721,133 @@ void meckPwrLogPrint() {
   Serial.printf("pwrlog: %d records in RAM\n", meckPwrCount);
 }
 
-// "pwrlog sd" lists the log files on the SD card, "pwrlog sd YYYYMMDD"
-// prints one of them
-void meckPwrLogDumpSd(const char* date) {
+// ============================================================================
+// TX log (T-Deck MAX)
+//
+// What the radio and the DM retry engine did with outgoing traffic: every
+// finished or failed transmission (packet type, route, length), each DM
+// attempt, its ACK or why it failed, channel sends and TX power changes.
+// Each event also notes USB power, the antenna and the TX power at the time.
+// Kept in RAM and appended to /meshcore/txlog/YYYYMMDD.csv together with the
+// power log. Debug CLI: "pwrtx" prints the events in RAM, "pwrtx sd" lists
+// and "pwrtx sd YYYYMMDD" prints the files.
+// ============================================================================
+struct MeckTxEvt {
+  uint32_t t;          // UTC epoch
+  uint32_t ms;         // millis(), orders events within a second
+  uint8_t  kind;       // MECK_TXLOG_*
+  uint8_t  a, b;       // see meckTxLogCsv()
+  int16_t  c;
+  uint8_t  flags;      // bit0 USB power, bit1 external antenna
+  uint8_t  dbm;        // TX power setting
+};
+
+#define MECK_TXLOG_CAP 200
+static MeckTxEvt meckTxBuf[MECK_TXLOG_CAP];
+static int meckTxHead = 0, meckTxCount = 0;
+
+void meckTxLogEvent(uint8_t kind, uint8_t a, uint8_t b, int16_t c) {
+  MeckTxEvt e;
+  e.t = rtc_clock.getCurrentTime();
+  e.ms = millis();
+  e.kind = kind; e.a = a; e.b = b; e.c = c;
+  e.flags = (board.isUsbPowered() ? 1 : 0) | (the_mesh.getNodePrefs()->lora_antenna ? 2 : 0);
+  e.dbm = the_mesh.getNodePrefs()->tx_power_dbm;
+  int idx = (meckTxHead + meckTxCount) % MECK_TXLOG_CAP;
+  meckTxBuf[idx] = e;
+  if (meckTxCount < MECK_TXLOG_CAP) meckTxCount++;
+  else meckTxHead = (meckTxHead + 1) % MECK_TXLOG_CAP;   // full: drop the oldest
+}
+
+static const char* meckPayloadName(uint8_t t) {
+  static const char* const names[16] = { "REQ", "RESPONSE", "TXT_MSG", "ACK", "ADVERT", "GRP_TXT",
+    "GRP_DATA", "ANON_REQ", "PATH", "TRACE", "MULTIPART", "CONTROL", "0C", "0D", "0E", "RAW_CUSTOM" };
+  return names[t & 15];
+}
+
+static const char MECK_TX_HEADER[] = "utc,local_date,local_time,ms,event,detail,usb,antenna,tx_dbm";
+
+static void meckTxLogCsv(const MeckTxEvt& e, char* buf, size_t len, char* date, size_t dlen) {
+  char hm[8], detail[48];
+  meckPwrLocalDate(e.t, the_mesh.getNodePrefs()->utc_offset_hours, date, dlen, hm, sizeof(hm));
+  const char* ev = "?";
+  detail[0] = 0;
+  switch (e.kind) {
+    case MECK_TXLOG_TX_OK:
+    case MECK_TXLOG_TX_FAIL:
+      ev = e.kind == MECK_TXLOG_TX_OK ? "tx_ok" : "tx_fail";
+      snprintf(detail, sizeof(detail), "%s %s len=%d", meckPayloadName(e.a), e.b ? "direct" : "flood", e.c);
+      break;
+    case MECK_TXLOG_DM_SEND:
+      ev = "dm_send";
+      snprintf(detail, sizeof(detail), "attempt %u/%u %s", e.a, e.b, e.c == MSG_SEND_SENT_DIRECT ? "direct" : "flood");
+      break;
+    case MECK_TXLOG_DM_ACK:
+      ev = "dm_ack";
+      snprintf(detail, sizeof(detail), "after attempt %u/%u", e.a, e.b);
+      break;
+    case MECK_TXLOG_DM_FAIL:
+      ev = "dm_failed";
+      snprintf(detail, sizeof(detail), "%s (attempt %u/%u)",
+               e.c == 1 ? "no ack" : e.c == 2 ? "contact removed" : "final attempt not queued", e.a, e.b);
+      break;
+    case MECK_TXLOG_CH_SEND:
+      ev = "channel_send";
+      snprintf(detail, sizeof(detail), "channel %u", e.a);
+      break;
+    case MECK_TXLOG_TX_POWER:
+      ev = "tx_power";
+      snprintf(detail, sizeof(detail), "%u dBm err=%d", e.a, e.c);
+      break;
+  }
+  snprintf(buf, len, "%lu,%s,%s,%lu,%s,%s,%d,%s,%u", (unsigned long)e.t, date, hm, (unsigned long)e.ms,
+           ev, detail, (e.flags & 1) ? 1 : 0, (e.flags & 2) ? "ext" : "int", e.dbm);
+}
+
+// Append the events in RAM to the SD card. True when all were written.
+bool meckTxLogFlush() {
+  if (meckTxCount == 0) return true;
+  if (!sdCardReady) return false;
+  if (!SD.exists("/meshcore")) SD.mkdir("/meshcore");
+  if (!SD.exists("/meshcore/txlog")) SD.mkdir("/meshcore/txlog");
+  File f;
+  char openDate[12] = "", date[12], line[160], path[48];
+  int written = 0;
+  for (; written < meckTxCount; written++) {
+    meckTxLogCsv(meckTxBuf[(meckTxHead + written) % MECK_TXLOG_CAP], line, sizeof(line), date, sizeof(date));
+    if (strcmp(date, openDate) != 0) {
+      if (f) f.close();
+      snprintf(path, sizeof(path), "/meshcore/txlog/%s.csv", date);
+      f = SD.open(path, FILE_APPEND);
+      if (!f) break;
+      if (f.size() == 0) f.println(MECK_TX_HEADER);
+      strcpy(openDate, date);
+    }
+    if (f.println(line) == 0) break;
+  }
+  if (f) f.close();
+  meckTxHead = (meckTxHead + written) % MECK_TXLOG_CAP;
+  meckTxCount -= written;
+  Serial.printf("[TxLog] wrote %d events to SD%s\n", written, meckTxCount ? " (incomplete)" : "");
+  return meckTxCount == 0;
+}
+
+void meckTxLogPrint() {
+  Serial.println(MECK_TX_HEADER);
+  char line[160], date[12];
+  for (int i = 0; i < meckTxCount; i++) {
+    meckTxLogCsv(meckTxBuf[(meckTxHead + i) % MECK_TXLOG_CAP], line, sizeof(line), date, sizeof(date));
+    Serial.println(line);
+  }
+  Serial.printf("pwrtx: %d events in RAM\n", meckTxCount);
+}
+
+// "pwrlog sd" / "pwrtx sd" list the log files on the SD card, with a date
+// ("pwrlog sd YYYYMMDD") they print one of them
+void meckLogDumpSd(const char* dirPath, const char* date) {
   if (!sdCardReady) { Serial.println("pwrlog: no SD card"); return; }
   if (!date[0]) {
-    File dir = SD.open("/meshcore/powerlog");
+    File dir = SD.open(dirPath);
     if (!dir) { Serial.println("pwrlog: no log files"); return; }
     for (File f = dir.openNextFile(); f; f = dir.openNextFile()) {
       Serial.printf("%s %lu\n", f.name(), (unsigned long)f.size());
@@ -3721,8 +3856,8 @@ void meckPwrLogDumpSd(const char* date) {
     dir.close();
     return;
   }
-  char path[48];
-  snprintf(path, sizeof(path), "/meshcore/powerlog/%s.csv", date);
+  char path[64];
+  snprintf(path, sizeof(path), "%s/%s.csv", dirPath, date);
   File f = SD.open(path, FILE_READ);
   if (!f) { Serial.printf("pwrlog: %s not found\n", path); return; }
   uint8_t buf[256];
@@ -3758,10 +3893,13 @@ static void meckPwrLogTick() {
     meckPwrMinute = now / 60;
     meckPwrRecord(now, ms);
   }
-  if (meckPwrCount >= MECK_PWR_FLUSH &&
+  // Hourly (or when the TX log is three quarters full) both logs go to SD
+  if ((meckPwrCount >= MECK_PWR_FLUSH || meckTxCount >= MECK_TXLOG_CAP * 3 / 4) &&
       (meckPwrLastFlushTry == 0 || ms - meckPwrLastFlushTry >= 10UL * 60 * 1000)) {
     meckPwrLastFlushTry = ms;              // on failure retry in 10 min
-    if (meckPwrLogFlush()) meckPwrLastFlushTry = 0;
+    bool okPwr = meckPwrLogFlush();
+    bool okTx = meckTxLogFlush();
+    if (okPwr && okTx) meckPwrLastFlushTry = 0;
   }
 }
 #endif
@@ -6944,6 +7082,7 @@ void sendComposedMessage() {
     if (the_mesh.sendGroupMessage(timestamp, channel.channel, 
                                    the_mesh.getNodePrefs()->node_name, 
                                    utf8Buf, utf8Len)) {
+      meckTxLog(MECK_TXLOG_CH_SEND, composeChannelIdx);
       ui_task.addSentChannelMessage(composeChannelIdx, 
                                      the_mesh.getNodePrefs()->node_name, 
                                      utf8Buf);

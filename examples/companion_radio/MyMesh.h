@@ -458,6 +458,10 @@ private:
   };
   PendingDMSend pending_dm[MAX_PENDING_DM_SENDS];
   void sweepPendingDMSends();
+
+  // TX log (MeckTxLog.h): every finished or failed transmission
+  void logTx(mesh::Packet* pkt, int len) override;
+  void logTxFail(mesh::Packet* pkt, int len) override;
   void resolvePendingDMSend(uint32_t ack);
 
   #ifndef ADVERT_PATH_TABLE_SIZE
