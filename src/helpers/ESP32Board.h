@@ -129,6 +129,17 @@ public:
   bool startOTAUpdate(const char* id, char reply[]) override;
 };
 
+// Last known time, kept in RTC memory: it survives a crash, watchdog or
+// brownout reset, not a power loss. From MeshCore 35142a88, but held in one
+// function-local static: a plain static in this header would give every
+// source file its own copy, and begin() and tick() could use different ones.
+// [0] = time, [1] = magic.
+inline uint32_t* esp32RtcTimeBackup() {
+  static RTC_NOINIT_ATTR uint32_t backup[2];
+  return backup;
+}
+#define RTC_BACKUP_MAGIC  0xAA55CC33
+
 class ESP32RTCClock : public mesh::RTCClock {
 public:
   ESP32RTCClock() { }
@@ -136,14 +147,30 @@ public:
     // Check if the ESP32 RTC peripheral retained a sane time across reset.
     // On power-on the value is undefined; on watchdog/brownout/SW reset it
     // may retain valid time OR garbage.  Accept times in a plausible window
-    // (Nov 2023 → May 2033) and re-seed anything outside that range.
+    // (Nov 2023 → May 2033); otherwise restore the last time saved in RTC
+    // memory, and only without one re-seed.
     time_t _now;
     time(&_now);
     if (_now < 1700000000 || _now > 2000000000) {
       struct timeval tv;
-      tv.tv_sec = 1715770351;  // 15 May 2024, 8:50pm UTC (safe seed)
+      uint32_t* backup = esp32RtcTimeBackup();
+      if (backup[1] == RTC_BACKUP_MAGIC && backup[0] >= 1700000000 && backup[0] <= 2000000000) {
+        tv.tv_sec = backup[0];
+      } else {
+        tv.tv_sec = 1715770351;  // 15 May 2024, 8:50pm UTC (safe seed)
+      }
       tv.tv_usec = 0;
       settimeofday(&tv, NULL);
+    }
+  }
+  // Called from the main loop: keep the RTC-memory copy of the time current
+  void tick() override {
+    time_t now;
+    time(&now);
+    uint32_t* backup = esp32RtcTimeBackup();
+    if (now >= 1700000000 && now <= 2000000000 && (uint32_t)now != backup[0]) {
+      backup[0] = (uint32_t)now;
+      backup[1] = RTC_BACKUP_MAGIC;
     }
   }
   uint32_t getCurrentTime() override {
