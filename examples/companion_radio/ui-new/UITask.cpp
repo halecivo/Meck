@@ -1300,8 +1300,12 @@ public:
         display.setTextSize(_node_prefs->smallTextSize());  // Tiny font for Connected
         display.drawTextCentered(display.width() / 2, y, "< Connected >");
         y += _node_prefs->smallLineH() - 1;
-#ifdef BLE_PIN_CODE
+#if defined(BLE_PIN_CODE) && defined(MECK_WIFI_COMPANION)
+      } else if (meckCompanionIsBLE() && the_mesh.getBLEPin() != 0) {   // not for WiFi alone
+#elif defined(BLE_PIN_CODE)
       } else if (_task->isSerialEnabled() && the_mesh.getBLEPin() != 0) {
+#endif
+#ifdef BLE_PIN_CODE
         display.setColor(DisplayDriver::RED);
         display.setTextSize(2);
         sprintf(tmp, "Pin:%d", the_mesh.getBLEPin());
