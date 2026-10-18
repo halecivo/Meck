@@ -3862,6 +3862,17 @@ static void meckPwrLogTick() {
     bool okTx = meckTxLogFlush();
     if (okPwr && okTx) meckPwrLastFlushTry = 0;
   }
+  // On unlock the records so far go to SD as well: USB does not come back
+  // after light sleep, so reading the night's log takes a reset, which
+  // would lose whatever was still in RAM
+  static bool wasLocked = false;
+  bool locked = ui_task.isLocked();
+  if (wasLocked && !locked) {
+    meckPwrRecord(now, ms);                // the minute up to the unlock
+    meckPwrLogFlush();
+    meckTxLogFlush();
+  }
+  wasLocked = locked;
 }
 #endif
 
