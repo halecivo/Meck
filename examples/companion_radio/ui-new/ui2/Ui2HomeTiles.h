@@ -2,12 +2,12 @@
 // =============================================================================
 // UI v2 -- home tile pages
 //
-// Three pages of 2 x 4 tiles. Page 1 holds the most used functions, page 2
-// media and tools, page 3 the mesh tools the design does not place elsewhere.
-// Home (HA), Weather, Agenda and Mail are placeholders for features that do
-// not exist yet: they are drawn disabled (dashed, hatched) and only show a
-// toast. Shared by HomeScreen (drawing, selection) and main.cpp (launching,
-// touch hit test).
+// Two pages of 2 x 4 tiles: page 1 the everyday functions (Settings stays
+// bottom right), page 2 media and tools. Home (HA), Weather, Agenda and Mail
+// are designed but not built yet, so they are not in the layout; their
+// tiles stay defined (drawn disabled, a toast on Enter) for when a feature
+// arrives. Shared by HomeScreen (drawing, selection) and main.cpp
+// (launching, touch hit test).
 // =============================================================================
 
 #include "Ui2Assets.h"
@@ -21,16 +21,14 @@ enum Ui2Tile : uint8_t {
   UI2_TILE_NONE
 };
 
-static const uint8_t UI2_HOME_TILE_PAGES = 3;
+static const uint8_t UI2_HOME_TILE_PAGES = 2;
 static const uint8_t UI2_HOME_TILES_PER_PAGE = 8;
 
 static const Ui2Tile UI2_HOME_LAYOUT[UI2_HOME_TILE_PAGES][UI2_HOME_TILES_PER_PAGE] = {
-  { UI2_TILE_MESSAGES, UI2_TILE_CONTACTS, UI2_TILE_PHONE,   UI2_TILE_MAP,
-    UI2_TILE_HOME_HA,  UI2_TILE_WEATHER,  UI2_TILE_AGENDA,  UI2_TILE_SETTINGS },
-  { UI2_TILE_READER,   UI2_TILE_AUDIO,    UI2_TILE_BROWSER, UI2_TILE_NOTES,
-    UI2_TILE_ALARM,    UI2_TILE_MAIL,     UI2_TILE_GAMES,   UI2_TILE_VOICE },
-  { UI2_TILE_DISCOVER, UI2_TILE_TRACE,    UI2_TILE_LAST_HEARD, UI2_TILE_ADVERT,
-    UI2_TILE_NONE,     UI2_TILE_NONE,     UI2_TILE_NONE,    UI2_TILE_NONE },
+  { UI2_TILE_MESSAGES,   UI2_TILE_CONTACTS, UI2_TILE_PHONE,  UI2_TILE_MAP,
+    UI2_TILE_LAST_HEARD, UI2_TILE_DISCOVER, UI2_TILE_ALARM,  UI2_TILE_SETTINGS },
+  { UI2_TILE_READER,     UI2_TILE_AUDIO,    UI2_TILE_BROWSER, UI2_TILE_NOTES,
+    UI2_TILE_VOICE,      UI2_TILE_GAMES,    UI2_TILE_TRACE,   UI2_TILE_ADVERT },
 };
 
 struct Ui2TileInfo {

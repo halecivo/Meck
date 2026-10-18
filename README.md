@@ -7,7 +7,8 @@
 > - **New UI (UI v2)**: redesigned screens for the 240x320 e-ink, message
 >   menu (reply with @mention, copy, path, repeated by, send again),
 >   full-screen reader. Build `meck_max_ui2`; the other builds keep the
->   classic UI.
+>   classic UI. Home Assistant, weather, agenda and mail are designed for
+>   it but not built yet, so they are not on the home screen.
 >
 >   <img src="docs/images/ui-v2-home.png" alt="UI v2 home screen (screenshot from a T-Deck MAX)" width="270">
 > - **Bluetooth and WiFi at the same time** (`meck_max_ui2`,
