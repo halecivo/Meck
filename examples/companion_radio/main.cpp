@@ -1263,11 +1263,11 @@ static uint32_t _atoi(const char* sp) {
     ui_task.forceRefresh();
   }
   #endif
-  #ifdef MECK_WIFI_COMPANION
-  // Lets the Settings WiFi setup (which only forward-declares UITask) show
-  // its Connecting / IP / Could not connect popups.
+  // Lets the Settings screen (which only forward-declares UITask) show its
+  // popups: WiFi Connecting / IP / Could not connect, and the repeat mode
+  // frequency refusal, which any display build can show.
   void meckShowAlert(const char* text, int duration_millis) { ui_task.showAlert(text, duration_millis); }
-
+  #ifdef MECK_WIFI_COMPANION
   // Why the last WiFi connection attempt failed. The WiFi driver reports a
   // reason code each time a connection attempt drops; it is recorded here so
   // the "Could not connect" popups and the serial log can say why.

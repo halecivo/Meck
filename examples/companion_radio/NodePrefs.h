@@ -122,6 +122,11 @@ struct NodePrefs {  // persisted to file
   // screen is up (woken by LoRa, the button and the clock), 0 = never.
   // Older prefs files short-read this final field and keep the default 1.
   uint8_t lock_sleep;              // default 1
+  // Companion repeat mode (upstream MeshCore, protocol v9): 1 = this
+  // companion also forwards packets, as a repeater does. Switched on only
+  // from the app, on an allowed repeat frequency. Stored at prefs byte 62,
+  // which was spare, so older prefs files load it as 0 (off).
+  uint8_t client_repeat;           // default 0
 
   // --- Font helpers (inline, no overhead) ---
   // Returns the DisplayDriver text-size index for "small/body" text.

@@ -30,7 +30,7 @@ Un fork créé spécifiquement pour proposer un firmware compagnon BLE et WiFi p
   - [Navigation (écran d'accueil)](#navigation-écran-daccueil)
   - [Bluetooth (BLE)](#bluetooth-ble)
   - [Compagnon WiFi](#compagnon-wifi)
-  - [Build combiné Bluetooth + WiFi (T-Deck Max)](#build-combiné-bluetooth--wifi-t-deck-max)
+  - [Builds combinés Bluetooth + WiFi](#builds-combinés-bluetooth--wifi)
   - [Horloge et fuseau horaire](#horloge-et-fuseau-horaire)
   - [Fuseaux horaires (horloge mondiale) (v1.15+)](#fuseaux-horaires-horloge-mondiale-v115)
   - [Écran des messages de canal](#écran-des-messages-de-canal)
@@ -236,11 +236,13 @@ La portée de région peut aussi être configurée par commandes série : consul
 | Audio + BLE, tactile HYN | `meck_audio_ble_hyn` | Oui | Oui (lecteur web uniquement) | — | PCM5102A | Oui | 2 000 |
 | Audio + WiFi | `meck_audio_wifi` | — | Oui (TCP:5000) | — | PCM5102A | Oui | 2 000 |
 | Audio + WiFi, tactile HYN | `meck_audio_wifi_hyn` | — | Oui (TCP:5000) | — | PCM5102A | Oui | 2 000 |
+| Audio + BLE + WiFi (v1.15.1+) | `meck_audio_ble_wifi` | Oui (un à la fois) | Oui (TCP:5000) | — | PCM5102A | Oui | 2 000 |
 | Audio + autonome | `meck_audio_standalone` | — | — | — | PCM5102A | Non | 2 000 |
 | Audio + autonome, tactile HYN | `meck_audio_standalone_hyn` | — | — | — | PCM5102A | Non | 2 000 |
 | Audio + autonome, 40 MHz | `meck_audio_standalone_40mhz` | — | — | — | PCM5102A (fonctions audio désactivées) | Non | 2 000 |
 | 4G + BLE | `meck_4g_ble` | Oui | Oui | A7682E | — | Oui | 2 000 |
 | 4G + WiFi | `meck_4g_wifi` | — | Oui (TCP:5000) | A7682E | — | Oui | 2 000 |
+| 4G + BLE + WiFi (v1.15.1+) | `meck_4g_ble_wifi` | Oui (un à la fois) | Oui (TCP:5000) | A7682E | — | Oui | 2 000 |
 | 4G + autonome | `meck_4g_standalone` | — | Oui | A7682E | — | Oui | 2 000 |
 | 4G + autonome, 40 MHz | `meck_4g_standalone_40mhz` | — | — | A7682E (éteint au démarrage) | — | Non | 2 000 |
 | Répéteur distant (4G) | `meck_remote_repeater` | — | — | A7682E (MQTT) | — | Non | — |
@@ -248,9 +250,11 @@ La portée de région peut aussi être configurée par commandes série : consul
 
 Le DAC audio et le modem 4G occupent le même emplacement matériel et s'excluent mutuellement. (Le T-Deck Max lève cette restriction : il fait fonctionner les deux en même temps. Voir [T-Deck Max](#t-deck-max).) Les variantes répéteur distant et répéteur WiFi fonctionnent comme des répéteurs MeshCore dédiés : elles relaient le trafic du réseau maillé et répondent normalement aux connexions invité, mais **l'administration se fait à distance via MQTT** depuis le [tableau de bord Meck-Mycelium](https://pelgraine.github.io/Meck-Mycelium), et non via la connexion habituelle par mot de passe administrateur sur le réseau maillé. Voir [Répéteur distant](#répéteur-distant-t-deck-pro-4g) et [Répéteur WiFi](#répéteur-wifi) ci-dessous.
 
+Les builds combinés `meck_audio_ble_wifi` et `meck_4g_ble_wifi` sont décrits dans [Builds combinés Bluetooth + WiFi](#builds-combinés-bluetooth--wifi).
+
 #### Puces tactiles et builds HYN
 
-Les T-Deck Pro v1.1 étaient livrés avec une puce tactile CST328, mais LilyGo a ensuite monté à la place une CST3530 sur des appareils toujours étiquetés v1.1. Sur ces appareils, l'écran tactile ne fonctionne pas avec les builds standard. Ils ont besoin des builds HYN (`meck_audio_ble_hyn`, `meck_audio_wifi_hyn` et `meck_audio_standalone_hyn`), qui utilisent le même pilote tactile Hynitron que le T-Deck Max. Ce pilote fonctionne aussi avec la CST328, mais les builds standard restent ceux par défaut. Il n'existe pas de version HYN des builds 4G.
+Les T-Deck Pro v1.1 étaient livrés avec une puce tactile CST328, mais LilyGo a ensuite monté à la place une CST3530 sur des appareils toujours étiquetés v1.1. Sur ces appareils, l'écran tactile ne fonctionne pas avec les builds standard. Ils ont besoin des builds HYN (`meck_audio_ble_hyn`, `meck_audio_wifi_hyn` et `meck_audio_standalone_hyn`), qui utilisent le même pilote tactile Hynitron que le T-Deck Max. Ce pilote fonctionne aussi avec la CST328, mais les builds standard restent ceux par défaut. Il n'existe pas de version HYN des builds 4G ni du build combiné `meck_audio_ble_wifi`.
 
 #### Builds économie de batterie à 40 MHz
 
@@ -307,7 +311,7 @@ Les variantes compagnon WiFi (`meck_audio_wifi`, `meck_audio_wifi_hyn`, `meck_4g
 
 **Connexion :**
 
-Sur ces builds, le WiFi est activé au démarrage (même si vous l'aviez désactivé avant de redémarrer), et l'appareil essaie de rejoindre votre réseau enregistré pendant le démarrage. Le build combiné `meck_max_ble_wifi` est différent : le WiFi y est désactivé au démarrage (voir [Build combiné Bluetooth + WiFi](#build-combiné-bluetooth--wifi-t-deck-max)).
+Sur ces builds, le WiFi est activé au démarrage (même si vous l'aviez désactivé avant de redémarrer), et l'appareil essaie de rejoindre votre réseau enregistré pendant le démarrage. Les builds combinés (`meck_max_ble_wifi`, `meck_audio_ble_wifi` et `meck_4g_ble_wifi`) sont différents : le WiFi y est désactivé au démarrage (voir [Builds combinés Bluetooth + WiFi](#builds-combinés-bluetooth--wifi)).
 
 Pour rejoindre un réseau pour la première fois, ou pour changer de réseau :
 
@@ -326,11 +330,11 @@ Connectez l'appli web MeshCore ou meshcore.js à `<device IP>:5000`.
 
 Sur les variantes WiFi, le WiFi sert aussi au lecteur web et au client IRC. Le lecteur web utilise la même connexion : aucune configuration supplémentaire n'est nécessaire.
 
-### Build combiné Bluetooth + WiFi (T-Deck Max)
+### Builds combinés Bluetooth + WiFi
 
-Le build combiné BLE et WiFi n'est disponible que pour le T-Deck Max en v1.15. Le build combiné pour le T-Deck Pro sera proposé dans une version ultérieure.
+Il existe trois builds combinés BLE et WiFi : `meck_max_ble_wifi` pour le T-Deck Max (v1.15+), ainsi que `meck_audio_ble_wifi` et `meck_4g_ble_wifi` pour les T-Deck Pro Audio et 4G (v1.15.1+).
 
-Le build `meck_max_ble_wifi` propose à la fois la connexion compagnon Bluetooth et la connexion compagnon WiFi, une seule à la fois. Les deux sont désactivées au démarrage. Après un redémarrage, celle que vous activez en premier fonctionne immédiatement : depuis sa page d'accueil (appuyez sur **Entrée** ou faites un appui long), ou, pour le WiFi, depuis **Paramètres** (Settings).
+Chaque build combiné propose à la fois la connexion compagnon Bluetooth et la connexion compagnon WiFi, une seule à la fois. Les deux sont désactivées au démarrage. Après un redémarrage, celle que vous activez en premier fonctionne immédiatement : depuis sa page d'accueil (appuyez sur **Entrée** ou faites un appui long), ou, pour le WiFi, depuis **Paramètres** (Settings).
 
 **Passer du Bluetooth au WiFi, ou l'inverse, redémarre l'appareil, à chaque fois.** Le Bluetooth ne libère sa mémoire qu'au redémarrage de l'appareil, et le WiFi a besoin de cette mémoire pour démarrer. Donc, une fois que vous avez utilisé une connexion depuis le dernier redémarrage, activer l'autre se passe ainsi :
 
@@ -1038,7 +1042,7 @@ La principale différence est que le MAX embarque à la fois un modem 4G A7682E 
 | MAX + Autonome | `meck_max_standalone` | — | — | A7682E | ES8311 | Oui | 2 000 |
 | MAX + Autonome, 40 MHz | `meck_max_standalone_40mhz` | — | — | A7682E (éteint au démarrage) | ES8311 (fonctions audio désactivées) | Non | 2 000 |
 
-Contrairement au T-Deck Pro, **chaque** variante MAX comprend à la fois le modem 4G et le codec audio : il n'y a pas de séparation entre "audio" et "4G", car le MAX fait fonctionner les deux. Le navigateur web est disponible sur toutes les variantes sauf le build 40 MHz (il dispose d'un accès aux données via le modem 4G, plus le WiFi sur le build WiFi), et toutes prennent en charge jusqu'à 2 000 contacts en PSRAM. Pour savoir ce que le build 40 MHz laisse de côté, consultez [Builds économie de batterie à 40 MHz](#builds-économie-de-batterie-à-40-mhz). Le build combiné `meck_max_ble_wifi` est décrit dans [Build combiné Bluetooth + WiFi](#build-combiné-bluetooth--wifi-t-deck-max).
+Contrairement au T-Deck Pro, **chaque** variante MAX comprend à la fois le modem 4G et le codec audio : il n'y a pas de séparation entre "audio" et "4G", car le MAX fait fonctionner les deux. Le navigateur web est disponible sur toutes les variantes sauf le build 40 MHz (il dispose d'un accès aux données via le modem 4G, plus le WiFi sur le build WiFi), et toutes prennent en charge jusqu'à 2 000 contacts en PSRAM. Pour savoir ce que le build 40 MHz laisse de côté, consultez [Builds économie de batterie à 40 MHz](#builds-économie-de-batterie-à-40-mhz). Le build combiné `meck_max_ble_wifi` est décrit dans [Builds combinés Bluetooth + WiFi](#builds-combinés-bluetooth--wifi).
 
 **Puissance d'émission Bluetooth (v1.15+) :** `meck_max_ble` et `meck_max_ble_wifi` règlent la puissance d'émission Bluetooth à +15 dBm. Les autres builds Bluetooth, y compris ceux du T-Deck Pro, utilisent +9 dBm.
 
@@ -1204,7 +1208,7 @@ Pour les développeurs :
 
 Vous pouvez vous connecter au firmware compagnon via BLE (variantes BLE du T-Deck Pro et du T-Deck Max) ou via WiFi (variantes WiFi du T-Deck Pro et du T-Deck Max, port TCP 5000).
 
-> **Remarque :** sur le T-Deck Pro et le T-Deck Max, le Bluetooth est désactivé au démarrage : allez sur la page d'accueil Bluetooth et appuyez sur Entrée pour l'activer. Les builds WiFi activent le WiFi au démarrage et tentent de se connecter à votre réseau enregistré (voir [Compagnon WiFi](#compagnon-wifi)). Sur le build combiné `meck_max_ble_wifi`, le Bluetooth et le WiFi sont tous deux désactivés au démarrage (voir [Build combiné Bluetooth + WiFi](#build-combiné-bluetooth--wifi-t-deck-max)).
+> **Remarque :** sur le T-Deck Pro et le T-Deck Max, le Bluetooth est désactivé au démarrage : allez sur la page d'accueil Bluetooth et appuyez sur Entrée pour l'activer. Les builds WiFi activent le WiFi au démarrage et tentent de se connecter à votre réseau enregistré (voir [Compagnon WiFi](#compagnon-wifi)). Sur les builds combinés (`meck_max_ble_wifi`, `meck_audio_ble_wifi` et `meck_4g_ble_wifi`), le Bluetooth et le WiFi sont tous deux désactivés au démarrage (voir [Builds combinés Bluetooth + WiFi](#builds-combinés-bluetooth--wifi)).
 
 - Web : https://app.meshcore.nz
 - Meck-Mycelium : https://pelgraine.github.io/Meck-Mycelium (lecture des messages vocaux, tableau de bord des répéteurs distants)
@@ -1297,7 +1301,7 @@ Plusieurs fonctionnalités assez importantes sont en préparation, sans calendri
 - [X] Paquets de données de canal pour l'application compagnon (v1.15)
 - [X] Les MP suivent la région choisie dans l'application compagnon (v1.15)
 - [X] Correctifs de MeshCore v1.18 (v1.15)
-- [ ] Build combiné Bluetooth + WiFi pour le T-Deck Pro
+- [X] Builds combinés Bluetooth + WiFi pour les T-Deck Pro Audio et 4G, le basculement redémarre l'appareil (`meck_audio_ble_wifi` / `meck_4g_ble_wifi`) (v1.15.1)
 - [ ] Corriger le rendu M4B pour permettre la lecture des livres audio avec chapitres
 - [ ] Meilleur décodage JPEG et PNG
 - [ ] Améliorer le rendu EPUB et la prise en charge du format EPUB

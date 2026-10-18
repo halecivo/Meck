@@ -8,11 +8,11 @@
 #define FIRMWARE_VER_CODE 11
 
 #ifndef FIRMWARE_BUILD_DATE
-#define FIRMWARE_BUILD_DATE "10 Oct 2026"
+#define FIRMWARE_BUILD_DATE "18 Oct 2026"
 #endif
 
 #ifndef FIRMWARE_VERSION
-#define FIRMWARE_VERSION "Meck v1.15"
+#define FIRMWARE_VERSION "Meck v1.15.1"
 #endif
 
 #if defined(STM32_PLATFORM)
@@ -244,6 +244,12 @@ public:
   // otherwise the candidate region name. Used by the channel path-detail overlay.
   const char* getScopeName(uint8_t idx) const;
 
+  // Companion repeat mode (switched on from the app): while it is on, the
+  // frequency may only change to an allowed repeat frequency. True when a
+  // change to freq_mhz is allowed (repeat off, or an allowed frequency).
+  // Public: SettingsScreen and MeckImport call it before changing freq.
+  bool isFreqChangeAllowed(float freq_mhz) const;
+
 
 protected:
   float getAirtimeBudgetFactor() const override;
@@ -260,6 +266,7 @@ protected:
   uint8_t getExtraAckTransmitCount() const override;
   uint8_t getAutoAddMaxHops() const override;
   bool filterRecvFloodPacket(mesh::Packet* packet) override;
+  bool allowPacketForward(const mesh::Packet* packet) override;
 
   uint8_t getPathHashSize() const override { return _prefs.path_hash_mode + 1; }
   void sendFloodScoped(const ContactInfo& recipient, mesh::Packet* pkt, uint32_t delay_millis=0) override;
@@ -370,6 +377,7 @@ private:
 
   void checkCLIRescueCmd();
   void checkSerialInterface();
+  bool isValidClientRepeatFreq(uint32_t f) const;
 
   DataStore* _store;
   NodePrefs _prefs;
