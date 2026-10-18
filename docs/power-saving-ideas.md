@@ -1,0 +1,124 @@
+# Lower power use on the locked screen (ideas)
+
+Where the T-Deck MAX stands with "Power saving when locked" on, and what
+could bring the draw down further. Nothing here is implemented yet; each
+item says what it would need and what it might save.
+
+## Where it stands
+
+From the power log of one night on battery (10.7 h, 99 % to 85 %):
+
+| State | Current | Note |
+|---|---|---|
+| Locked, asleep 97 % of the time | 17.4 mA | about 75-80 h standby |
+| Light sleep floor | about 13 mA | between wakes |
+| Locked and awake (a blocker holds it) | about 35 mA | e.g. on USB |
+| Locked with a phone connected over BLE | about 100 mA | blocker PHONE, never sleeps |
+| Before power-fixes (locked, idle) | about 82 mA | for comparison |
+
+About 470 LoRa wakes per hour. Each one keeps the ESP32 up for at least
+two loop passes.
+
+## 1. Shorter wake after a LoRa packet
+
+After a packet the device stays awake for at least two loop passes, and
+each locked pass ends in `delay(50)`, so a wake costs 100 ms or more at
+about 35 mA. At 470 wakes per hour that is about 13 s per hour awake.
+
+- Skip the `delay(50)` while `meckRxPasses >= 0` (a packet is being
+  handled) and go back to sleep as soon as `meckRxHandled()` says so.
+- Check `meckRxHandled()` right after `the_mesh.loop()` instead of on the
+  next pass.
+
+Expected saving: about 1-2 mA on average. Low effort, low risk (the 2 s
+upper bound stays).
+
+## 2. Phone connected over BLE while locked (the biggest item)
+
+Today a connected phone is a sleep blocker: the Bluetooth controller cannot
+sleep on this framework, so the ESP32 stays awake at about 100 mA. Most of
+that is the CPU at 240 MHz looping and the controller servicing a 15-20 ms
+connection interval that the deck requests after pairing.
+
+Steps, in order of effort:
+
+1. **Longer connection interval while locked.** On lock, request a relaxed
+   interval from the phone, as the existing `MECK_BLE_SLOW_INTERVAL` watch
+   build does at connect time (100-200 ms, slave latency 2, 6 s supervision
+   timeout); on unlock, request 15-20 ms again for a fast sync.
+   `esp_ble_gap_update_conn_params()` can be called at any time on an open
+   link. The phone decides in the end: Android usually accepts, iOS keeps
+   intervals in its own allowed range (15 ms multiples, latency limits) and
+   may round the request. Saves radio time on both sides; on its own it
+   saves little on the deck while the CPU still runs flat out.
+2. **Slower CPU while locked with a phone.** `setCpuFrequencyMhz(80)` on
+   lock (back to 240 on unlock). BLE works at 80 MHz; WiFi does too, but
+   slower. Expected: tens of mA.
+3. **Let the CPU idle instead of polling.** The locked loop with a phone
+   runs `delay(50)` passes; with automatic light sleep (ESP-IDF power
+   management, `esp_pm_configure` with `light_sleep_enable`) the CPU would
+   sleep between BLE events. This needs the Bluetooth controller's modem
+   sleep (`CONFIG_BTDM_CTRL_MODEM_SLEEP` / `CONFIG_BT_CTRL_MODEM_SLEEP`)
+   and a low-power clock it can keep time with. The MAX has no 32 kHz
+   crystal, so it would have to use the main crystal in sleep (supported on
+   the S3, costs about 1 mA more than with a 32 kHz crystal) or the
+   internal 150 kHz RC clock (too inaccurate for long intervals). Both need
+   a custom sdkconfig, i.e. an ESP-IDF build of the Arduino core or
+   pioarduino with `custom_sdkconfig`. Expected: the deck with a phone
+   connected near the sleep floor, maybe 20-25 mA. High effort.
+4. **NimBLE instead of Bluedroid.** Less RAM (helps WiFi + BLE too) and
+   better tested with modem sleep. A large change (see the WiFi + BLE
+   analysis).
+
+Until step 3 exists, a phone connected while locked keeps the deck awake;
+the lock warning says so (blocker PHONE).
+
+## 3. LoRa RX duty cycle
+
+The SX1262 can sleep between short listen windows and wake on a preamble
+(`startReceiveDutyCycleAuto`, already behind `MECK_RX_DUTY_CYCLE` for the
+watch build). The radio itself uses about 5-6 mA in continuous RX, so this
+could save a few mA. The catch: packets with a short preamble can be missed,
+the noise-floor sampling is skipped, and it does not reduce the ESP32 wakes.
+Worth trying only while locked, and measured against missed packets.
+
+## 4. The 13 mA sleep floor
+
+LilyGo quotes about 0.34 mA for the MAX in deep sleep, while our light
+sleep floor is about 13 mA, of which the SX1262 in RX is about 5-6 mA.
+The rest (about 7 mA) is worth finding:
+
+- the display controller and e-ink driver (should be idle after the
+  redraw)
+- the touch controller, keyboard backlight and keyboard MCU
+- the GPS, 4G modem and audio codec power rails (checked off via the
+  XL9555, but worth measuring one at a time)
+- the speaker amplifier (XL9555 IO06) and the antenna switch (IO04)
+- PSRAM in light sleep (kept powered; unavoidable while it holds data)
+- pull-ups on lines into unpowered chips
+
+Method: put the deck to sleep with the power log on, switch one rail or
+peripheral at a time from the debug console, compare the logged average.
+
+## 5. Fewer minute wakes
+
+The lock screen redraws on each minute boundary. A redraw is short, but a
+partial e-ink refresh plus the wake costs some energy every minute.
+Optional setting: redraw the clock every 5 minutes, or show only the date
+and battery. Small saving (well under 1 mA).
+
+## WiFi while locked
+
+WiFi on is a sleep blocker (about 100 mA or more). Turning it off on lock
+and back on at unlock would break an app connected over WiFi. WiFi
+power save (`WiFi.setSleep(true)`, modem sleep with DTIM) is the default in
+Arduino and already in use, but without automatic light sleep (see 2.3) the
+CPU stays awake. So for now: WiFi off when not needed.
+
+## Suggested order
+
+1. Shorter wake after a packet (1): small, safe.
+2. Relaxed BLE interval and 80 MHz CPU while locked with a phone (2.1, 2.2).
+3. Find the rest of the 13 mA floor (4).
+4. Automatic light sleep with BLE modem sleep (2.3): the big one, needs the
+   custom sdkconfig.
