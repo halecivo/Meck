@@ -6044,22 +6044,11 @@ void handleKeyboardInput() {
       {
         static bool webReaderWifiReady = false;
       #if defined(BLE_PIN_CODE) && defined(MECK_WIFI_COMPANION)
-        // Combined build: with the WiFi companion on, WiFi is already up and
-        // Bluetooth is off, so nothing needs freeing. Otherwise do as the BLE
-        // build does, once per boot: switch the Bluetooth companion off, free
-        // Bluetooth's memory (it then needs a reboot) and start WiFi.
-        if (!meckCompanionIsWiFi() && !webReaderWifiReady) {
-          if (meckCompanionIsBLE()) meckCompanionUseNone();
-          Serial.printf("WebReader: heap BEFORE BT release: free=%d, largest=%d\n",
-                         ESP.getFreeHeap(), ESP.getMaxAllocHeap());
-          btStop();
-          delay(50);
-          esp_bt_controller_mem_release(ESP_BT_MODE_BTDM);
-          delay(50);
-          meckBtReleased = true;
-          Serial.printf("WebReader: heap AFTER BT release: free=%d, largest=%d\n",
-                         ESP.getFreeHeap(), ESP.getMaxAllocHeap());
-          if (WiFi.mode(WIFI_STA)) {
+        // Combined build: Bluetooth stays on; WiFi fits next to it now that
+        // the offline queue is in PSRAM. Only the radio is started here (the
+        // WiFi companion may already have it on).
+        if (!webReaderWifiReady) {
+          if (WiFi.getMode() != WIFI_OFF || WiFi.mode(WIFI_STA)) {
             Serial.println("WebReader: WiFi STA init OK");
             webReaderWifiReady = true;
           } else {
