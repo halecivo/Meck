@@ -1941,6 +1941,10 @@ void MyMesh::handleCmdFrame(size_t len) {
     i += 40;
     StrHelper::strzcpy((char *)&out_frame[i], FIRMWARE_VERSION, 20);
     i += 20;
+    // FIRMWARE_VER_CODE 11 promises these two; clients (e.g. the meshcore
+    // Python library) read them and fail on a shorter frame
+    out_frame[i++] = 0;                      // v9+: client repeat (not in Meck)
+    out_frame[i++] = _prefs.path_hash_mode;  // v10+
     _serial->writeFrame(out_frame, i);
   } else if (cmd_frame[0] == CMD_APP_START &&
              len >= 8) { // sent when app establishes connection, respond with node ID
