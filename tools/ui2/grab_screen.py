@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Save the device's current e-ink frame as a PNG.
 
-Needs a build with -D MECK_UI_SCREENDUMP (enabled in meck_max_ble_ui2).
+Needs a build with -D MECK_UI_SCREENDUMP (enabled in meck_max_ui2).
 Sends the serial CLI command "screendump" and decodes the reply.
 
 Usage: python grab_screen.py COM3 out.png [--scale 2]

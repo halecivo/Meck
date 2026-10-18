@@ -6,10 +6,14 @@
 >
 > - **New UI (UI v2)**: redesigned screens for the 240x320 e-ink, message
 >   menu (reply with @mention, copy, path, repeated by, send again),
->   full-screen reader. Build `meck_max_ble_ui2`; the other builds keep the
+>   full-screen reader. Build `meck_max_ui2`; the other builds keep the
 >   classic UI.
 >
 >   <img src="docs/images/ui-v2-home.jpg" alt="UI v2 home screen on a T-Deck MAX" width="270">
+> - **Bluetooth and WiFi at the same time** (`meck_max_ui2`,
+>   `meck_max_ble_wifi`): each connection is turned on and off on its own,
+>   one app on each, no restart to switch. In the new UI they share one
+>   "Connections" home page, and WiFi shows in the status bar.
 > - **Battery life**: the switched-off GPS is no longer powered through its
 >   data pin, the ES8311 codec sleeps when idle, and the device light-sleeps
 >   while the screen is locked. Locked current goes from 82 mA to about
@@ -358,17 +362,16 @@ WiFi is also used by the web reader and IRC client on WiFi variants. The web rea
 
 The combined BLE & WiFi build is only available for the T-Deck Max in v1.15. The T-Deck Pro combined build will be shipping in a future release.
 
-The `meck_max_ble_wifi` build has both the Bluetooth and the WiFi companion connection, one at a time. Both are off at boot. After a restart, whichever one you turn on first works straight away: from its home page (press **Enter** or long press), or for WiFi from **Settings**.
+The `meck_max_ble_wifi` build (classic UI) and the `meck_max_ui2` build (new UI) have both the Bluetooth and the WiFi companion connection. Both are off at boot. Each one is turned on and off on its own, and both can be on at the same time, with one app connected over each:
 
-**Switching between Bluetooth and WiFi restarts the device, every time.** Bluetooth only gives its memory back when the device restarts, and WiFi needs that memory to start. So once you have used one connection since the last restart, turning on the other one works like this:
+- **Classic UI:** from the Bluetooth or the WiFi home page (press **Enter** or long press), or for WiFi from **Settings**.
+- **New UI:** from the **Connections** home page. **W/S** selects Bluetooth or WiFi, **Enter** turns it on or off. Once WiFi has joined a network, the page shows the network, the signal and the address (IP and port 5000).
 
-1. The other connection's home page shows a restart hint: **Press Enter to Restart into Wifi** on the WiFi page, or **restart into Bluetooth** on the Bluetooth page.
-2. Press **Enter** (or long press). A popup asks **Switch to WiFi?** (or **Switch to Bluetooth?**). Press **Enter** again within 5 seconds to restart.
-3. The device restarts and turns on the connection you chose by itself. WiFi joins your saved network, with the Connecting popup.
+From the companion app, `set wifi.enabled 0|1` turns WiFi off or on without touching Bluetooth.
 
-After a normal restart or power-on, both connections are off again.
+Replies from the device go to every connected app, so with two apps at once each can see replies meant for the other (as in MeshCore).
 
-From the companion app, turning WiFi on or off (`set wifi.enabled`) is applied by the app's reboot in the same way.
+With power saving when locked on, a locked device pauses Bluetooth advertising and light-sleeps; WiFi being on keeps it awake (the lock warning says so).
 
 ### Clock & Timezone
 
@@ -1062,7 +1065,8 @@ The headline difference is that the MAX carries both an A7682E 4G modem **and** 
 |---------|------------|-----|------|----------|-------------|------------|-------------|
 | MAX + BLE | `meck_max_ble` | Yes | — | A7682E | ES8311 | Yes | 2,000 |
 | MAX + WiFi | `meck_max_wifi` | — | Yes (TCP:5000) | A7682E | ES8311 | Yes | 2,000 |
-| MAX + BLE + WiFi (v1.15+) | `meck_max_ble_wifi` | Yes (one at a time) | Yes (TCP:5000) | A7682E | ES8311 | Yes | 2,000 |
+| MAX + BLE + WiFi (v1.15+) | `meck_max_ble_wifi` | Yes (both at once) | Yes (TCP:5000) | A7682E | ES8311 | Yes | 2,000 |
+| MAX + BLE + WiFi, new UI | `meck_max_ui2` | Yes (both at once) | Yes (TCP:5000) | A7682E | ES8311 | Yes | 2,000 |
 | MAX + Standalone | `meck_max_standalone` | — | — | A7682E | ES8311 | Yes | 2,000 |
 | MAX + Standalone, 40 MHz | `meck_max_standalone_40mhz` | — | — | A7682E (off at boot) | ES8311 (audio features off) | No | 2,000 |
 

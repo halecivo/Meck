@@ -35,9 +35,8 @@ jobs:
       fail-fast: false
       matrix:
         env:
-          - meck_max_ble_ui2        # new UI, Bluetooth companion
-          - meck_max_ble            # classic UI, Bluetooth companion
-          - meck_max_ble_wifi       # classic UI, Bluetooth or WiFi companion
+          - meck_max_ui2            # new UI, Bluetooth and WiFi companion
+          - meck_max_ble_wifi       # classic UI, Bluetooth and WiFi companion
           - meck_max_standalone     # classic UI, no phone connection
     steps:
 
@@ -114,7 +113,9 @@ jobs:
             - `*-merged.bin`: first flash, write at 0x0
             - `*.bin`: update (OTA, Launcher, or write at 0x10000)
 
-            `meck_max_ble_ui2` is the new UI; the others keep the classic UI.
+            `meck_max_ui2` is the new UI; the others keep the classic UI.
+            The companion builds have Bluetooth and WiFi, both usable at
+            the same time and both off until turned on.
           files: out/*
 
   release:
@@ -140,5 +141,7 @@ jobs:
             - `*-merged.bin`: first flash, write at 0x0
             - `*.bin`: update (OTA, Launcher, or write at 0x10000)
 
-            `meck_max_ble_ui2` is the new UI; the others keep the classic UI.
+            `meck_max_ui2` is the new UI; the others keep the classic UI.
+            The companion builds have Bluetooth and WiFi, both usable at
+            the same time and both off until turned on.
           files: out/*
