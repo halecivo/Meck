@@ -877,6 +877,17 @@ static uint32_t _atoi(const char* sp) {
   #error "need to define a serial interface"
 #endif
 
+// The Bluetooth connection on its own, for the code that pauses Bluetooth
+// (power saving when locked, debug commands). In the combined build that is
+// one member of the multi-interface: pausing all of serial_interface there
+// would also switch the WiFi companion off, and resuming it would turn WiFi
+// on even when the user had it off. Elsewhere it is the one interface.
+#if defined(ESP32) && !defined(WIFI_SSID) && defined(BLE_PIN_CODE) && defined(MECK_WIFI_COMPANION)
+  #define MECK_BLE_IFACE ble_companion
+#else
+  #define MECK_BLE_IFACE serial_interface
+#endif
+
 /* GLOBAL OBJECTS */
 #ifdef DISPLAY_CLASS
   #include "UITask.h"
@@ -1088,7 +1099,7 @@ static uint32_t _atoi(const char* sp) {
       Serial.flush();
       meckAwakeResult = meckSleepResult = 0;
       meckSaveSleepResults();
-      serial_interface.disable();
+      MECK_BLE_IFACE.disable();
       if (!keepBt) btStop();
       unsigned long until = millis() + 90000UL;
       while ((long)(millis() - until) < 0) delay(50);
@@ -1104,7 +1115,7 @@ static uint32_t _atoi(const char* sp) {
       meckSleepResult = board.getAvgCurrent();
       meckSaveSleepResults();
       meckSetHiz(false);   // charge again right away
-      if (keepBt) serial_interface.enable();   // BLE advertising back after sleeping
+      if (keepBt) MECK_BLE_IFACE.enable();   // BLE advertising back after sleeping
       char res[128];
       snprintf(res, sizeof(res), "awake %d mA\nlight sleep %d mA\nslept %d, rejected %d%s\nPress reset",
                meckAwakeResult, meckSleepResult, slept, rejected, keepBt ? "\nBT kept, BLE back on" : "");
@@ -1118,12 +1129,12 @@ static uint32_t _atoi(const char* sp) {
       for (;;) delay(1000);   // keep the result on screen until the reset button
     } else if (strcmp(cmd, "pwrbtstop") == 0) {
       // Stop the whole Bluetooth controller; only a restart brings BLE back
-      serial_interface.disable();
+      MECK_BLE_IFACE.disable();
       btStop();
       Serial.println("pwr: BT controller stopped (restart to restore)");
     } else if (strncmp(cmd, "pwrble ", 7) == 0) {
       // Stop / restart the BLE companion interface (advertising + service)
-      if (cmd[7] == '1') serial_interface.enable(); else serial_interface.disable();
+      if (cmd[7] == '1') MECK_BLE_IFACE.enable(); else MECK_BLE_IFACE.disable();
       Serial.printf("pwr: BLE %s\n", cmd[7] == '1' ? "on" : "off");
     } else if (strncmp(cmd, "pwrxl ", 6) == 0) {
       // GPS and the 1.8 V sensor rail can be switched freely. "lora" (radio
@@ -1406,6 +1417,15 @@ bool meckCompanionIsBLE() {
 
 bool meckCompanionIsWiFi() {
   return wifi_companion.isEnabled();
+}
+
+// An app connected over this connection (the other may have its own)
+bool meckCompanionBleConnected() {
+  return ble_companion.isEnabled() && ble_companion.isConnected();
+}
+
+bool meckCompanionWifiConnected() {
+  return wifi_companion.isEnabled() && wifi_companion.isConnected();
 }
 
 // Read /web/wifi.cfg (line 1 network name, line 2 password), as Settings
@@ -3417,12 +3437,12 @@ static void meckLockSleepStep() {
   bool canSleep = locked && meckLockSleepBlocker() == MECK_SLEEP_OK;
 
   // BLE advertising off while sleep is possible, back on otherwise
-  if (canSleep && !meckBleStoppedForSleep && serial_interface.isEnabled()) {
-    serial_interface.disable();
+  if (canSleep && !meckBleStoppedForSleep && MECK_BLE_IFACE.isEnabled()) {
+    MECK_BLE_IFACE.disable();
     meckBleStoppedForSleep = true;
     Serial.println("[Power] Locked: BLE advertising paused for power saving");
   } else if (!canSleep && meckBleStoppedForSleep) {
-    serial_interface.enable();
+    MECK_BLE_IFACE.enable();
     meckBleStoppedForSleep = false;
     Serial.println("[Power] BLE advertising resumed");
   }
@@ -3557,7 +3577,7 @@ static void meckPwrRecord(uint32_t now, unsigned long ms) {
 #endif
   if (WiFi.getMode() != WIFI_MODE_NULL) f |= MECK_PWR_F_WIFI;
   if (serial_interface.isConnected()) f |= MECK_PWR_F_PHONE;
-  if (serial_interface.isEnabled()) f |= MECK_PWR_F_BLE;
+  if (MECK_BLE_IFACE.isEnabled()) f |= MECK_PWR_F_BLE;
 #if defined(MECK_AUDIO_VARIANT) && defined(HAS_ES8311_AUDIO)
   if (es8311_active()) f |= MECK_PWR_F_AUDIO;
 #endif

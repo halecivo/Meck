@@ -74,13 +74,16 @@ static void drawLockPrompt(Ui2Canvas& c, int reason) {
 #endif
 #endif
 #if defined(BLE_PIN_CODE) && defined(MECK_WIFI_COMPANION)
-  // Combined BLE + WiFi companion (meck_max_ble_wifi): defined in main.cpp
+  // Combined BLE + WiFi companion (meck_max_ble_wifi): defined in main.cpp.
+  // Each connection is turned on and off on its own; both can be on.
   extern bool meckCompanionIsBLE();
+  extern bool meckCompanionIsWiFi();
   extern bool meckCompanionUseBLE();
-  extern void meckCompanionUseNone();
-  extern bool meckCompanionBLENeedsRestart();
-  extern bool meckCompanionWiFiNeedsRestart();
-  extern void meckCompanionSwitchPress(bool toWifi);
+  extern bool meckCompanionUseWiFi(bool connectSaved);
+  extern void meckCompanionBleOff();
+  extern void meckCompanionWifiOff();
+  extern bool meckCompanionBleConnected();
+  extern bool meckCompanionWifiConnected();
 #endif
 
 #ifndef AUTO_OFF_MILLIS
@@ -718,15 +721,16 @@ void renderBatteryIndicator(DisplayDriver& display, uint16_t batteryMilliVolts, 
     if (_page == HomePage::BLUETOOTH) {
       Ui2Chrome::titleBar(c, "Bluetooth");
   #if defined(MECK_WIFI_COMPANION)
-      const bool btOn = meckCompanionIsBLE() && _task->isSerialEnabled();
-      const bool restart = meckCompanionBLENeedsRestart();
+      // Combined build: this connection only (WiFi may have its own client)
+      const bool btOn = meckCompanionIsBLE();
+      const bool btConn = meckCompanionBleConnected();
   #else
       const bool btOn = _task->isSerialEnabled();
-      const bool restart = false;
+      const bool btConn = btOn && _task->hasConnection();
   #endif
       const char* line;
       const char* detail = nullptr;
-      if (btOn && _task->hasConnection()) {
+      if (btConn) {
         line = MECK_TR("Connected", "Connect\xC3\xA9");
         detail = MECK_TR("The companion app is connected.", "L'appli compagnon est connect\xC3\xA9" "e.");
       } else if (btOn) {
@@ -740,8 +744,7 @@ void renderBatteryIndicator(DisplayDriver& display, uint16_t batteryMilliVolts, 
       }
       Ui2List::emptyState(c, BODY_Y, FOOTER_Y - 16, UI2_IC_BLE, line, detail);
       infoDots(c);
-      const char* act = restart ? MECK_TR("Restart", "Red\xC3\xA9marrer")
-                                : (btOn ? MECK_TR("Turn off", "D\xC3\xA9sactiver") : MECK_TR("Turn on", "Activer"));
+      const char* act = btOn ? MECK_TR("Turn off", "D\xC3\xA9sactiver") : MECK_TR("Turn on", "Activer");
       const Ui2Key keys[] = { ui2KeyIcon(UI2_IC_ENTER, act), ui2Key("A/D", MECK_TR("Page", "Page"), true) };
       Ui2Chrome::footer(c, keys, 2);
       return 5000;
@@ -759,18 +762,20 @@ void renderBatteryIndicator(DisplayDriver& display, uint16_t batteryMilliVolts, 
         Ui2List::kvRow(c, y, "IP", val); y += 20;
         snprintf(val, sizeof(val), "%d", TCP_PORT);
         Ui2List::kvRow(c, y, "Port", val); y += 20;
+  #if defined(BLE_PIN_CODE)
+        const bool appConn = meckCompanionWifiConnected();   // this connection only
+  #else
+        const bool appConn = _task->hasConnection();
+  #endif
         Ui2List::kvRow(c, y, MECK_TR("App", "Appli"),
-                       _task->hasConnection() ? MECK_TR("Connected", "Connect\xC3\xA9" "e")
-                                              : MECK_TR("Waiting", "En attente"));
+                       appConn ? MECK_TR("Connected", "Connect\xC3\xA9" "e")
+                               : MECK_TR("Waiting", "En attente"));
       } else {
         Ui2List::emptyState(c, BODY_Y, FOOTER_Y - 16, UI2_IC_WIFIOFF, MECK_TR("Not connected", "Non connect\xC3\xA9"),
                             MECK_TR("Set up the network in Settings.", "R\xC3\xA9seau \xC3\xA0 configurer dans R\xC3\xA9glages."));
       }
       infoDots(c);
       const char* act = (WiFi.getMode() != WIFI_OFF) ? MECK_TR("Turn off", "Couper") : MECK_TR("Turn on", "Activer");
-  #if defined(BLE_PIN_CODE)
-      if (WiFi.getMode() == WIFI_OFF && meckCompanionWiFiNeedsRestart()) act = MECK_TR("Restart", "Red\xC3\xA9marrer");
-  #endif
       const Ui2Key keys[] = { ui2KeyIcon(UI2_IC_ENTER, act), ui2Key("A/D", MECK_TR("Page", "Page"), true) };
       Ui2Chrome::footer(c, keys, 2);
       return 5000;
@@ -1500,14 +1505,13 @@ public:
       display.print(tmp);
 #if defined(BLE_PIN_CODE) && defined(MECK_WIFI_COMPANION)
     } else if (_page == HomePage::BLUETOOTH) {
-      // Combined build: Bluetooth counts as on only while it is the
-      // connection, not while WiFi is
-      bool btOn = meckCompanionIsBLE() && _task->isSerialEnabled();
+      // Combined build: this connection only (WiFi may be on as well)
+      bool btOn = meckCompanionIsBLE();
       display.setColor(DisplayDriver::GREEN);
       display.drawXbm((display.width() - 32) / 2, 18,
           btOn ? bluetooth_on : bluetooth_off,
           32, 32);
-      if (btOn && _task->hasConnection()) {
+      if (btOn && meckCompanionBleConnected()) {
         display.setColor(DisplayDriver::GREEN);
         display.setTextSize(1);
         display.drawTextCentered(display.width() / 2, 53, MECK_TR("< Connected >", "< Connect\xC3\xA9" " >"));
@@ -1519,14 +1523,8 @@ public:
       }
       display.setColor(DisplayDriver::GREEN);
       display.setTextSize(1);
-      if (meckCompanionBLENeedsRestart()) {
-        // WiFi has been used since the last restart: switching needs one
-        display.drawTextCentered(display.width() / 2, 68, MECK_TR("restart into Bluetooth:", "red\xC3\xA9marrer en Bluetooth :"));
-        display.drawTextCentered(display.width() / 2, 78, MECK_TR("long press or Enter", "appui long ou Entr\xC3\xA9" "e"));
-      } else {
-        display.drawTextCentered(display.width() / 2, 68, MECK_TR("toggle: " PRESS_LABEL, "basculer : appui long"));
-        display.drawTextCentered(display.width() / 2, 78, MECK_TR("or press Enter key", "ou touche Entr\xC3\xA9" "e"));
-      }
+      display.drawTextCentered(display.width() / 2, 68, MECK_TR("toggle: " PRESS_LABEL, "basculer : appui long"));
+      display.drawTextCentered(display.width() / 2, 78, MECK_TR("or press Enter key", "ou touche Entr\xC3\xA9" "e"));
 #elif defined(BLE_PIN_CODE)
     } else if (_page == HomePage::BLUETOOTH) {
       display.setColor(DisplayDriver::GREEN);
@@ -1593,13 +1591,6 @@ public:
       const char* wifiHint = (WiFi.getMode() != WIFI_OFF)
             ? MECK_TR("Press Enter to Turn Off Wifi", "Entr\xC3\xA9" "e : couper le WiFi")
             : MECK_TR("Press Enter to Turn On Wifi", "Entr\xC3\xA9" "e : activer le WiFi");
-#if defined(BLE_PIN_CODE) && defined(MECK_WIFI_COMPANION)
-      // Combined build: Bluetooth has been used since the last restart, so
-      // turning WiFi on restarts the device
-      if (WiFi.getMode() == WIFI_OFF && meckCompanionWiFiNeedsRestart()) {
-        wifiHint = MECK_TR("Press Enter to Restart into Wifi", "Entr\xC3\xA9" "e : red\xC3\xA9marrer en WiFi");
-      }
-#endif
       display.drawTextCentered(display.width() / 2, 90, wifiHint);
       display.setTextSize(1);
 #endif
@@ -1964,16 +1955,9 @@ public:
     }
 #if defined(BLE_PIN_CODE) && defined(MECK_WIFI_COMPANION)
     if (c == KEY_ENTER && _page == HomePage::BLUETOOTH) {
-      // Combined build: Bluetooth off leaves neither on. Turning it on after
-      // WiFi has been used since the last restart (or after the Web Reader
-      // freed Bluetooth) asks to restart into Bluetooth.
-      if (meckCompanionIsBLE()) {
-        meckCompanionUseNone();
-      } else if (meckCompanionBLENeedsRestart()) {
-        meckCompanionSwitchPress(false);
-      } else if (!meckCompanionUseBLE()) {
-        _task->showAlert(MECK_TR("Reboot for Bluetooth", "Red\xC3\xA9marrer (Bluetooth)"), 1500);
-      }
+      // Combined build: Bluetooth on / off; WiFi stays as it is
+      if (meckCompanionIsBLE()) meckCompanionBleOff();
+      else meckCompanionUseBLE();
       return true;
     }
 #elif defined(BLE_PIN_CODE)
@@ -1991,14 +1975,9 @@ public:
       // WiFi radio on/off, as the Settings "WiFi Radio" row does (this is a
       // copy of that row's code). Network setup and password stay in Settings.
 #if defined(BLE_PIN_CODE) && defined(MECK_WIFI_COMPANION)
-      // Combined build: WiFi on turns Bluetooth off; WiFi off leaves
-      // neither on
-      extern bool meckCompanionIsWiFi();
-      extern bool meckCompanionUseWiFi(bool connectSaved);
+      // Combined build: WiFi on / off; Bluetooth stays as it is
       if (meckCompanionIsWiFi()) {
-        meckCompanionUseNone();
-      } else if (meckCompanionWiFiNeedsRestart()) {
-        meckCompanionSwitchPress(true);   // Bluetooth used since the last restart
+        meckCompanionWifiOff();
       } else if (!meckCompanionUseWiFi(true)) {
         _task->showAlert(MECK_TR("WiFi failed to start", "\xC3\x89" "chec du WiFi"), 1500);
       }

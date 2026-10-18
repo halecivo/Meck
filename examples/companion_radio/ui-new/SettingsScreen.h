@@ -4441,16 +4441,8 @@ public:
           // Launch WiFi scan → select → password → connect flow
           #if defined(BLE_PIN_CODE) && defined(MECK_WIFI_COMPANION)
           {
-            // Combined build: WiFi setup makes WiFi the companion connection
-            // (Bluetooth goes off), as one connection is on at a time. If
-            // Bluetooth has been used since the last restart, switching needs
-            // a restart first.
-            extern bool meckCompanionWiFiNeedsRestart();
-            extern void meckCompanionSwitchPress(bool toWifi);
-            if (meckCompanionWiFiNeedsRestart()) {
-              meckCompanionSwitchPress(true);
-              break;
-            }
+            // Combined build: WiFi setup turns the WiFi companion on;
+            // Bluetooth stays as it is
             extern bool meckCompanionUseWiFi(bool connectSaved);
             meckCompanionUseWiFi(false);
           }
@@ -4466,17 +4458,12 @@ public:
         case ROW_WIFI_TOGGLE:
           #if defined(BLE_PIN_CODE) && defined(MECK_WIFI_COMPANION)
           {
-            // Combined build: WiFi on turns Bluetooth off; WiFi off leaves
-            // neither on
+            // Combined build: WiFi on / off; Bluetooth stays as it is
             extern bool meckCompanionIsWiFi();
             extern bool meckCompanionUseWiFi(bool connectSaved);
-            extern void meckCompanionUseNone();
-            extern bool meckCompanionWiFiNeedsRestart();
-            extern void meckCompanionSwitchPress(bool toWifi);
+            extern void meckCompanionWifiOff();
             if (meckCompanionIsWiFi()) {
-              meckCompanionUseNone();
-            } else if (meckCompanionWiFiNeedsRestart()) {
-              meckCompanionSwitchPress(true);   // Bluetooth used since the last restart
+              meckCompanionWifiOff();
             } else {
               meckCompanionUseWiFi(true);
             }
