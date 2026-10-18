@@ -417,6 +417,11 @@ private:
   };
   WifiSetupPhase _wifiPhase;
   String _wifiSSIDs[10];
+  int8_t _wifiRSSI[10];             // dBm, list sorted strongest first
+  bool _wifiSecure[10];             // needs a password
+  String _wifiSavedSSID;            // network in /web/wifi.cfg ("" = none)
+  bool _wifiScanDrawn;              // SCANNING screen is up: scan may block now
+  bool _wifiPassPrefilled;          // password is the saved one: a key replaces it
   int _wifiSSIDCount;
   int _wifiSSIDSelected;
   char _wifiPassBuf[64];
@@ -852,6 +857,8 @@ public:
     _wifiPhase = WIFI_PHASE_IDLE;
     _wifiSSIDCount = 0;
     _wifiSSIDSelected = 0;
+    _wifiScanDrawn = false;
+    _wifiPassPrefilled = false;
     _wifiPassLen = 0;
     memset(_wifiPassBuf, 0, sizeof(_wifiPassBuf));
     _wifiFormLastChar = 0;
@@ -910,13 +917,34 @@ public:
   // ---------------------------------------------------------------------------
 
   #ifdef MECK_WIFI_COMPANION
-  // Perform a blocking WiFi scan. Populates _wifiSSIDs/_wifiSSIDCount and
-  // advances _wifiPhase to SELECT (even on zero results, so the overlay
-  // stays visible and the user can rescan with 'r').
+  // Start a WiFi scan: the SCANNING screen is drawn first, then poll() runs
+  // the scan, which blocks for a few seconds.
+  void requestWifiScan() {
+    _wifiPhase = WIFI_PHASE_SCANNING;
+    _wifiScanDrawn = false;
+    _wifiSSIDCount = 0;
+    _wifiSSIDSelected = 0;
+  }
+
+  // Blocking WiFi scan. Fills the network list (strongest first, one row per
+  // network name, hidden networks left out) and advances _wifiPhase to
+  // SELECT, even on zero results, so the user can rescan with 'r'.
   void performWifiScan() {
     _wifiPhase = WIFI_PHASE_SCANNING;
     _wifiSSIDCount = 0;
     _wifiSSIDSelected = 0;
+
+    // The saved network is marked in the list and its password prefilled
+    _wifiSavedSSID = "";
+    if (SD.exists("/web/wifi.cfg")) {
+      File f = SD.open("/web/wifi.cfg", FILE_READ);
+      if (f) {
+        _wifiSavedSSID = f.readStringUntil('\n');
+        _wifiSavedSSID.trim();
+        f.close();
+      }
+    }
+    digitalWrite(SDCARD_CS, HIGH);
 
     // Disconnect any active WiFi connection first — the ESP32 driver
     // returns -2 (WIFI_SCAN_FAILED) if the radio is busy with an
@@ -930,18 +958,71 @@ public:
     int n = WiFi.scanNetworks(false, false, false, 500);
     Serial.printf("Settings: WiFi scan found %d networks\n", n);
 
-    if (n > 0) {
-      _wifiSSIDCount = min(n, 10);
-      for (int si = 0; si < _wifiSSIDCount; si++) {
-        _wifiSSIDs[si] = WiFi.SSID(si);
-        Serial.printf("  [%d] %s (RSSI %d)\n", si,
-                      _wifiSSIDs[si].c_str(), WiFi.RSSI(si));
+    for (int si = 0; si < n; si++) {
+      String ssid = WiFi.SSID(si);
+      if (ssid.length() == 0) continue;            // hidden network
+      int rssi = WiFi.RSSI(si);
+      bool secure = WiFi.encryptionType(si) != WIFI_AUTH_OPEN;
+      Serial.printf("  [%d] %s (RSSI %d%s)\n", si, ssid.c_str(), rssi, secure ? "" : ", open");
+      int k = 0;
+      while (k < _wifiSSIDCount && _wifiSSIDs[k] != ssid) k++;
+      if (k < _wifiSSIDCount) {                     // same name (mesh, repeater): keep the stronger
+        if (rssi <= _wifiRSSI[k]) continue;
+      } else if (_wifiSSIDCount < 10) {
+        k = _wifiSSIDCount++;
+      } else {
+        int weakest = 0;                            // list full: replace the weakest if stronger
+        for (int j = 1; j < 10; j++) if (_wifiRSSI[j] < _wifiRSSI[weakest]) weakest = j;
+        if (rssi <= _wifiRSSI[weakest]) continue;
+        k = weakest;
       }
-    } else if (n < 0) {
-      Serial.printf("Settings: WiFi scan error %d\n", n);
+      _wifiSSIDs[k] = ssid;
+      _wifiRSSI[k] = (int8_t)max(rssi, -127);
+      _wifiSecure[k] = secure;
     }
+    if (n < 0) Serial.printf("Settings: WiFi scan error %d\n", n);
     WiFi.scanDelete();
+
+    // Strongest first
+    for (int a = 1; a < _wifiSSIDCount; a++) {
+      for (int b = a; b > 0 && _wifiRSSI[b] > _wifiRSSI[b - 1]; b--) {
+        String ts = _wifiSSIDs[b]; _wifiSSIDs[b] = _wifiSSIDs[b - 1]; _wifiSSIDs[b - 1] = ts;
+        int8_t tr = _wifiRSSI[b]; _wifiRSSI[b] = _wifiRSSI[b - 1]; _wifiRSSI[b - 1] = tr;
+        bool tb = _wifiSecure[b]; _wifiSecure[b] = _wifiSecure[b - 1]; _wifiSecure[b - 1] = tb;
+      }
+    }
     _wifiPhase = WIFI_PHASE_SELECT;  // always show overlay (even if 0)
+  }
+
+  // Join the selected network with the password in _wifiPassBuf, saving both
+  // to /web/wifi.cfg first (the Web Reader and later restarts reuse them)
+  void wifiConnectSelected() {
+    _wifiPassBuf[_wifiPassLen] = '\0';
+    _wifiPhase = WIFI_PHASE_CONNECTING;
+
+    if (SD.exists("/web") || SD.mkdir("/web")) {
+      File f = SD.open("/web/wifi.cfg", FILE_WRITE);
+      if (f) {
+        f.println(_wifiSSIDs[_wifiSSIDSelected]);
+        f.println(_wifiPassBuf);
+        f.close();
+      }
+      digitalWrite(SDCARD_CS, HIGH);
+    }
+
+    WiFi.disconnect(false);
+    extern void meckWifiResetReason();
+    meckWifiResetReason();
+    WiFi.begin(_wifiSSIDs[_wifiSSIDSelected].c_str(), _wifiPassBuf);
+
+    // Don't wait here: poll() checks for the result each loop, so the
+    // "Connecting..." popup can be drawn while the device joins the
+    // network. Its time runs past the limit; the result popup replaces it.
+    _wifiConnectStart = millis();
+  #ifndef MECK_UI_V2   // the v2 screen shows Connecting itself
+    extern void meckShowAlert(const char* text, int duration_millis);
+    meckShowAlert(MECK_TR("Connecting...", "Connexion..."), SETTINGS_WIFI_CONNECT_MS + 2000);
+  #endif
   }
 
   // After WiFi setup exits (connect success or user quit), try to
@@ -2659,6 +2740,9 @@ public:
   #ifdef MECK_OTA_UPDATE
         || _editMode == EDIT_OTA || _editMode == EDIT_FILEMGR
   #endif
+  #ifdef MECK_WIFI_COMPANION
+        || _editMode == EDIT_WIFI
+  #endif
         ;
   }
 
@@ -2684,6 +2768,102 @@ public:
   int renderSpecialV2(Ui2Canvas& c) {
     using namespace ui2;
     char tmp[200];
+
+  #ifdef MECK_WIFI_COMPANION
+    // WiFi setup: networks strongest first, each with its signal, a lock
+    // when it needs a password and a check on the saved one; then the
+    // password and the connection attempt
+    if (_editMode == EDIT_WIFI) {
+      char right[16] = "";
+      if (_wifiPhase == WIFI_PHASE_SELECT && _wifiSSIDCount > 0)
+        Ui2List::pageLabel(right, sizeof(right), _wifiSSIDSelected, _wifiSSIDCount, ROWS_PER_PAGE);
+      Ui2Chrome::titleBar(c, "WiFi", right[0] ? right : nullptr);
+
+      if (_wifiPhase == WIFI_PHASE_SCANNING) {
+        Ui2List::emptyState(c, BODY_Y, FOOTER_Y, UI2_IC_WIFI, MECK_TR("Scanning\xE2\x80\xA6", "Recherche\xE2\x80\xA6"),
+                            MECK_TR("Looking for WiFi networks nearby.", "Recherche des r\xC3\xA9seaux WiFi."));
+        _wifiScanDrawn = true;
+        Ui2Chrome::footer(c, nullptr, 0);   // keys wait for the scan
+        return 200;
+      }
+
+      if (_wifiPhase == WIFI_PHASE_SELECT) {
+        if (_wifiSSIDCount == 0) {
+          Ui2List::emptyState(c, BODY_Y, FOOTER_Y, UI2_IC_WIFIOFF, MECK_TR("No networks found", "Aucun r\xC3\xA9seau"),
+                              MECK_TR("Check that the network or hotspot is on and uses 2.4 GHz.",
+                                      "V\xC3\xA9rifiez que le r\xC3\xA9seau est actif et en 2,4 GHz."));
+          const Ui2Key keys[] = { ui2Key("R", MECK_TR("Rescan", "Relancer")), ui2Key("Q", MECK_TR("Back", "Retour")) };
+          Ui2Chrome::footer(c, keys, 2);
+          return 5000;
+        }
+        const int start = Ui2List::pageStart(_wifiSSIDSelected, ROWS_PER_PAGE);
+        for (int i = start; i < _wifiSSIDCount && i < start + ROWS_PER_PAGE; i++) {
+          const int rssi = _wifiRSSI[i];
+          const bool saved = _wifiSavedSSID.length() > 0 && _wifiSSIDs[i] == _wifiSavedSSID;
+          snprintf(tmp, sizeof(tmp), "%s \xC2\xB7 %d dBm",
+                   saved ? MECK_TR("Saved", "Enregistr\xC3\xA9")
+                         : _wifiSecure[i] ? MECK_TR("Password", "Mot de passe") : MECK_TR("Open", "Ouvert"),
+                   rssi);
+          Ui2Row r;
+          r.icon = rssi >= -60 ? UI2_IC_WIFI : rssi >= -72 ? UI2_IC_WIFI2 : UI2_IC_WIFI1;
+          r.title = _wifiSSIDs[i].c_str();
+          r.sub = tmp;
+          r.sig = _wifiSecure[i] ? UI2_IC_LOCK : UI2_NO_ICON;
+          r.check = saved;
+          r.selected = (i == _wifiSSIDSelected);
+          Ui2List::drawRow(c, BODY_Y + (i - start) * ROW_H, r);
+        }
+        const Ui2Key keys[] = {
+          ui2KeyIcon(UI2_IC_ENTER, MECK_TR("Join", "Rejoindre")),
+          ui2Key("W/S", MECK_TR("Move", "D\xC3\xA9placer"), true),
+          ui2Key("R", MECK_TR("Rescan", "Relancer")),
+          ui2Key("Q", MECK_TR("Back", "Retour")),
+        };
+        Ui2Chrome::footer(c, keys, 4);
+        return 5000;
+      }
+
+      if (_wifiPhase == WIFI_PHASE_PASSWORD) {
+        // Masked, the last character shown for a moment after typing
+        char pass[66];
+        for (int i = 0; i < _wifiPassLen; i++) pass[i] = '*';
+        if (_wifiPassLen > 0 && _wifiFormLastChar > 0 && (millis() - _wifiFormLastChar) < 800)
+          pass[_wifiPassLen - 1] = _wifiPassBuf[_wifiPassLen - 1];
+        pass[_wifiPassLen] = '_';
+        pass[_wifiPassLen + 1] = '\0';
+        const int rssi = _wifiRSSI[_wifiSSIDSelected];
+        snprintf(tmp, sizeof(tmp), "%d dBm", rssi);
+        Ui2Row r0;
+        r0.icon = rssi >= -60 ? UI2_IC_WIFI : rssi >= -72 ? UI2_IC_WIFI2 : UI2_IC_WIFI1;
+        r0.title = _wifiSSIDs[_wifiSSIDSelected].c_str();
+        r0.sub = MECK_TR("Network", "R\xC3\xA9seau");
+        r0.right = tmp;
+        Ui2Row r1;
+        r1.icon = UI2_IC_KEY;
+        r1.title = MECK_TR("Password", "Mot de passe");
+        r1.sub = pass;
+        r1.selected = true;
+        r1.pending = true;
+        Ui2List::drawRow(c, BODY_Y, r0);
+        Ui2List::drawRow(c, BODY_Y + ROW_H, r1);
+        c.wrap(PAD, BODY_Y + 2 * ROW_H + 20, SCREEN_W - 2 * PAD, 17, 3,
+               _wifiPassPrefilled
+                 ? MECK_TR("The saved password is filled in. Enter joins; typing or Backspace replaces it.",
+                           "Le mot de passe enregistr\xC3\xA9 est rempli. Entr\xC3\xA9" "e : rejoindre.")
+                 : MECK_TR("Type the network's password.", "Saisissez le mot de passe du r\xC3\xA9seau."),
+               UI2_F_BODY, true, true, nullptr, UI2_LEFT);
+        const Ui2Key keys[] = { ui2KeyIcon(UI2_IC_ENTER, MECK_TR("Join", "Rejoindre")), ui2Key("Sh+Del", MECK_TR("Back", "Retour")) };
+        Ui2Chrome::footer(c, keys, 2);
+        return (_wifiFormLastChar > 0 && (millis() - _wifiFormLastChar) < 800) ? 850 : 5000;
+      }
+
+      // Connecting: the result comes as a popup (IP, or why it failed)
+      Ui2List::emptyState(c, BODY_Y, FOOTER_Y, UI2_IC_WIFI, MECK_TR("Connecting\xE2\x80\xA6", "Connexion\xE2\x80\xA6"),
+                          _wifiSSIDs[_wifiSSIDSelected].c_str());
+      Ui2Chrome::footer(c, nullptr, 0);
+      return 500;
+    }
+  #endif
 
   #if defined(MECK_AUDIO_VARIANT) || defined(HAS_4G_MODEM)
     if (_editMode == EDIT_NOTIF_SOUND) {
@@ -3275,6 +3455,7 @@ public:
 
       if (_wifiPhase == WIFI_PHASE_SCANNING) {
         display.drawTextCentered(display.width() / 2, wy, MECK_TR("Scanning for networks...", "Recherche des r\xC3\xA9seaux..."));
+        _wifiScanDrawn = true;
 
       } else if (_wifiPhase == WIFI_PHASE_SELECT) {
         if (_wifiSSIDCount == 0) {
@@ -3881,20 +4062,39 @@ public:
         }
         if (c == 'r' || c == 'R') {
           // Rescan — lets user toggle hotspot on then retry
-          performWifiScan();
+          requestWifiScan();
           return true;
         }
         if (c == '\r' || c == 13) {
           if (_wifiSSIDCount == 0) {
             // No networks — Enter rescans (same as R)
-            performWifiScan();
+            requestWifiScan();
             return true;
           }
-          // Selected an SSID — move to password entry
-          _wifiPhase = WIFI_PHASE_PASSWORD;
           _wifiPassLen = 0;
           memset(_wifiPassBuf, 0, sizeof(_wifiPassBuf));
           _wifiFormLastChar = 0;
+          _wifiPassPrefilled = false;
+          if (!_wifiSecure[_wifiSSIDSelected]) {
+            wifiConnectSelected();   // open network: no password
+            return true;
+          }
+          // Password entry; for the saved network its password is filled
+          // in (shown masked), so Enter alone reconnects
+          if (_wifiSSIDs[_wifiSSIDSelected] == _wifiSavedSSID) {
+            File f = SD.open("/web/wifi.cfg", FILE_READ);
+            if (f) {
+              f.readStringUntil('\n');
+              String pass = f.readStringUntil('\n'); pass.trim();
+              f.close();
+              _wifiPassLen = min((int)pass.length(), 63);
+              memcpy(_wifiPassBuf, pass.c_str(), _wifiPassLen);
+              _wifiPassBuf[_wifiPassLen] = '\0';
+              _wifiPassPrefilled = _wifiPassLen > 0;
+            }
+            digitalWrite(SDCARD_CS, HIGH);
+          }
+          _wifiPhase = WIFI_PHASE_PASSWORD;
           return true;
         }
         if (c == KEY_CANCEL || c == 'q') {
@@ -3909,33 +4109,16 @@ public:
 
       if (_wifiPhase == WIFI_PHASE_PASSWORD) {
         if (c == '\r' || c == 13) {
-          // Attempt connection
-          _wifiPassBuf[_wifiPassLen] = '\0';
-          _wifiPhase = WIFI_PHASE_CONNECTING;
-
-          // Save credentials to SD first (so web reader can reuse them)
-          if (SD.exists("/web") || SD.mkdir("/web")) {
-            File f = SD.open("/web/wifi.cfg", FILE_WRITE);
-            if (f) {
-              f.println(_wifiSSIDs[_wifiSSIDSelected]);
-              f.println(_wifiPassBuf);
-              f.close();
-            }
-            digitalWrite(SDCARD_CS, HIGH);
-          }
-
-          WiFi.disconnect(false);
-          extern void meckWifiResetReason();
-          meckWifiResetReason();
-          WiFi.begin(_wifiSSIDs[_wifiSSIDSelected].c_str(), _wifiPassBuf);
-
-          // Don't wait here: poll() checks for the result each loop, so the
-          // "Connecting..." popup can be drawn while the device joins the
-          // network. Its time runs past the limit; the result popup replaces it.
-          _wifiConnectStart = millis();
-          extern void meckShowAlert(const char* text, int duration_millis);
-          meckShowAlert(MECK_TR("Connecting...", "Connexion..."), SETTINGS_WIFI_CONNECT_MS + 2000);
+          wifiConnectSelected();
           return true;
+        }
+        if (_wifiPassPrefilled && (c == '\b' || (c >= 32 && c < 127))) {
+          // The saved password goes as a whole: Backspace clears it, a
+          // typed character starts a new one
+          _wifiPassPrefilled = false;
+          _wifiPassLen = 0;
+          memset(_wifiPassBuf, 0, sizeof(_wifiPassBuf));
+          if (c == '\b') return true;
         }
         if (c == '\b') {
           if (_wifiPassLen > 0) {
@@ -4211,7 +4394,7 @@ public:
             }
             // Auto-launch the WiFi scan
             _editMode = EDIT_WIFI;
-            performWifiScan();
+            requestWifiScan();
           #else
             _onboarding = false;
           #endif
@@ -4467,7 +4650,7 @@ public:
             meckWifiConnectCancel();   // setup scans and joins by itself
           }
           _editMode = EDIT_WIFI;
-          performWifiScan();
+          requestWifiScan();
           break;
         }
         case ROW_WIFI_TOGGLE:
@@ -4924,6 +5107,10 @@ public:
     #ifdef MECK_WIFI_COMPANION
     if (_editMode == EDIT_WIFI && _wifiPhase == WIFI_PHASE_CONNECTING) {
       pollWifiConnect();
+      return;
+    }
+    if (_editMode == EDIT_WIFI && _wifiPhase == WIFI_PHASE_SCANNING && _wifiScanDrawn) {
+      performWifiScan();
       return;
     }
     #endif
