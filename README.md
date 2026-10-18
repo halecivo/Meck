@@ -9,7 +9,7 @@
 >   full-screen reader. Build `meck_max_ui2`; the other builds keep the
 >   classic UI.
 >
->   <img src="docs/images/ui-v2-home.jpg" alt="UI v2 home screen on a T-Deck MAX" width="270">
+>   <img src="docs/images/ui-v2-home.png" alt="UI v2 home screen (screenshot from a T-Deck MAX)" width="270">
 > - **Bluetooth and WiFi at the same time** (`meck_max_ui2`,
 >   `meck_max_ble_wifi`): each connection is turned on and off on its own,
 >   one app on each, no restart to switch. In the new UI they share one
