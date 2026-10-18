@@ -2,7 +2,7 @@
 // =============================================================================
 // UI v2 -- screen chrome: status header, title bar and keycap footer
 //
-//   y   0-23  status header: node name | clock | status icons, battery, %
+//   y   0-23  status header: node name, connections | clock | status icons, battery, %
 //   y  24-47  title bar:     title (ellipsized) | chip | right text
 //   y 296-319 footer:        up to 4 keycaps, each with a one-word label
 //
@@ -21,6 +21,8 @@ struct Ui2Status {
   bool charging = false;
   bool unread = false;        // unread messages
   bool bleConnected = false;  // companion app connected over Bluetooth
+  bool wifiOn = false;        // WiFi radio on
+  uint8_t wifiLevel = 0;      // 0 = not joined to a network, 1-3 = signal
   bool gpsOn = false;
   bool alarmOn = false;
   bool audioPlaying = false;

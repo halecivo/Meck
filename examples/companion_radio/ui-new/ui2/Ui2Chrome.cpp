@@ -14,9 +14,27 @@ void statusHeader(Ui2Canvas& c) {
   const Ui2Status& st = ui2Status;
   ui2FrameHasChrome = true;
 
-  // Node name, 11B, at most 90 px
-  c.textFit(6, Ui2Canvas::boxBaseline(UI2_F_NODE, 0, HDR_H - 1), HDR_NODE_MAX_W,
-            st.nodeName ? st.nodeName : "", UI2_F_NODE);
+  // Left block: connections, laid out leftwards from the clock, then the
+  // node name (11B) in what is left of HDR_NODE_MAX_W. The name gives way:
+  // it is shortened, and dropped when not even a few letters would fit.
+  int16_t xl = HDR_CLOCK_X - 2;
+  const Ui2Icon wifiIcons[] = { UI2_IC_WIFIOFF, UI2_IC_WIFI1, UI2_IC_WIFI2, UI2_IC_WIFI };
+  const Ui2Icon conn[] = {
+    st.gpsOn ? UI2_IC_GPS : UI2_NO_ICON,
+    st.wifiOn ? wifiIcons[st.wifiLevel > 3 ? 3 : st.wifiLevel] : UI2_NO_ICON,
+    st.bleConnected ? UI2_IC_BLE : UI2_NO_ICON,
+  };
+  for (Ui2Icon ic : conn) {
+    if (ic == UI2_NO_ICON) continue;
+    xl -= 13;
+    c.icon(xl, 6, ic, 12);
+  }
+  int16_t nameW = xl - 4 - 6;
+  if (nameW > HDR_NODE_MAX_W) nameW = HDR_NODE_MAX_W;
+  if (nameW >= 24) {
+    c.textFit(6, Ui2Canvas::boxBaseline(UI2_F_NODE, 0, HDR_H - 1), nameW,
+              st.nodeName ? st.nodeName : "", UI2_F_NODE);
+  }
 
   // Clock, Montserrat 11, centred in its 32 px slot; only once time is synced
   if (st.clockValid) {
@@ -41,8 +59,6 @@ void statusHeader(Ui2Canvas& c) {
 
   const Ui2Icon order[] = {
     st.unread ? UI2_IC_MSGDOT : UI2_NO_ICON,
-    st.bleConnected ? UI2_IC_BLE : UI2_NO_ICON,
-    st.gpsOn ? UI2_IC_GPS : UI2_NO_ICON,
     st.alarmOn ? UI2_IC_ALARM : UI2_NO_ICON,
     st.audioPlaying ? UI2_IC_PLAY : UI2_NO_ICON,
     st.externalAntenna ? UI2_IC_ANTEXT : UI2_NO_ICON,

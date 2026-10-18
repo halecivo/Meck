@@ -33,7 +33,7 @@
   #include "ui2/Ui2HomeTiles.h"
   #include "RadioPresets.h"
 #endif
-#if defined(WIFI_SSID) || defined(MECK_WIFI_COMPANION)
+#if defined(WIFI_SSID) || defined(MECK_WIFI_COMPANION) || defined(MECK_WEB_READER)
   #include <WiFi.h>
 #endif
 
@@ -211,6 +211,10 @@ void poll() override {
 };
 
 class HomeScreen : public UIScreen {
+#if defined(MECK_UI_V2) && defined(BLE_PIN_CODE) && defined(MECK_WIFI_COMPANION)
+  // Combined build, new UI: Bluetooth and WiFi share one "Connections" page
+  #define MECK_CONNECTIONS_PAGE 1
+#endif
   enum HomePage {
     FIRST,
     RECENT,
@@ -218,7 +222,9 @@ class HomeScreen : public UIScreen {
 #ifdef BLE_PIN_CODE
     BLUETOOTH,
 #endif
-#ifdef MECK_WIFI_COMPANION
+#if defined(MECK_CONNECTIONS_PAGE)
+    WIFI_STATUS = BLUETOOTH,   // shares the Connections page
+#elif defined(MECK_WIFI_COMPANION)
     WIFI_STATUS,
 #endif
     ADVERT,
@@ -241,6 +247,9 @@ class HomeScreen : public UIScreen {
   SensorManager* _sensors;
   NodePrefs* _node_prefs;
   uint8_t _page;
+#ifdef MECK_CONNECTIONS_PAGE
+  uint8_t _connRow = 0;   // Connections page: 0 Bluetooth, 1 WiFi
+#endif
   bool _shutdown_init;
   unsigned long _shutdown_at;   // earliest time to proceed with shutdown (after e-ink refresh)
   bool _poweroff_selected;     // true = "power off" highlighted, false = "hibernate"
@@ -717,7 +726,71 @@ void renderBatteryIndicator(DisplayDriver& display, uint16_t batteryMilliVolts, 
       return 5000;
     }
 
-#if defined(BLE_PIN_CODE)
+#ifdef MECK_CONNECTIONS_PAGE
+    if (_page == HomePage::BLUETOOTH) {
+      // Bluetooth and WiFi: a row each (W/S selects, Enter switches the
+      // selected one), then the WiFi network details
+      Ui2Chrome::titleBar(c, MECK_TR("Connections", "Connexions"));
+      int16_t y = BODY_Y;
+      const bool btOn = meckCompanionIsBLE();
+      Ui2Row bt;
+      bt.icon = UI2_IC_BLE;
+      bt.title = "Bluetooth";
+      if (!btOn) {
+        bt.sub = MECK_TR("Off", "DÃ©sactivÃ©");
+      } else if (meckCompanionBleConnected()) {
+        bt.sub = MECK_TR("App connected", "Appli connectÃ©" "e");
+      } else if (the_mesh.getBLEPin() != 0) {
+        snprintf(buf, sizeof(buf), MECK_TR("Waiting for the app, PIN %d", "Attente de l'appli, code %d"),
+                 (int)the_mesh.getBLEPin());
+        bt.sub = buf;
+      } else {
+        bt.sub = MECK_TR("Waiting for the app", "Attente de l'appli");
+      }
+      bt.toggle = btOn ? 1 : 0;
+      bt.selected = _connRow == 0;
+      Ui2List::drawRow(c, y, bt);
+      y += ROW_H;
+
+      const bool wifiOn = meckCompanionIsWiFi();
+      const bool joined = wifiOn && WiFi.status() == WL_CONNECTED;
+      Ui2Row wf;
+      wf.icon = !wifiOn ? UI2_IC_WIFIOFF : !joined ? UI2_IC_WIFIOFF
+              : ui2Status.wifiLevel >= 3 ? UI2_IC_WIFI : ui2Status.wifiLevel == 2 ? UI2_IC_WIFI2 : UI2_IC_WIFI1;
+      wf.title = "WiFi";
+      if (!wifiOn) {
+        wf.sub = MECK_TR("Off", "DÃ©sactivÃ©");
+      } else if (!joined) {
+        wf.sub = MECK_TR("Not connected to a network", "Pas de rÃ©seau");
+      } else if (meckCompanionWifiConnected()) {
+        wf.sub = MECK_TR("App connected", "Appli connectÃ©" "e");
+      } else {
+        wf.sub = MECK_TR("Waiting for the app", "Attente de l'appli");
+      }
+      wf.toggle = wifiOn ? 1 : 0;
+      wf.selected = _connRow == 1;
+      Ui2List::drawRow(c, y, wf);
+      y += ROW_H + 8;
+
+      if (joined) {
+        Ui2List::kvRow(c, y, MECK_TR("Network", "RÃ©seau"), WiFi.SSID().c_str()); y += 20;
+        snprintf(val, sizeof(val), "%d dBm", (int)WiFi.RSSI());
+        Ui2List::kvRow(c, y, MECK_TR("Signal", "Signal"), val); y += 20;
+        IPAddress ip = WiFi.localIP();
+        snprintf(val, sizeof(val), "%d.%d.%d.%d:%d", ip[0], ip[1], ip[2], ip[3], TCP_PORT);
+        Ui2List::kvRow(c, y, MECK_TR("Address", "Adresse"), val); y += 20;
+      } else if (wifiOn) {
+        Ui2List::kvRow(c, y, MECK_TR("Network", "RÃ©seau"), MECK_TR("Settings > WiFi", "RÃ©glages > WiFi")); y += 20;
+      }
+      infoDots(c);
+      const bool selOn = _connRow == 0 ? btOn : wifiOn;
+      const char* act = selOn ? MECK_TR("Turn off", "DÃ©sactiver") : MECK_TR("Turn on", "Activer");
+      const Ui2Key keys[] = { ui2KeyIcon(UI2_IC_ENTER, act), ui2Key("W/S", MECK_TR("Select", "Choisir"), true),
+                              ui2Key("A/D", MECK_TR("Page", "Page"), true) };
+      Ui2Chrome::footer(c, keys, 3);
+      return 5000;
+    }
+#elif defined(BLE_PIN_CODE)
     if (_page == HomePage::BLUETOOTH) {
       Ui2Chrome::titleBar(c, "Bluetooth");
   #if defined(MECK_WIFI_COMPANION)
@@ -751,7 +824,7 @@ void renderBatteryIndicator(DisplayDriver& display, uint16_t batteryMilliVolts, 
     }
 #endif
 
-#ifdef MECK_WIFI_COMPANION
+#if defined(MECK_WIFI_COMPANION) && !defined(MECK_CONNECTIONS_PAGE)
     if (_page == HomePage::WIFI_STATUS) {
       Ui2Chrome::titleBar(c, MECK_TR("WiFi companion", "Compagnon WiFi"));
       int16_t y = BODY_Y + 4;
@@ -994,6 +1067,11 @@ public:
   bool isOnRecentPage() const { return _page == HomePage::RECENT; }
   bool isOnShutdownPage() const { return _page == HomePage::SHUTDOWN; }
   bool isOnTimezonesPage() const { return _page == HomePage::TIMEZONES; }
+#ifdef MECK_CONNECTIONS_PAGE
+  bool isOnConnectionsPage() const { return _page == HomePage::BLUETOOTH; }
+#else
+  bool isOnConnectionsPage() const { return false; }
+#endif
   bool isEditingTimezone() const { return _tz_editing; }
 #ifdef MECK_UI_V2
   // Tile under the keyboard cursor on the tile page
@@ -1957,6 +2035,20 @@ public:
       }
       return true;
     }
+#ifdef MECK_CONNECTIONS_PAGE
+    if (_page == HomePage::BLUETOOTH && (c == 'w' || c == 's')) {
+      _connRow = _connRow ? 0 : 1;   // two rows: W and S both move to the other
+      return true;
+    }
+    if (c == KEY_ENTER && _page == HomePage::BLUETOOTH && _connRow == 1) {
+      if (meckCompanionIsWiFi()) {
+        meckCompanionWifiOff();
+      } else if (!meckCompanionUseWiFi(true)) {
+        _task->showAlert(MECK_TR("WiFi failed to start", "Ã" "chec du WiFi"), 1500);
+      }
+      return true;
+    }
+#endif
 #if defined(BLE_PIN_CODE) && defined(MECK_WIFI_COMPANION)
     if (c == KEY_ENTER && _page == HomePage::BLUETOOTH) {
       // Combined build: Bluetooth on / off; WiFi stays as it is
@@ -2745,8 +2837,19 @@ void UITask::updateUi2Status() {
   st.batteryPct = getBatteryPercent();
 #endif
   st.unread = getUnreadMsgCount() > 0;
-#if defined(BLE_PIN_CODE)
+#if defined(BLE_PIN_CODE) && defined(MECK_WIFI_COMPANION)
+  st.bleConnected = meckCompanionBleConnected();
+#elif defined(BLE_PIN_CODE)
   st.bleConnected = hasConnection();
+#endif
+#if defined(WIFI_SSID) || defined(MECK_WIFI_COMPANION) || defined(MECK_WEB_READER)
+  // WiFi on (companion or Web Reader): signal in three steps once joined
+  st.wifiOn = WiFi.getMode() != WIFI_OFF;
+  st.wifiLevel = 0;
+  if (st.wifiOn && WiFi.status() == WL_CONNECTED) {
+    int rssi = WiFi.RSSI();
+    st.wifiLevel = rssi >= -60 ? 3 : rssi >= -72 ? 2 : 1;
+  }
 #endif
   st.gpsOn = getGPSState();
 #ifdef MECK_AUDIO_VARIANT
@@ -3535,6 +3638,11 @@ bool UITask::isHomeOnShutdownPage() const {
 
 bool UITask::isHomeOnTimezonesPage() const {
   return curr == home && ((HomeScreen *) home)->isOnTimezonesPage();
+}
+
+// Connections page (combined build, new UI): W/S select Bluetooth or WiFi
+bool UITask::isHomeOnConnectionsPage() const {
+  return curr == home && ((HomeScreen *) home)->isOnConnectionsPage();
 }
 
 void UITask::selectHomeTimezoneRowAt(int vy) {

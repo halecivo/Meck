@@ -6198,6 +6198,7 @@ void handleKeyboardInput() {
 #endif
           || ui_task.isHomeOnShutdownPage()
           || ui_task.isHomeOnTimezonesPage()
+          || ui_task.isHomeOnConnectionsPage()
           || ui_task.isOnRxLogScreen()
          ) {
         ui_task.injectKey('s');  // Pass directly for scrolling
@@ -6254,6 +6255,7 @@ void handleKeyboardInput() {
           || ui_task.isOnAlarmScreen()
 #endif
           || ui_task.isHomeOnTimezonesPage()
+          || ui_task.isHomeOnConnectionsPage()
           || ui_task.isOnRxLogScreen()
          ) {
         ui_task.injectKey('w');  // Pass directly for scrolling

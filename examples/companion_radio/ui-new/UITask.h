@@ -333,6 +333,7 @@ public:
   bool isHomeOnShutdownPage() const;
   // Check if home screen is showing the Timezones (world clock) page
   bool isHomeOnTimezonesPage() const;
+  bool isHomeOnConnectionsPage() const;
   // Touch long-press on the Timezones page: select the zone row at virtual y
   void selectHomeTimezoneRowAt(int vy);
 

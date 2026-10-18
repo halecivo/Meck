@@ -386,5 +386,13 @@
  "ble": {
   "stroke": "M4.5 5L11 11L8 13.5V2.5L11 5L4.5 11",
   "fill": ""
+ },
+ "wifi1": {
+  "stroke": "",
+  "fill": "M7 12H9V14H7Z"
+ },
+ "wifi2": {
+  "stroke": "M4 9.5A5.5 5.5 0 0 1 12 9.5",
+  "fill": "M7 12H9V14H7Z"
  }
 }
