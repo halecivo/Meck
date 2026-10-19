@@ -3190,6 +3190,29 @@ if (curr) curr->poll();
         drawLockPrompt(c, _lockPromptReason);
         _next_refresh = _lockPromptUntil;
 #endif
+      } else if (_telPrompt
+#if defined(LilyGo_TDeck_Pro)
+                 && !_locked
+#endif
+                ) {  // telemetry request prompt
+        char title[64];
+        snprintf(title, sizeof(title), MECK_TR("%s asks for your location", "%s demande votre position"), _telPromptName);
+#ifdef MECK_UI_V2
+        Ui2Canvas c(*_display);
+        Ui2List::dialog(c, UI2_IC_PIN, title,
+                        MECK_TR("Allow: battery and location for this contact from now on. Deny: ignore its requests.",
+                                "Autoriser : batterie et position pour ce contact. Refuser : ignorer ses demandes."),
+                        MECK_TR("Deny", "Refuser"), MECK_TR("Allow", "Autoriser"));
+#else
+        _display->setTextSize(1);
+        _display->setColor(DisplayDriver::LIGHT);
+        _display->fillRect(4, 30, _display->width() - 8, 50);
+        _display->setColor(DisplayDriver::DARK);
+        _display->drawTextCentered(_display->width() / 2, 36, title);
+        _display->drawTextCentered(_display->width() / 2, 52, MECK_TR("Enter: allow", "Entr\xC3\xA9" "e : autoriser"));
+        _display->drawTextCentered(_display->width() / 2, 64, MECK_TR("Q: deny", "Q : refuser"));
+#endif
+        _next_refresh = millis() + 5000;
       } else if (millis() < _alert_expiry) {  // render alert popup
 #ifdef MECK_UI_V2
         {
@@ -3850,6 +3873,25 @@ void UITask::addSentChannelMessage(uint8_t channel_idx, const char* sender, cons
   ((ChannelScreen *) channel_screen)->addMessage(channel_idx, 0, sender, formattedMsg,
                                                   nullptr, 0, nullptr, false, 0xFF, 0, 0,
                                                   haveFp ? fp : nullptr);
+}
+
+void UITask::requestTelemetryPrompt(const uint8_t* pubKey, const char* name) {
+  if (_telPrompt) return;   // one at a time; a later request asks again
+  memcpy(_telPromptKey, pubKey, PUB_KEY_SIZE);
+  snprintf(_telPromptName, sizeof(_telPromptName), "%s", name);
+  _telPrompt = true;
+  _next_refresh = 0;
+}
+
+void UITask::telemetryPromptKey(char c) {
+  if (!_telPrompt) return;
+  bool allow = (c == '\r' || c == KEY_ENTER);
+  bool deny = (c == 'q' || c == 'Q' || c == KEY_CANCEL || c == '\b');
+  if (!allow && !deny) return;
+  extern void meckTelemetryPromptAnswer(const uint8_t* pubKey, const char* name, bool allow);
+  _telPrompt = false;
+  _next_refresh = 0;
+  meckTelemetryPromptAnswer(_telPromptKey, _telPromptName, allow);
 }
 
 void UITask::addSentDM(const char* recipientName, const char* sender, const char* text,

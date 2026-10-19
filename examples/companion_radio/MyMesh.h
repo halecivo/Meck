@@ -74,6 +74,9 @@
 // When set, onContactPathRecv skips auto-updating this contact's out_path.
 // Bits 0-6 remain available (bit 0 = favourite, bits 1-3 = telemetry perms).
 #define CONTACT_FLAG_CUSTOM_PATH  0x80
+// Meck: telemetry requests from this contact get no reply (the request
+// prompt was answered Deny). Cleared when its telemetry is allowed by hand.
+#define CONTACT_FLAG_TEL_IGNORED  0x40
 
 /* -------------------------------------------------------------------------------------- */
 

@@ -230,6 +230,7 @@ enum SettingsRowType : uint8_t {
   ROW_ALT_B_BACKLIGHT,  // Toggle: heart touch key off, Alt+B only toggles the backlight (MAX only)
 #endif
   ROW_PURGE_CONTACTS,   // "Delete all contacts": confirm, purge, restart
+  ROW_TELEM_PROMPT,     // Toggle: ask before answering a contact's first telemetry request (NVS)
   ROW_RX_BOOSTED_GAIN,  // Toggle: SX126x boosted RX gain (default on)
   ROW_AGC_RESET_INT,    // Text entry: AGC reset interval in seconds (0 = off)
 };
@@ -558,6 +559,9 @@ private:
       addRow(ROW_RX_BOOSTED_GAIN);
       addRow(ROW_AGC_RESET_INT);
       addRow(ROW_PURGE_CONTACTS);
+#ifdef ESP32
+      addRow(ROW_TELEM_PROMPT);
+#endif
     } else {
       // --- Top-level settings list ---
 #if defined(LilyGo_TDeck_Pro_Max)
@@ -2596,6 +2600,14 @@ public:
       case ROW_PURGE_CONTACTS:
         display.print(MECK_TR("Delete all contacts", "Supprimer tous les contacts"));
         break;
+
+      case ROW_TELEM_PROMPT: {
+        extern bool meckTelPromptEnabled();
+        snprintf(tmp, sizeof(tmp), MECK_TR("Ask before sharing telemetry: %s", "Demander avant de partager : %s"),
+                 meckTelPromptEnabled() ? MECK_TR("ON", "OUI") : MECK_TR("OFF", "NON"));
+        display.print(tmp);
+        break;
+      }
 
       #ifdef HAS_4G_MODEM
       case ROW_IMEI: {
@@ -4841,6 +4853,15 @@ public:
           char secStr[8];
           snprintf(secStr, sizeof(secStr), "%u", (unsigned)_prefs->agc_reset_interval * 4);
           startEditText(_prefs->agc_reset_interval ? secStr : "");
+          break;
+        }
+        case ROW_TELEM_PROMPT: {
+          // A contact without telemetry permission gets a prompt on its
+          // first request: Allow (battery, location) or Deny (ignore it)
+          extern bool meckTelPromptEnabled();
+          extern void meckTelPromptSet(bool on);
+          meckTelPromptSet(!meckTelPromptEnabled());
+          Serial.printf("Settings: telemetry prompt = %s\n", meckTelPromptEnabled() ? "ON" : "OFF");
           break;
         }
         case ROW_PURGE_CONTACTS:

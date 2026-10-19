@@ -152,6 +152,7 @@
   #ifdef MECK_UI_V2
   void meckRunMessageAction(ChannelScreen* cs);   // chat message menu (Enter)
   #endif
+  static void meckRunContactOption(ContactsScreen* cs);   // contacts screen options (O)
 
   // SD-backed persistence state
   static bool sdCardReady = false;
@@ -5129,6 +5130,12 @@ void handleKeyboardInput() {
   // Still read the key above to clear the TCA8418 buffer.
   if (ui_task.isLocked()) return;
 
+  // Telemetry request prompt (experimental): Enter allows, Q denies
+  if (ui_task.isTelemetryPromptActive()) {
+    ui_task.telemetryPromptKey(key);
+    return;
+  }
+
   // Dismiss boot navigation hint on any keypress
   if (ui_task.isHintActive()) {
     ui_task.dismissBootHint();
@@ -5908,6 +5915,16 @@ void handleKeyboardInput() {
   // ---------------------------------------------------------------------------
   if (ui_task.isOnContactsScreen()) {
     ContactsScreen* cs = (ContactsScreen*)ui_task.getContactsScreen();
+    // Contact options (O): telemetry permissions, send my location, map
+    if (cs && cs->isOptionsOpen()) {
+      ui_task.injectKey(key);
+      meckRunContactOption(cs);
+      return;
+    }
+    if (cs && key == 'o' && !cs->isInSelectMode()) {
+      if (cs->openOptions()) ui_task.forceRefresh();
+      return;
+    }
     if (cs && cs->isInSelectMode()) {
       switch (key) {
         case KEY_CANCEL: {
@@ -7081,6 +7098,199 @@ void sendComposedMessage() {
   }
 }
 
+// ============================================================================
+// Telemetry permissions per contact, the experimental request prompt, and
+// locations in DMs
+//
+// MeshCore answers a telemetry request from what the contact may see: one
+// rule each for battery, location and sensors (nobody / everybody / the
+// contacts whose flags allow it). Allowing a contact here sets its flags and
+// switches a rule from "nobody" to "per contact" where needed.
+// ============================================================================
+#include "ui-new/MeckGeo.h"
+#ifdef ESP32
+  #include <Preferences.h>
+#endif
+
+static ContactInfo* meckContactPtr(int idx) {
+  ContactInfo tmp;
+  if (idx < 0 || !the_mesh.getContactByIdx(idx, tmp)) return nullptr;
+  return the_mesh.lookupContactByPubKey(tmp.id.pub_key, PUB_KEY_SIZE);
+}
+
+// Rules that were "nobody" become "per contact" for the permissions given
+static void meckTelEnsureFlagsMode(uint8_t perms) {
+  NodePrefs* p = the_mesh.getNodePrefs();
+  bool changed = false;
+  if ((perms & TELEM_PERM_BASE) && p->telemetry_mode_base == TELEM_MODE_DENY) { p->telemetry_mode_base = TELEM_MODE_ALLOW_FLAGS; changed = true; }
+  if ((perms & TELEM_PERM_LOCATION) && p->telemetry_mode_loc == TELEM_MODE_DENY) { p->telemetry_mode_loc = TELEM_MODE_ALLOW_FLAGS; changed = true; }
+  if ((perms & TELEM_PERM_ENVIRONMENT) && p->telemetry_mode_env == TELEM_MODE_DENY) { p->telemetry_mode_env = TELEM_MODE_ALLOW_FLAGS; changed = true; }
+  if (changed) the_mesh.savePrefs();
+}
+
+// Contact options: is the permission on, is it on for everybody (rule
+// "all"), and are the contact's requests ignored
+bool meckContactTelemetryState(int idx, uint8_t perm, bool& everyone, bool& ignored) {
+  everyone = ignored = false;
+  ContactInfo* c = meckContactPtr(idx);
+  if (!c) return false;
+  NodePrefs* p = the_mesh.getNodePrefs();
+  uint8_t mode = perm == TELEM_PERM_BASE ? p->telemetry_mode_base
+               : perm == TELEM_PERM_LOCATION ? p->telemetry_mode_loc : p->telemetry_mode_env;
+  everyone = (mode == TELEM_MODE_ALLOW_ALL);
+  ignored = (c->flags & CONTACT_FLAG_TEL_IGNORED) != 0;
+  return mode == TELEM_MODE_ALLOW_FLAGS && (c->flags & (perm << 1));   // flag bits 1-3 = TELEM_PERM_*
+}
+
+void meckContactTelemetrySet(int idx, uint8_t perm, bool on) {
+  ContactInfo* c = meckContactPtr(idx);
+  if (!c) return;
+  if (on) {
+    c->flags |= (uint8_t)(perm << 1);
+    c->flags &= ~CONTACT_FLAG_TEL_IGNORED;   // allowing by hand ends the ignoring
+    meckTelEnsureFlagsMode(perm);
+  } else {
+    c->flags &= (uint8_t)~(perm << 1);
+  }
+  the_mesh.saveContacts();
+  Serial.printf("Contacts: %s telemetry 0x%02X %s\n", c->name, perm, on ? "allowed" : "off");
+}
+
+// Experimental: ask before answering a contact's first telemetry request.
+// Kept in NVS while it is an experiment.
+static int8_t meckTelPromptCache = -1;
+bool meckTelPromptEnabled() {
+#ifdef ESP32
+  if (meckTelPromptCache < 0) {
+    Preferences p;
+    meckTelPromptCache = 0;
+    if (p.begin("meckexp", true)) { meckTelPromptCache = p.getBool("telprompt", false) ? 1 : 0; p.end(); }
+  }
+  return meckTelPromptCache == 1;
+#else
+  return false;
+#endif
+}
+void meckTelPromptSet(bool on) {
+#ifdef ESP32
+  Preferences p;
+  if (p.begin("meckexp", false)) { p.putBool("telprompt", on); p.end(); }
+  meckTelPromptCache = on ? 1 : 0;
+#endif
+}
+
+// MyMesh::onContactRequest: true = no reply. Ignored contacts never get one;
+// with the prompt on, a contact that has no telemetry permission yet gets
+// no reply now and the user is asked.
+bool meckTelemetryGate(const ContactInfo& contact) {
+  if (contact.flags & CONTACT_FLAG_TEL_IGNORED) return true;
+  if (!meckTelPromptEnabled()) return false;
+  if (the_mesh.getNodePrefs()->telemetry_mode_base == TELEM_MODE_ALLOW_ALL) return false;
+  if (contact.flags & 0x0E) return false;   // permissions already given: the usual rules
+  Serial.printf("Telemetry: request from %s, asking\n", contact.name);
+  ui_task.requestTelemetryPrompt(contact.id.pub_key, contact.name);
+  return true;
+}
+
+void meckTelemetryPromptAnswer(const uint8_t* pubKey, const char* name, bool allow) {
+  ContactInfo* c = the_mesh.lookupContactByPubKey(pubKey, PUB_KEY_SIZE);
+  if (!c) return;
+  char msg[64];
+  if (allow) {
+    const uint8_t perms = TELEM_PERM_BASE | TELEM_PERM_LOCATION;
+    c->flags |= (uint8_t)(perms << 1);
+    c->flags &= ~CONTACT_FLAG_TEL_IGNORED;
+    meckTelEnsureFlagsMode(perms);
+    snprintf(msg, sizeof(msg), MECK_TR("%s may now request your location", "%s peut demander votre position"), name);
+  } else {
+    c->flags |= CONTACT_FLAG_TEL_IGNORED;
+    snprintf(msg, sizeof(msg), MECK_TR("Requests from %s are ignored", "Demandes de %s ignor\xC3\xA9" "es"), name);
+  }
+  the_mesh.saveContacts();
+  Serial.printf("Telemetry: %s %s\n", name, allow ? "allowed (battery, location)" : "ignored");
+  ui_task.showAlert(msg, 2000);
+}
+
+// Own position for "Send my location": a GPS fix, else the advert position
+static bool meckOwnPosition(double& lat, double& lon) {
+#if ENV_INCLUDE_GPS == 1
+  LocationProvider* lp = sensors.getLocationProvider();
+  if (the_mesh.getNodePrefs()->gps_enabled && lp && lp->isValid()) {
+    lat = lp->getLatitude() / 1000000.0;
+    lon = lp->getLongitude() / 1000000.0;
+    if (lat != 0 || lon != 0) return true;
+  }
+#endif
+  lat = sensors.node_lat;
+  lon = sensors.node_lon;
+  return lat != 0 || lon != 0;
+}
+
+// Send our position to a contact as "[LOC]lat,lon" (MeshCore-Solo's format)
+static void meckSendLocationTo(int idx) {
+  ContactInfo ci;
+  if (!the_mesh.getContactByIdx(idx, ci)) return;
+  double lat, lon;
+  if (!meckOwnPosition(lat, lon)) {
+    ui_task.showAlert(MECK_TR("No position yet (GPS or advert location)", "Pas de position (GPS ou annonce)"), 2000);
+    return;
+  }
+  char text[48];
+  meckGeoFormatShare(text, sizeof(text), lat, lon);
+  uint32_t sendRef = 0;
+  uint8_t sendTotal = 0;
+  if (the_mesh.uiSendDirectMessage((uint32_t)idx, text, &sendRef, &sendTotal)) {
+    ui_task.addSentDM(ci.name, the_mesh.getNodePrefs()->node_name, text, sendRef, sendTotal);
+    char msg[48];
+    snprintf(msg, sizeof(msg), MECK_TR("Location sent to %s", "Position envoy\xC3\xA9" "e \xC3\xA0 %s"), ci.name);
+    ui_task.showAlert(msg, 1500);
+  } else {
+    ui_task.showAlert(MECK_TR("Send failed", "\xC3\x89" "chec de l'envoi"), 1500);
+  }
+}
+
+#if HAS_GPS
+// The map centred on a point, with a marker for it (and the contacts as usual)
+static void meckOpenMapAt(double lat, double lon, const char* label) {
+  openMapScreen();
+  MapScreen* ms = (MapScreen*)ui_task.getMapScreen();
+  if (ms) {
+    ms->addMarker(lat, lon, label, ADV_TYPE_CHAT);
+    ms->centerOn(lat, lon);
+  }
+}
+#endif
+
+#ifdef MECK_UI_SCREENDUMP
+// Debug CLI "uigeo <text>": the location found in a text, as the chat reads it
+void meckDebugGeo(const char* text) {
+  MeckGeoPoint g;
+  bool found = meckGeoFind(text, g);
+  MeckGeoPoint g2;
+  bool share = meckGeoIsShare(text, g2);
+  if (!found) { Serial.println("uigeo: no location"); return; }
+  Serial.printf("uigeo: %.6f, %.6f tagged=%d waypoint=%d label='%s' share=%d\n",
+                g.lat, g.lon, g.tagged, g.waypoint, g.label, share);
+}
+#endif
+
+// Contacts screen options: run the send / map action picked there
+static void meckRunContactOption(ContactsScreen* cs) {
+  int idx;
+  int act = cs->takeOptionsRequest(idx);
+  if (act == ContactsScreen::OPT_SEND_LOC) {
+    meckSendLocationTo(idx);
+  }
+#if HAS_GPS
+  else if (act == ContactsScreen::OPT_MAP) {
+    ContactInfo ci;
+    if (the_mesh.getContactByIdx(idx, ci) && (ci.gps_lat != 0 || ci.gps_lon != 0))
+      meckOpenMapAt(ci.gps_lat / 1000000.0, ci.gps_lon / 1000000.0, ci.name);
+  }
+#endif
+  ui_task.forceRefresh();
+}
+
 #ifdef MECK_UI_V2
 // Copy text into the compose buffer, cut at a character boundary if too long
 static void meckComposeSet(const char* text) {
@@ -7103,6 +7313,18 @@ void meckRunMessageAction(ChannelScreen* cs) {
   // Views shown by the chat screen itself
   if (act == ChannelScreen::MSG_ACT_PATH)  { cs->showPathForMenuMsg();  ui_task.forceRefresh(); return; }
   if (act == ChannelScreen::MSG_ACT_HEARD) { cs->showHeardForMenuMsg(); ui_task.forceRefresh(); return; }
+#if HAS_GPS
+  if (act == ChannelScreen::MSG_ACT_MAP) {
+    // A location in the message: on the map, named after the waypoint or the sender
+    MeckGeoPoint g;
+    char sender[32] = "";
+    ChannelScreen::extractSenderName(m->text, sender, sizeof(sender));
+    bool found = meckGeoFind(ChannelScreen::msgBody(m), g);
+    cs->exitReplySelect();
+    if (found) meckOpenMapAt(g.lat, g.lon, (g.waypoint && g.label[0]) ? g.label : sender);
+    return;
+  }
+#endif
 
   // The rest writes to the same place: the message's channel, or the contact
   // of the open DM conversation

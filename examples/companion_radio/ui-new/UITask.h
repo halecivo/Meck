@@ -128,6 +128,9 @@ class UITask : public AbstractUITask {
   UIScreen* curr;
   bool _homeShowingTiles = false;  // Set by HomeScreen render when tile grid is visible
   int _tileGridVY = 44;           // Virtual Y of tile grid top (updated each render)
+  bool _telPrompt = false;        // telemetry request prompt up
+  uint8_t _telPromptKey[PUB_KEY_SIZE];
+  char _telPromptName[32];
 #if defined(LilyGo_TDeck_Pro)
   UIScreen* lock_screen;     // Lock screen (big clock + battery + unread)
   UIScreen* _screenBeforeLock = nullptr;
@@ -344,6 +347,14 @@ public:
   void addSentChannelMessage(uint8_t channel_idx, const char* sender, const char* text) override;
   void addSentDM(const char* recipientName, const char* sender, const char* text,
                  uint32_t send_ref = 0, uint8_t send_total = 0);
+
+  // Experimental telemetry request prompt (Settings > Experimental): a
+  // contact without telemetry permission asked for it. Allow / Deny dialog
+  // over the current screen (not on the lock screen); keys go to
+  // telemetryPromptKey() while it is up.
+  void requestTelemetryPrompt(const uint8_t* pubKey, const char* name);
+  bool isTelemetryPromptActive() const { return _telPrompt; }
+  void telemetryPromptKey(char c);
   // DM send status push from the MyMesh retry engine
   void dmSendStatus(uint32_t send_ref, uint8_t status, uint8_t attempt, uint8_t total) override;
 

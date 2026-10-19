@@ -1397,9 +1397,14 @@ void MyMesh::clearCustomPath(int contactIdx) {
   MESH_DEBUG_PRINTLN("clearCustomPath: contact %s — reverted to auto-discovery", c->name);
 }
 
+// Display builds (main.cpp): true when a telemetry request must get no reply
+// (contact ignored, or the experimental request prompt is asking the user)
+__attribute__((weak)) bool meckTelemetryGate(const ContactInfo& contact) { return false; }
+
 uint8_t MyMesh::onContactRequest(const ContactInfo &contact, uint32_t sender_timestamp, const uint8_t *data,
                                  uint8_t len, uint8_t *reply) {
   if (data[0] == REQ_TYPE_GET_TELEMETRY_DATA) {
+    if (meckTelemetryGate(contact)) return 0;
     uint8_t permissions = 0;
     uint8_t cp = contact.flags >> 1; // LSB used as 'favourite' bit (so only use upper bits)
 
@@ -4007,6 +4012,10 @@ void MyMesh::checkCLIRescueCmd() {
       extern void meckPowerCmd(const char* cmd);
       meckPowerCmd(cli_command);
 #endif
+    } else if (memcmp(cli_command, "uigeo ", 6) == 0) {
+      // Debug: what the location parser finds in a text (nothing is stored)
+      extern void meckDebugGeo(const char* text);
+      meckDebugGeo(&cli_command[6]);
     } else if (memcmp(cli_command, "uigo ", 5) == 0) {
       // Debug: open a screen directly, e.g. "uigo rxlog", "uigo pathed 3"
       extern void meckDebugGoto(const char* arg);
