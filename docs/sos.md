@@ -91,6 +91,13 @@ silences the buzz and the flashing; `sos hold` and `sos menu` need it.
 `sos fix <lat> <lon>` fakes a GPS fix (`sos fix` alone ends it and forgets
 the made-up position), `sos text`
 prints the messages as they would go out now, `sos stop` ends the SOS.
+On the MAX, `sos haptic` prints the motor driver's state without a buzz;
+`sos pulse` (one countdown pulse) and `sos vib e <effect>` / `sos vib rtp
+<ms>` do buzz.
+
+The countdown pulse drives the motor at full strength for half a second
+(real-time mode) rather than playing a library effect, which was hard to
+feel.
 
 Unit tests of the logic: `test/sos/test_sos.cpp` (plain C++, see the
 command at the top of the file).

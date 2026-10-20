@@ -146,16 +146,68 @@ static bool s_lastMsgSuppressed = false;
 #if defined(LilyGo_TDeck_Pro_Max)
 // One strong buzz of the haptic motor, ~1 s (effect 14; effect 1, a strong
 // click, was too brief). The driver is set up on first use.
-static void meckHapticBuzz() {
-  static DRV2605Haptic s_haptic;
-  static bool s_hapticReady = false;
-  if (!s_hapticReady) {
+static DRV2605Haptic s_haptic;
+static bool s_hapticReady = false;
+static bool meckHapticReady() {
+  // The vibrate alarm cuts the motor rail when it stops: switch it on again
+  // and set the driver up anew
+  if (!board.xl9555_digitalRead(XL_PIN_MOTOR_EN)) {
     board.motorEnable();
     delay(10);                 // let the motor rail settle before I2C
-    s_hapticReady = s_haptic.begin();
+    s_hapticReady = false;
   }
-  if (s_hapticReady) s_haptic.buzz(14);
+  if (!s_hapticReady) {
+    s_hapticReady = s_haptic.begin();
+    Serial.printf("[Haptic] begin %s\n", s_hapticReady ? "ok" : "FAILED (no ACK)");
+  }
+  return s_hapticReady;
 }
+
+static void meckHapticBuzz() {
+  if (meckHapticReady()) s_haptic.buzz(14);
+}
+
+#ifdef MECK_UI_SCREENDUMP
+// Debug CLI "sos vib e <effect>" / "sos vib rtp <ms>": compare vibrations
+void meckHapticTest(const char* arg) {
+  if (!meckHapticReady()) return;
+  int v = 0;
+  if (sscanf(arg, "e %d", &v) == 1 && v > 0 && v < 124) {
+    s_haptic.buzz((uint8_t)v);
+    delay(150);
+    Serial.printf("[Haptic] effect %d, status 0x%02X\n", v, s_haptic.status());
+  } else if (sscanf(arg, "rtp %d", &v) == 1 && v > 0 && v <= 2000) {
+    s_haptic.rtpStart(0x7F);
+    delay(v / 2);
+    uint8_t mid = s_haptic.status();
+    delay(v - v / 2);
+    s_haptic.rtpStop();
+    Serial.printf("[Haptic] rtp %d ms, status during 0x%02X after 0x%02X\n", v, mid, s_haptic.status());
+  } else {
+    Serial.println("  sos vib e <1-123> | sos vib rtp <ms>");
+  }
+}
+
+// Debug CLI "sos haptic": the motor's state, without making it buzz
+void meckHapticDiag() {
+  Wire.beginTransmission(0x5A);
+  int ack = Wire.endTransmission();
+  uint8_t r[7] = { 0, 0, 0, 0, 0, 0, 0 };
+  // status, mode, library, feedback, go, rated voltage, overdrive clamp
+  const uint8_t regs[7] = { 0x00, 0x01, 0x03, 0x1A, 0x0C, 0x16, 0x17 };
+  for (int i = 0; i < 7 && ack == 0; i++) {
+    Wire.beginTransmission(0x5A);
+    Wire.write(regs[i]);
+    Wire.endTransmission(false);
+    Wire.requestFrom((uint8_t)0x5A, (uint8_t)1);
+    r[i] = Wire.available() ? Wire.read() : 0xFF;
+  }
+  Serial.printf("[Haptic] rail=%d ready=%d ack=%d status=0x%02X mode=0x%02X lib=%u feedback=0x%02X go=%u "
+                "rated=0x%02X odclamp=0x%02X cpu=%uMHz\n",
+                board.xl9555_digitalRead(XL_PIN_MOTOR_EN), s_hapticReady, ack, r[0], r[1], r[2], r[3], r[4],
+                r[5], r[6], (unsigned)getCpuFrequencyMhz());
+}
+#endif
 #endif
 
 #ifdef KB_BL_PIN
@@ -3148,6 +3200,14 @@ void UITask::loop() {
   }
 #endif
 
+  // SOS countdown pulse: end the vibration
+#if defined(LilyGo_TDeck_Pro_Max)
+  if (_sosVibOffAt && (long)(millis() - _sosVibOffAt) >= 0) {
+    if (s_hapticReady) s_haptic.rtpStop();
+    _sosVibOffAt = 0;
+  }
+#endif
+
   // Incoming call LED flash — rapid repeated pulse while ringing
 #if defined(HAS_4G_MODEM) && defined(KB_BL_PIN)
   {
@@ -3611,7 +3671,19 @@ void UITask::sosPulse() {
   _kb_flash_off_at = millis() + 300;
 #endif
 #if defined(LilyGo_TDeck_Pro_Max)
-  meckHapticBuzz();
+  // Half a second at full drive: much easier to feel than a library effect
+  if (meckHapticReady()) {
+    s_haptic.rtpStart(0x7F);
+    _sosVibOffAt = millis() + 500;
+  }
+#endif
+}
+
+void UITask::sosPulsesDone() {
+#if defined(LilyGo_TDeck_Pro_Max)
+  if (s_hapticReady) s_haptic.rtpStop();
+  _sosVibOffAt = 0;
+  board.motorDisable();   // the next buzz switches it on again
 #endif
 }
 #endif // LilyGo_TDeck_Pro

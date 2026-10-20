@@ -146,6 +146,7 @@ class UITask : public AbstractUITask {
   unsigned long _sosBtnAt = 0;         // when it went down
   bool _sosBtnUsed = false;            // this press already armed / cancelled
   bool _sosDeferredEnter = false;      // the 1 s long press: Enter on release
+  unsigned long _sosVibOffAt = 0;      // countdown vibration ends at (0 = none)
 #endif
 
   // --- Message dedup ring buffer (suppress retry spam at UI level) ---
@@ -317,6 +318,8 @@ public:
   UIScreen* getSosScreen() const { return sos_screen; }
   // Countdown second: keyboard LED flash, and a buzz on the MAX
   void sosPulse();
+  // Countdown over: motor rail off, for the battery
+  void sosPulsesDone();
 #endif
 #ifdef MECK_WEB_READER
   bool isOnWebReader() const { return curr == web_reader; }

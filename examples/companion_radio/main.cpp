@@ -7495,7 +7495,11 @@ void meckSosLoop() {
   if (meckSosFakeFix) { lat = meckSosFakeLat; lon = meckSosFakeLon; live = true; }
 #endif
 
+  static bool wasCounting = false;
   uint16_t acts = meckSos.tick(now, live, lat, lon);
+  bool counting = meckSos.state() == MeckSos::COUNTDOWN;
+  if (wasCounting && !counting && !meckSosDry) ui_task.sosPulsesDone();
+  wasCounting = counting;
 
   // GPS: SOS switches it while it runs, then hands it back to the setting
   if (meckSos.running() || meckSosGpsPhys >= 0) {
@@ -7543,6 +7547,16 @@ void meckSosCmd(const char* arg) {
   } else if (!strcmp(arg, "stop")) {
     meckSos.stop();
     ui_task.forceRefresh();
+#if defined(LilyGo_TDeck_Pro_Max)
+  } else if (!strcmp(arg, "haptic")) {
+    extern void meckHapticDiag();
+    meckHapticDiag();
+  } else if (!strcmp(arg, "pulse")) {
+    ui_task.sosPulse();        // one countdown pulse: flash + buzz
+  } else if (!strncmp(arg, "vib", 3)) {
+    extern void meckHapticTest(const char* arg);
+    meckHapticTest(arg[3] ? arg + 4 : "");
+#endif
   } else if (!strncmp(arg, "fix", 3)) {
     if (sscanf(arg + 3, "%lf %lf", &meckSosFakeLat, &meckSosFakeLon) == 2) {
       meckSosFakeFix = true;
