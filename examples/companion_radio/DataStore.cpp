@@ -306,6 +306,12 @@ void DataStore::loadPrefsInt(const char *filename, NodePrefs& _prefs, double& no
     if (file.read((uint8_t *)&_prefs.lock_sleep, sizeof(_prefs.lock_sleep)) != sizeof(_prefs.lock_sleep)) {
       _prefs.lock_sleep = 1;  // default: power saving on
     }
+    if (file.read((uint8_t *)&_prefs.sos_btn, sizeof(_prefs.sos_btn)) != sizeof(_prefs.sos_btn)) {
+      _prefs.sos_btn = 1;  // default: SOS button on
+    }
+    if (file.read((uint8_t *)&_prefs.sos_channels, sizeof(_prefs.sos_channels)) != sizeof(_prefs.sos_channels)) {
+      _prefs.sos_channels = 0;  // default: public channel only
+    }
 
     // Clamp to valid ranges
     if (_prefs.dark_mode > 1) _prefs.dark_mode = 0;
@@ -327,6 +333,7 @@ void DataStore::loadPrefsInt(const char *filename, NodePrefs& _prefs, double& no
     if (_prefs.ui_lang > 1) _prefs.ui_lang = 0;
     if (_prefs.rx_boosted_gain > 1) _prefs.rx_boosted_gain = 1;
     if (_prefs.lock_sleep > 1) _prefs.lock_sleep = 1;
+    if (_prefs.sos_btn > 1) _prefs.sos_btn = 1;
     // Force NUL termination on each canned message slot in case of garbage
     for (int i = 0; i < (int)(sizeof(_prefs.canned_msgs) / sizeof(_prefs.canned_msgs[0])); i++) {
       _prefs.canned_msgs[i][sizeof(_prefs.canned_msgs[0]) - 1] = '\0';
@@ -402,6 +409,8 @@ void DataStore::savePrefs(const NodePrefs& _prefs, double node_lat, double node_
     file.write((uint8_t *)&_prefs.rx_boosted_gain, sizeof(_prefs.rx_boosted_gain));              // 1524
     file.write((uint8_t *)&_prefs.agc_reset_interval, sizeof(_prefs.agc_reset_interval));        // 1525
     file.write((uint8_t *)&_prefs.lock_sleep, sizeof(_prefs.lock_sleep));                        // 1526
+    file.write((uint8_t *)&_prefs.sos_btn, sizeof(_prefs.sos_btn));                              // 1527
+    file.write((uint8_t *)&_prefs.sos_channels, sizeof(_prefs.sos_channels));                    // 1528
 
     file.close();
   }

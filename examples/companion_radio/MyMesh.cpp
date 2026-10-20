@@ -1798,6 +1798,7 @@ MyMesh::MyMesh(mesh::Radio &radio, mesh::RNG &rng, mesh::RTCClock &rtc, SimpleMe
   _prefs.airtime_factor = 1.0; // one half
   _prefs.rx_boosted_gain = 1;  // boosted RX gain on by default (agc_reset_interval 0 = off)
   _prefs.lock_sleep = 1;       // power saving when locked on by default
+  _prefs.sos_btn = 1;          // SOS on a 3 s hold of the top button
   _prefs.multi_acks = 1;      // redundant ACKs on by default
   strcpy(_prefs.node_name, "NONAME");
   _prefs.freq = LORA_FREQ;
@@ -4016,6 +4017,10 @@ void MyMesh::checkCLIRescueCmd() {
       // Debug: what the location parser finds in a text (nothing is stored)
       extern void meckDebugGeo(const char* text);
       meckDebugGeo(&cli_command[6]);
+    } else if (strcmp(cli_command, "sos") == 0 || memcmp(cli_command, "sos ", 4) == 0) {
+      // Debug: SOS state, dry run, simulated hold / fix (docs/sos.md)
+      extern void meckSosCmd(const char* arg);
+      meckSosCmd(cli_command[3] ? &cli_command[4] : "");
     } else if (memcmp(cli_command, "uigo ", 5) == 0) {
       // Debug: open a screen directly, e.g. "uigo rxlog", "uigo pathed 3"
       extern void meckDebugGoto(const char* arg);

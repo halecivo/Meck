@@ -128,6 +128,15 @@ struct NodePrefs {  // persisted to file
   // which was spare, so older prefs files load it as 0 (off).
   uint8_t client_repeat;           // default 0
 
+  // SOS (docs/sos.md): 1 = holding the top button 3 s starts the SOS
+  // countdown. Older prefs files short-read this field and keep the
+  // default 1.
+  uint8_t sos_btn;                 // default 1
+  // Channels the SOS also goes to, besides the public channel (bit n =
+  // channel n; bit 0 is ignored, the public channel always gets it). Older
+  // prefs files short-read this final field and keep the default 0.
+  uint64_t sos_channels;           // default 0
+
   // --- Font helpers (inline, no overhead) ---
   // Returns the DisplayDriver text-size index for "small/body" text.
   // T-Deck Pro: 0 = built-in 6×8 (or 7pt with custom fonts), 1 = 9pt.

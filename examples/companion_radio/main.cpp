@@ -154,6 +154,13 @@
   #endif
   static void meckRunContactOption(ContactsScreen* cs);   // contacts screen options (O)
 
+  // SOS / emergency mode (docs/sos.md); the code is after meckOwnPosition
+  #include "MeckSos.h"
+  #include "SosScreen.h"
+  MeckSos meckSos;
+  void meckSosLoop();
+  bool meckSosCancelInput();
+
   // SD-backed persistence state
   static bool sdCardReady = false;
 
@@ -1890,6 +1897,7 @@ static void meckLaunchHomeTile(Ui2Tile t) {
       if (the_mesh.advert()) ui_task.showAlert(MECK_TR("Advert sent!", "Annonce envoy\xC3\xA9" "e !"), 1000);
       else ui_task.showAlert(MECK_TR("Advert failed..", "\xC3\x89" "chec de l'annonce.."), 1000);
       break;
+    case UI2_TILE_SOS: ui_task.gotoSosScreen(); break;
     default: break;
   }
 }
@@ -1904,6 +1912,7 @@ static void meckLaunchHomeTile(Ui2Tile t) {
   static void meckHynKeyEvent(uint8_t key_id, bool pressed, void* /*user_data*/) {
     Serial.printf("[key] id=%u pressed=%u\n", key_id, pressed ? 1u : 0u);  // TEMP: confirm mapping
     if (!pressed) return;
+    if (meckSosCancelInput()) return;   // SOS countdown: any pad cancels it
     switch (key_id) {
       case 0:  // heart -- toggle frontlight at the user-set brightness
         // Settings > Experimental Features "Change Backlight to Alt+B" turns
@@ -3417,6 +3426,11 @@ static uint16_t meckWakeLora = 0, meckWakeBtn = 0, meckWakeTimer = 0;
 int meckLockSleepBlocker() {
   NodePrefs* p = the_mesh.getNodePrefs();
   if (!p->lock_sleep) return MECK_SLEEP_OFF;
+  // SOS: awake only while it counts down, its GPS looks for a fix or a send
+  // is due; it switches the GPS itself, so the GPS setting does not count
+  if (meckSos.running()) {
+    if (meckSos.wantsAwake(millis())) return MECK_SLEEP_SOS;
+  } else
   // Radios the user switched on come first: they still drain the battery
   // once the cable is out, so the lock warning names them even on USB.
   if (p->gps_enabled) return MECK_SLEEP_GPS;
@@ -3451,15 +3465,20 @@ static void meckLockSleepStep() {
   if (!locked) return;
   bool inWindow = (long)(millis() - meckAwakeUntil) < 0;
   if (inWindow && meckRxPasses >= 0 && meckRxHandled()) inWindow = false;   // packet done early
-  if (!canSleep || the_mesh.hasPendingWork() || inWindow) {
+  // The button held down: maybe the 3 s SOS hold, which is longer than the
+  // wake window
+  if (!canSleep || the_mesh.hasPendingWork() || inWindow || ui_task.isButtonPressed()) {
     delay(50);   // locked but awake: yield as before
     return;
   }
   meckRxPasses = -1;
 
-  // Sleep until just after the next minute boundary, a LoRa packet or the button
+  // Sleep until just after the next minute boundary, a LoRa packet or the
+  // button, or until the SOS has something to do
   uint32_t secs = rtc_clock.getCurrentTime() % 60;
   uint64_t us = (uint64_t)(60 - secs) * 1000000ULL + 300000ULL;
+  uint32_t sosMs = meckSos.nextEventIn(millis());
+  if (sosMs != 0xFFFFFFFF && (uint64_t)sosMs * 1000ULL + 50000ULL < us) us = (uint64_t)sosMs * 1000ULL + 50000ULL;
   esp_sleep_enable_timer_wakeup(us);
   esp_sleep_enable_ext1_wakeup(1ULL << P_LORA_DIO_1, ESP_EXT1_WAKEUP_ANY_HIGH);
   gpio_wakeup_enable((gpio_num_t)PIN_USER_BTN, GPIO_INTR_LOW_LEVEL);
@@ -3912,6 +3931,9 @@ void loop() {
 
 
   sensors.loop();
+#if defined(LilyGo_TDeck_Pro)
+  meckSosLoop();
+#endif
 
   // Satellite-count diagnostic (MAX): every 10s while GPS is on, print the
   // reported satellite count, fix state and NMEA rate so the multi-constellation
@@ -4793,6 +4815,13 @@ void loop() {
   {
     // Guard: skip touch when locked
     bool touchBlocked = ui_task.isLocked();
+    // SOS screen: keys and the top button only, so a stray touch never picks
+    // anything there; a touch still cancels a countdown
+    if (ui_task.isOnSosScreen()) {
+      touchBlocked = true;
+      int16_t sx, sy;
+      if (readTouch(&sx, &sy)) meckSosCancelInput();
+    }
     // Settings > Experimental Features "Delete all contacts" box open: keys
     // only, so a stray touch can't confirm it or leave Settings mid-purge
     if (ui_task.isOnSettingsScreen()) {
@@ -5120,6 +5149,9 @@ void handleKeyboardInput() {
   // non-back action (notes/contacts item delete) handle KEY_CANCEL explicitly.
   if (key == '\b' && keyboard.wasShiftConsumed()) key = KEY_CANCEL;
 
+  // SOS countdown: any key cancels it, locked or not
+  if (meckSosCancelInput()) return;
+
   // Lock warning up: Enter / Q decide, other keys are swallowed
   if (ui_task.isLockPromptActive()) {
     ui_task.lockPromptKey(key);
@@ -5129,6 +5161,18 @@ void handleKeyboardInput() {
   // Block all keyboard input while lock screen is active.
   // Still read the key above to clear the TCA8418 buffer.
   if (ui_task.isLocked()) return;
+
+  // SOS screen: it takes every key (Space confirms, Q backs out, the rest
+  // does nothing), so no shortcut can fire from under it
+  if (ui_task.isOnSosScreen()) {
+    ui_task.injectKey(key);
+    SosScreen* sos = (SosScreen*)ui_task.getSosScreen();
+    if (sos->wantsExit()) {
+      sos->clearExit();
+      ui_task.gotoHomeScreen();
+    }
+    return;
+  }
 
   // Telemetry request prompt (experimental): Enter allows, Q denies
   if (ui_task.isTelemetryPromptActive()) {
@@ -7248,6 +7292,288 @@ static void meckSendLocationTo(int idx) {
     ui_task.showAlert(MECK_TR("Send failed", "\xC3\x89" "chec de l'envoi"), 1500);
   }
 }
+
+#if defined(LilyGo_TDeck_Pro)
+// ============================================================================
+// SOS / emergency mode (docs/sos.md)
+//
+// MeckSos (ui-new/MeckSos.h) decides what happens when; this part carries it
+// out: the GPS power, the messages to the public channel and the channels
+// picked in Settings, the repeater echoes, the countdown buzz. The debug CLI
+// "sos dry 1" turns sending into a serial print and silences the buzz, for
+// testing on the device without transmitting.
+// ============================================================================
+static bool meckSosDry = false;
+static int8_t meckSosGpsPhys = -1;     // GPS power as SOS set it; -1 = the setting rules
+#ifdef MECK_UI_SCREENDUMP
+static bool meckSosFakeFix = false;    // debug CLI "sos fix <lat> <lon>"
+static double meckSosFakeLat = 0, meckSosFakeLon = 0;
+#endif
+
+// Our recent sends, to look up the repeaters that passed them on
+struct MeckSosSent {
+  uint8_t fp[SENT_FINGERPRINT_SIZE];
+  uint8_t msg;              // MeckSos::Msg
+  uint32_t at;
+  bool used;
+};
+static MeckSosSent meckSosSent[8];
+static uint8_t meckSosSentNext = 0;
+
+int meckSosBattPct() {
+#if HAS_BQ27220
+  return ui_task.getBatteryPercent();
+#else
+  uint16_t mv = ui_task.getBattMilliVolts();
+  return mv > 0 ? constrain(((int)mv - 3000) * 100 / 1200, 0, 100) : -1;
+#endif
+}
+
+// Message received on this channel: shown on the SOS screen as a reply
+bool meckSosChannelWatched(uint8_t channel_idx) {
+  if (channel_idx == 0) return true;
+  if (channel_idx >= MAX_GROUP_CHANNELS || channel_idx >= 64) return false;
+  return (the_mesh.getNodePrefs()->sos_channels >> channel_idx) & 1;
+}
+
+// GPS power for the SOS; the GPS setting itself is not changed
+static void meckSosGpsPower(bool on) {
+#if ENV_INCLUDE_GPS == 1 && !defined(MECK_40MHZ_TEST)
+  LocationProvider* lp = sensors.getLocationProvider();
+  if (on) {
+  #ifdef PIN_GPS_EN
+    digitalWrite(PIN_GPS_EN, GPS_EN_ACTIVE);
+  #endif
+  #if defined(LilyGo_TDeck_Pro_Max)
+    board.gpsPowerOn();
+  #endif
+    sensors.setSettingValue("gps", "1");
+    // The NMEA parser still holds the fix from before the power cut and would
+    // report it as current until the module speaks: forget it
+    if (lp) lp->syncTime();
+  } else {
+    sensors.setSettingValue("gps", "0");
+  #ifdef PIN_GPS_EN
+    digitalWrite(PIN_GPS_EN, !GPS_EN_ACTIVE);
+  #endif
+  #if defined(LilyGo_TDeck_Pro_Max)
+    board.gpsPowerOff();
+  #endif
+  }
+  Serial.printf("[SOS] GPS %s\n", on ? "on" : "off");
+#endif
+}
+
+// Sends text to one channel; false if it could not go out
+static bool meckSosSendTo(uint8_t ch, const char* text, MeckSos::Msg m) {
+  ChannelDetails cd;
+  if (!the_mesh.getChannel(ch, cd) || (ch != 0 && cd.name[0] == 0)) return false;
+  if (meckSosDry) {
+    Serial.printf("[SOS] dry run, not sent to %u '%s': %s\n", ch, cd.name, text);
+    return true;
+  }
+  const char* name = the_mesh.getNodePrefs()->node_name;
+  uint32_t ts = rtc_clock.getCurrentTime();
+  if (!the_mesh.sendGroupMessage(ts, cd.channel, name, text, strlen(text))) return false;
+  meckTxLog(MECK_TXLOG_CH_SEND, ch);
+  ui_task.addSentChannelMessage(ch, name, text);
+  the_mesh.queueSentChannelMessage(ch, ts, name, text);
+  MeckSosSent& s = meckSosSent[meckSosSentNext];
+  s.used = the_mesh.getLastSentFingerprint(s.fp);
+  s.msg = m;
+  s.at = millis();
+  meckSosSentNext = (meckSosSentNext + 1) % (sizeof(meckSosSent) / sizeof(meckSosSent[0]));
+  Serial.printf("[SOS] sent to %u '%s': %s\n", ch, cd.name, text);
+  return true;
+}
+
+// One message to the public channel and every SOS channel
+static void meckSosSend(MeckSos::Msg m) {
+  uint32_t now = millis();
+  char text[MAX_TEXT_LEN];
+  meckSos.buildText(m, text, sizeof(text), now, meckSosBattPct());
+  cpuPower.setBoost();   // crypto + radio TX
+  if (!meckSosSendTo(0, text, m)) {
+    Serial.println("[SOS] send failed, retrying in 10 s");
+    meckSos.onSendFailed(now);
+    return;
+  }
+  uint64_t mask = the_mesh.getNodePrefs()->sos_channels;
+  for (uint8_t ch = 1; ch < MAX_GROUP_CHANNELS && ch < 64; ch++) {
+    if ((mask >> ch) & 1) meckSosSendTo(ch, text, m);
+  }
+  meckSos.onSent(m, now);
+  if (m == MeckSos::MSG_OK) ui_task.showAlert(MECK_TR("I'm OK sent", "Tout va bien envoy\xC3\xA9"), 2000);
+  ui_task.keepAlive();
+  ui_task.forceRefresh();
+}
+
+// Repeaters that passed our recent sends on (MyMesh tracks them for 10 min)
+static void meckSosPollEchoes() {
+  uint32_t now = millis();
+  for (auto& s : meckSosSent) {
+    if (!s.used) continue;
+    if (now - s.at > SENT_TRACK_EXPIRY_MS) { s.used = false; continue; }
+    uint8_t bph = 0, count = 0;
+    uint8_t hash[SENT_ECHO_MAX * 3];
+    int8_t snr[SENT_ECHO_MAX];
+    the_mesh.getHeardBy(s.fp, SENT_FINGERPRINT_SIZE, bph, count, hash, snr, SENT_ECHO_MAX);
+    uint8_t before = meckSos.heardCount() + meckSos.okHeardCount();
+    for (uint8_t e = 0; e < count && bph; e++) meckSos.addEcho((MeckSos::Msg)s.msg, &hash[e * bph], bph, snr[e]);
+    if (meckSos.heardCount() + meckSos.okHeardCount() != before) ui_task.forceRefresh();
+  }
+}
+
+// The top button was held 3 s
+void meckSosHold() {
+  if (!meckSos.running()) {
+    if (!the_mesh.getNodePrefs()->sos_btn) return;
+    if (!meckSos.arm(millis(), MeckSos::COUNTDOWN_HOLD_MS)) return;
+    Serial.println("[SOS] countdown started (button)");
+    for (auto& s : meckSosSent) s.used = false;
+    if (!ui_task.isLocked()) ui_task.gotoSosScreen();   // locked: the lock screen shows it
+    ui_task.keepAlive();
+    ui_task.forceRefresh();
+  } else if (meckSos.state() != MeckSos::COUNTDOWN) {
+    // Running: the menu, for I'm OK or Stop
+    if (ui_task.isLocked()) ui_task.unlockScreen();     // goes to the SOS screen
+    else ui_task.gotoSosScreen();
+  }
+}
+
+// Key, touch, pad or button press: cancels a countdown. True if it did.
+bool meckSosCancelInput() {
+  if (!meckSos.cancelCountdown()) return false;
+  Serial.println("[SOS] countdown cancelled");
+  ui_task.keepAlive();
+  ui_task.forceRefresh();
+  return true;
+}
+
+// A choice from the SOS screen menu
+void meckSosConfirm(int item) {
+  uint32_t now = millis();
+  switch (item) {
+    case SosScreen::ITEM_SOS:
+      if (meckSos.running()) meckSos.stop();
+      if (meckSos.arm(now, MeckSos::COUNTDOWN_MENU_MS)) {
+        for (auto& s : meckSosSent) s.used = false;
+        Serial.println("[SOS] countdown started (menu)");
+      }
+      break;
+    case SosScreen::ITEM_OK:
+      meckSos.requestOk(now);
+      Serial.println("[SOS] I'm OK requested");
+      break;
+    case SosScreen::ITEM_STOP:
+      meckSos.stop();
+      Serial.println("[SOS] stopped");
+      break;
+    default: break;
+  }
+  ui_task.forceRefresh();
+}
+
+void meckSosLoop() {
+  uint32_t now = millis();
+  NodePrefs* p = the_mesh.getNodePrefs();
+
+  // A live fix: only while the GPS is powered (the parser keeps its last
+  // fix after a power cut)
+  bool powered = meckSosGpsPhys >= 0 ? meckSosGpsPhys != 0 : p->gps_enabled != 0;
+  bool live = false;
+  double lat = 0, lon = 0;
+#if ENV_INCLUDE_GPS == 1
+  LocationProvider* lp = sensors.getLocationProvider();
+  if (powered && lp && lp->isValid()) {
+    lat = lp->getLatitude() / 1000000.0;
+    lon = lp->getLongitude() / 1000000.0;
+    live = true;
+  }
+#endif
+#ifdef MECK_UI_SCREENDUMP
+  if (meckSosFakeFix) { lat = meckSosFakeLat; lon = meckSosFakeLon; live = true; }
+#endif
+
+  uint16_t acts = meckSos.tick(now, live, lat, lon);
+
+  // GPS: SOS switches it while it runs, then hands it back to the setting
+  if (meckSos.running() || meckSosGpsPhys >= 0) {
+    if (meckSosGpsPhys < 0) meckSosGpsPhys = p->gps_enabled ? 1 : 0;
+    bool want = meckSos.running() ? meckSos.gpsOn() : p->gps_enabled != 0;
+    if ((meckSosGpsPhys != 0) != want) {
+      meckSosGpsPower(want);
+      meckSosGpsPhys = want ? 1 : 0;
+    }
+    if (!meckSos.running()) meckSosGpsPhys = -1;
+  }
+
+  if (acts & MeckSos::ACT_PULSE) {
+    if (meckSosDry) ui_task.forceRefresh();   // tests: no buzz, no flashing light
+    else ui_task.sosPulse();
+  }
+  if (acts & MeckSos::ACT_SEND_SOS) meckSosSend(MeckSos::MSG_SOS);
+  if (acts & MeckSos::ACT_SEND_OK) meckSosSend(meckSos.pendingOkMsg());
+  if (acts & MeckSos::ACT_FINISHED) {
+    Serial.println("[SOS] I'm OK was heard by a repeater: SOS ended");
+    ui_task.showAlert(MECK_TR("I'm OK was heard. SOS ended.", "OK entendu. SOS termin\xC3\xA9."), 3000);
+  }
+  if (acts & MeckSos::ACT_REDRAW) ui_task.forceRefresh();
+
+  static unsigned long nextEchoPoll = 0;
+  if (meckSos.running() && (long)(now - nextEchoPoll) >= 0) {
+    nextEchoPoll = now + 2000;
+    meckSosPollEchoes();
+  }
+}
+
+#ifdef MECK_UI_SCREENDUMP
+// Debug CLI "sos ...": state, dry run, a simulated hold or fix. Arming from
+// the CLI needs the dry run, so a test never transmits.
+void meckSosCmd(const char* arg) {
+  uint32_t now = millis();
+  char text[MAX_TEXT_LEN];
+  if (!strncmp(arg, "dry", 3)) {
+    if (arg[3] == ' ') meckSosDry = atoi(arg + 4) != 0;
+    Serial.printf("sos: dry run %s\n", meckSosDry ? "on (nothing is sent, no buzz)" : "off");
+  } else if (!strcmp(arg, "hold") || !strcmp(arg, "menu")) {
+    if (!meckSosDry) { Serial.println("sos: needs 'sos dry 1' first"); return; }
+    if (!strcmp(arg, "hold")) meckSosHold();
+    else ui_task.gotoSosScreen();
+  } else if (!strcmp(arg, "stop")) {
+    meckSos.stop();
+    ui_task.forceRefresh();
+  } else if (!strncmp(arg, "fix", 3)) {
+    if (sscanf(arg + 3, "%lf %lf", &meckSosFakeLat, &meckSosFakeLon) == 2) {
+      meckSosFakeFix = true;
+    } else {
+      meckSosFakeFix = false;
+      meckSos.forgetFix();   // a real SOS must never send the made-up position
+    }
+    Serial.printf("sos: fake fix %s\n", meckSosFakeFix ? "on" : "off");
+  } else if (!strcmp(arg, "text")) {
+    meckSos.buildText(MeckSos::MSG_SOS, text, sizeof(text), now, meckSosBattPct());
+    Serial.printf("sos: %s\n", text);
+    meckSos.buildText(MeckSos::MSG_OK_CANCEL, text, sizeof(text), now, meckSosBattPct());
+    Serial.printf("sos: %s\n", text);
+  } else {
+    static const char* const st[] = { "idle", "countdown", "active", "cancelling" };
+    char age[12] = "-";
+    if (meckSos.hasFix()) MeckSos::formatAge(age, sizeof(age), meckSos.fixAgeMs(now));
+    uint32_t ev = meckSos.nextEventIn(now);
+    Serial.printf("sos: %s countdown=%d sends=%u ok=%u heard=%u okHeard=%u next=%lus event=%lds "
+                  "gps=%d fix=%s awake=%d dry=%d btn=%d channels=0x%08lx%08lx\n",
+                  st[meckSos.state()], meckSos.countdownSecs(now), meckSos.sends(), meckSos.okSends(),
+                  meckSos.heardCount(), meckSos.okHeardCount(), (unsigned long)(meckSos.nextSendIn(now) / 1000),
+                  ev == 0xFFFFFFFF ? -1L : (long)(ev / 1000), meckSos.gpsOn(), age, meckSos.wantsAwake(now),
+                  meckSosDry, the_mesh.getNodePrefs()->sos_btn,
+                  (unsigned long)(the_mesh.getNodePrefs()->sos_channels >> 32),
+                  (unsigned long)(the_mesh.getNodePrefs()->sos_channels & 0xFFFFFFFFu));
+    Serial.println("  sos dry 0|1 | hold | menu | stop | fix <lat> <lon> | fix | text");
+  }
+}
+#endif
+#endif
 
 #if HAS_GPS
 // The map centred on a point, with a marker for it (and the contacts as usual)

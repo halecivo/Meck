@@ -58,6 +58,7 @@ void statusHeader(Ui2Canvas& c) {
   if (st.charging) { x -= 12; c.icon(x, 6, UI2_IC_BOLT, 12); x -= 1; }
 
   const Ui2Icon order[] = {
+    st.sosActive ? UI2_IC_WARN : UI2_NO_ICON,
     st.unread ? UI2_IC_MSGDOT : UI2_NO_ICON,
     st.alarmOn ? UI2_IC_ALARM : UI2_NO_ICON,
     st.audioPlaying ? UI2_IC_PLAY : UI2_NO_ICON,

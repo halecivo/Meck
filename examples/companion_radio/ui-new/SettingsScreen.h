@@ -174,7 +174,12 @@ enum SettingsRowType : uint8_t {
 #if defined(LilyGo_TDeck_Pro_Max) && !defined(MECK_40MHZ_TEST)
   ROW_LOCK_SLEEP,     // Power saving (light sleep) while locked
 #endif
-  ROW_GPS_BAUD,       // GPS baud rate picker (requires reboot)
+#if defined(LilyGo_TDeck_Pro)
+  ROW_SOS_SUBMENU,    // Folder row: enters the SOS sub-screen
+  ROW_SOS_BUTTON,     // Toggle: 3 s hold of the top button starts the SOS countdown
+  ROW_SOS_CHANNEL,    // A channel the SOS goes to; param = channel index (0 = public, always)
+#endif
+  ROW_GPS_BAUD,      // GPS baud rate picker (requires reboot)
   ROW_PATH_HASH_SIZE, // Path hash size (1, 2, or 3 bytes per hop)
   ROW_DEFAULT_SCOPE,  // Device-wide default region (text editor)
   #ifdef MECK_WIFI_COMPANION
@@ -273,6 +278,7 @@ enum SubScreen : uint8_t {
   SUB_EXPORT_FLAGS,   // Export checkboxes + trigger
   #endif
   SUB_EXPERIMENTAL,   // Experimental Features sub-screen
+  SUB_SOS,            // SOS: button and the channels it goes to
 };
 
 // Delete all contacts (Experimental Features) overlay phases
@@ -311,13 +317,13 @@ enum FmPhase : uint8_t {
 #define SETTINGS_LORA_ANTENNA_ROWS 0
 #endif
 #if defined(HAS_4G_MODEM) && defined(MECK_WIFI_COMPANION)
-#define SETTINGS_MAX_ROWS (63 + SETTINGS_LORA_ANTENNA_ROWS)  // Extra rows for IMEI, Carrier, APN, contacts, WiFi, scope, export
+#define SETTINGS_MAX_ROWS (64 + SETTINGS_LORA_ANTENNA_ROWS)  // Extra rows for IMEI, Carrier, APN, contacts, WiFi, scope, export, SOS
 #elif defined(HAS_4G_MODEM)
-#define SETTINGS_MAX_ROWS (61 + SETTINGS_LORA_ANTENNA_ROWS)  // Extra rows for IMEI, Carrier, APN + contacts + scope + export
+#define SETTINGS_MAX_ROWS (62 + SETTINGS_LORA_ANTENNA_ROWS)  // Extra rows for IMEI, Carrier, APN + contacts + scope + export + SOS
 #elif defined(MECK_WIFI_COMPANION)
-#define SETTINGS_MAX_ROWS (57 + SETTINGS_LORA_ANTENNA_ROWS)  // Extra rows for contacts + WiFi + scope + export
+#define SETTINGS_MAX_ROWS (58 + SETTINGS_LORA_ANTENNA_ROWS)  // Extra rows for contacts + WiFi + scope + export + SOS
 #else
-#define SETTINGS_MAX_ROWS (55 + SETTINGS_LORA_ANTENNA_ROWS)  // Contacts section + scope + export
+#define SETTINGS_MAX_ROWS (56 + SETTINGS_LORA_ANTENNA_ROWS)  // Contacts section + scope + export + SOS
 #endif
 #define SETTINGS_TEXT_BUF  33  // 32 chars + null
 #define SETTINGS_FLIP_MS   2000  // channel row too long for the line: time on its start, then its end
@@ -562,6 +568,15 @@ private:
 #ifdef ESP32
       addRow(ROW_TELEM_PROMPT);
 #endif
+#if defined(LilyGo_TDeck_Pro)
+    } else if (_subScreen == SUB_SOS) {
+      // --- SOS sub-screen: the button, then every channel ---
+      addRow(ROW_SOS_BUTTON);
+      for (uint8_t i = 0; i < MAX_GROUP_CHANNELS && i < 64; i++) {
+        ChannelDetails ch;
+        if (the_mesh.getChannel(i, ch) && (i == 0 || ch.name[0] != '\0')) addRow(ROW_SOS_CHANNEL, i);
+      }
+#endif
     } else {
       // --- Top-level settings list ---
 #if defined(LilyGo_TDeck_Pro_Max)
@@ -599,6 +614,9 @@ private:
 #endif
 #if defined(LilyGo_TDeck_Pro_Max) && !defined(MECK_40MHZ_TEST)
       addRow(ROW_LOCK_SLEEP);
+#endif
+#if defined(LilyGo_TDeck_Pro)
+      addRow(ROW_SOS_SUBMENU);
 #endif
       #ifdef MECK_WIFI_COMPANION
       addRow(ROW_WIFI_SETUP);
@@ -2283,6 +2301,32 @@ public:
       }
 #endif
 
+#if defined(LilyGo_TDeck_Pro)
+      case ROW_SOS_SUBMENU:
+        display.setColor(selected ? DisplayDriver::DARK : DisplayDriver::GREEN);
+        display.print("SOS >>");
+        break;
+
+      case ROW_SOS_BUTTON:
+        snprintf(tmp, sizeof(tmp), MECK_TR("Top button 3 s starts SOS: %s", "Bouton du haut 3 s, SOS : %s"),
+                 _prefs->sos_btn ? MECK_TR("ON", "OUI") : MECK_TR("OFF", "NON"));
+        display.print(tmp);
+        break;
+
+      case ROW_SOS_CHANNEL: {
+        uint8_t ci = _rows[i].param;
+        ChannelDetails ch;
+        const char* name = (the_mesh.getChannel(ci, ch) && ch.name[0]) ? ch.name : "Public";
+        if (ci == 0)
+          snprintf(tmp, sizeof(tmp), MECK_TR("%s: always", "%s : toujours"), name);
+        else
+          snprintf(tmp, sizeof(tmp), "%s: %s", name,
+                   ((_prefs->sos_channels >> ci) & 1) ? MECK_TR("ON", "OUI") : MECK_TR("OFF", "NON"));
+        display.print(tmp);
+        break;
+      }
+#endif
+
       #ifdef MECK_WIFI_COMPANION
       case ROW_WIFI_SETUP:
         if (WiFi.status() == WL_CONNECTED) {
@@ -3082,6 +3126,7 @@ public:
     else if (_subScreen == SUB_EXPORT_IMPORT || _subScreen == SUB_EXPORT_FLAGS) title = MECK_TR("Export / import", "Exporter / importer");
   #endif
     else if (_subScreen == SUB_EXPERIMENTAL) title = MECK_TR("Experimental", "Exp\xC3\xA9rimental");
+    else if (_subScreen == SUB_SOS) title = MECK_TR("Settings \xC2\xB7 SOS", "R\xC3\xA9glages \xC2\xB7 SOS");
 
     int start, end, page, pages;
     v2Page(_cursor, start, end, page, pages);
@@ -4645,6 +4690,29 @@ public:
           Serial.printf("Settings: Lock power saving = %s\n",
                         _prefs->lock_sleep ? "ON" : "OFF");
           break;
+#endif
+#if defined(LilyGo_TDeck_Pro)
+        case ROW_SOS_SUBMENU:
+          _savedTopCursor = _cursor;
+          _subScreen = SUB_SOS;
+          _cursor = 0;
+          _scrollTop = 0;
+          rebuildRows();
+          Serial.println("Settings: entered SOS sub-screen");
+          break;
+        case ROW_SOS_BUTTON:
+          _prefs->sos_btn = _prefs->sos_btn ? 0 : 1;
+          the_mesh.savePrefs();
+          Serial.printf("Settings: SOS button = %s\n", _prefs->sos_btn ? "ON" : "OFF");
+          break;
+        case ROW_SOS_CHANNEL: {
+          uint8_t ci = _rows[_cursor].param;
+          if (ci == 0) break;   // the public channel always gets the SOS
+          _prefs->sos_channels ^= (uint64_t)1 << ci;
+          the_mesh.savePrefs();
+          Serial.printf("Settings: SOS to channel %u = %s\n", ci, ((_prefs->sos_channels >> ci) & 1) ? "ON" : "OFF");
+          break;
+        }
 #endif
         #ifdef MECK_WIFI_COMPANION
         case ROW_WIFI_SETUP: {

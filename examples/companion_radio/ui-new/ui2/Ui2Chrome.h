@@ -25,6 +25,7 @@ struct Ui2Status {
   uint8_t wifiLevel = 0;      // 0 = not joined to a network, 1-3 = signal
   bool gpsOn = false;
   bool alarmOn = false;
+  bool sosActive = false;     // SOS counting down or being sent
   bool audioPlaying = false;
   bool silent = false;
   bool externalAntenna = false;

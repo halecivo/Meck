@@ -37,6 +37,7 @@ enum MeckSleepBlock {
   MECK_SLEEP_MODEM,      // 4G modem on
   MECK_SLEEP_WIFI,       // Wi-Fi on
   MECK_SLEEP_AUDIO,      // audio playing or recently used
+  MECK_SLEEP_SOS,        // SOS: counting down, GPS looking for a fix, or a send due
 };
 
 #ifdef HAS_4G_MODEM
@@ -139,6 +140,12 @@ class UITask : public AbstractUITask {
   int _lockPromptReason = 0;            // MeckSleepBlock shown in the warning
   unsigned long _lastInputMillis = 0;  // Auto-lock idle tracking
   unsigned long _lastLockRefresh = 0;  // Periodic lock screen clock update
+  UIScreen* sos_screen;                // SOS countdown / status / menu
+  // Top-button hold for SOS (docs/sos.md)
+  bool _sosBtnDown = false;            // button seen down
+  unsigned long _sosBtnAt = 0;         // when it went down
+  bool _sosBtnUsed = false;            // this press already armed / cancelled
+  bool _sosDeferredEnter = false;      // the 1 s long press: Enter on release
 #endif
 
   // --- Message dedup ring buffer (suppress retry spam at UI level) ---
@@ -304,6 +311,12 @@ public:
     return _display != NULL && _display->isOn() && (long)(_next_refresh - millis()) <= 0;
   }
   void lockPromptKey(char c);
+  // SOS screen (docs/sos.md). gotoSosScreen() opens it with nothing selected.
+  void gotoSosScreen();
+  bool isOnSosScreen() const { return curr == sos_screen; }
+  UIScreen* getSosScreen() const { return sos_screen; }
+  // Countdown second: keyboard LED flash, and a buzz on the MAX
+  void sosPulse();
 #endif
 #ifdef MECK_WEB_READER
   bool isOnWebReader() const { return curr == web_reader; }
