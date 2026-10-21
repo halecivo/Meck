@@ -3,6 +3,11 @@
 //
 //   g++ -std=c++11 -Wall -I examples/companion_radio/ui-new test/sos/test_sos.cpp -o test_sos && ./test_sos
 //
+// On Windows through WSL (g++ is installed in the "Ubuntu" distro), from the
+// repository root:
+//
+//   wsl -d Ubuntu -- bash -c "g++ -std=c++11 -Wall -fsanitize=address,undefined -I examples/companion_radio/ui-new test/sos/test_sos.cpp -o /tmp/test_sos && /tmp/test_sos"
+//
 // Each test drives MeckSos with made-up times, as main.cpp does with millis().
 
 #include "MeckSos.h"
@@ -275,7 +280,8 @@ static void testReplyPriority() {
   s.setReply("Salvamont", "On our way", 2000 + MeckSos::REPLY_KEEP_MS + 1000, true);
   s.setReply("#family", "Coming too", 2000 + MeckSos::REPLY_KEEP_MS + 2000, true);
   CHECK(strstr(s.reply(), "Coming too") != nullptr);                 // important replaces important
-  s.arm(10000000, 1000);                                             // a new SOS starts clean
+  s.stop();
+  CHECK(s.arm(10000000, 1000));                                      // a new SOS starts clean
   CHECK(s.reply()[0] == 0);
 }
 
