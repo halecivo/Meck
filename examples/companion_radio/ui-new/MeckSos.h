@@ -39,14 +39,13 @@ public:
   // How the last SOS ended, for the screen
   enum Outcome : uint8_t { OUT_NONE, OUT_COUNTDOWN_CANCELLED, OUT_STOPPED, OUT_OK_CONFIRMED };
 
-  // tick() result bits
+  // tick() result bits. The GPS is not among them: main.cpp keeps the
+  // hardware in line with gpsOn() every loop.
   static const uint16_t ACT_SEND_SOS = 1 << 0;
   static const uint16_t ACT_SEND_OK  = 1 << 1;   // MSG_OK_CANCEL or MSG_OK: see pendingOkMsg()
-  static const uint16_t ACT_GPS_ON   = 1 << 2;
-  static const uint16_t ACT_GPS_OFF  = 1 << 3;
-  static const uint16_t ACT_PULSE    = 1 << 4;   // countdown second: buzz, flash, redraw
-  static const uint16_t ACT_REDRAW   = 1 << 5;
-  static const uint16_t ACT_FINISHED = 1 << 6;   // "I'm OK" confirmed, back to IDLE
+  static const uint16_t ACT_PULSE    = 1 << 2;   // countdown second: buzz, flash, redraw
+  static const uint16_t ACT_REDRAW   = 1 << 3;
+  static const uint16_t ACT_FINISHED = 1 << 4;   // "I'm OK" confirmed, back to IDLE
 
   static const uint32_t HOLD_MS           = 3000;     // top button hold that arms the countdown
   static const uint32_t COUNTDOWN_HOLD_MS = 10000;    // countdown after the hold
@@ -58,6 +57,7 @@ public:
   static const uint32_t RETRY_MS          = 10000;    // after a send that failed
   static const uint8_t  OK_MIN_SENDS      = 2;
   static const uint8_t  ECHO_MAX          = 16;       // distinct repeaters remembered
+  static const uint32_t REPLY_KEEP_MS     = 1800000;  // a DM is not pushed off by public chatter for this long
 
   // Gap after the n-th send (n = 1, 2, ...): 1, 2, 5, then 10 minutes
   static uint32_t intervalAfter(uint16_t n) {
@@ -86,6 +86,7 @@ public:
     _holdoffUntil = 0;
     _outcome = OUT_NONE;
     _reply[0] = 0;
+    _replyImportant = false;
     return true;
   }
 
@@ -169,11 +170,7 @@ public:
     }
     if (_state == CANCELLING && !held && reached(now, _nextSendAt)) acts |= ACT_SEND_OK;
 
-    bool want = gpsWanted(now);
-    if (want != _gpsOn) {
-      _gpsOn = want;
-      acts |= want ? ACT_GPS_ON : ACT_GPS_OFF;
-    }
+    _gpsOn = gpsWanted(now);
     return acts;
   }
 
@@ -231,10 +228,14 @@ public:
   void forgetFix() { _hasFix = false; }
 
   // A message arrived on the public / an SOS channel or as a DM while an
-  // SOS runs: shown on the SOS screen so a reply is not missed
-  void setReply(const char* from, const char* text, uint32_t now) {
+  // SOS runs: shown on the SOS screen so a reply is not missed. important =
+  // a DM or an SOS channel; public chatter does not replace one of those
+  // for REPLY_KEEP_MS.
+  void setReply(const char* from, const char* text, uint32_t now, bool important) {
+    if (!important && _replyImportant && _reply[0] && now - _replyAt < REPLY_KEEP_MS) return;
     snprintf(_reply, sizeof(_reply), "%s: %s", from ? from : "", text ? text : "");
     _replyAt = now;
+    _replyImportant = important;
   }
 
   // --- Message text -----------------------------------------------------------
@@ -344,6 +345,7 @@ private:
   int8_t _bestSnr = -128;
   char _reply[96] = "";
   uint32_t _replyAt = 0;
+  bool _replyImportant = false;
 
   static bool reached(uint32_t now, uint32_t t) { return (int32_t)(now - t) >= 0; }
   static void ahead(uint32_t now, uint32_t t, uint32_t& best) {

@@ -18,6 +18,11 @@
 #define CANNED_MSG_SLOTS  10
 #define CANNED_MSG_LEN    134
 
+// SOS channels (besides the public one): how many, and how many bytes of a
+// channel's secret identify it
+#define SOS_CHANNELS_MAX    8
+#define SOS_CHANNEL_ID_LEN  8
+
 struct NodePrefs {  // persisted to file
   float airtime_factor;
   char node_name[32];
@@ -132,10 +137,12 @@ struct NodePrefs {  // persisted to file
   // countdown. Older prefs files short-read this field and keep the
   // default 1.
   uint8_t sos_btn;                 // default 1
-  // Channels the SOS also goes to, besides the public channel (bit n =
-  // channel n; bit 0 is ignored, the public channel always gets it). Older
-  // prefs files short-read this final field and keep the default 0.
-  uint64_t sos_channels;           // default 0
+  // Channels the SOS also goes to, besides the public channel (which always
+  // gets it). Kept by the first bytes of each channel's secret rather than
+  // its slot, because deleting a channel moves the ones after it down a
+  // slot. All-zero entries are unused. Older prefs files short-read this
+  // final field and keep the default (none).
+  uint8_t sos_channel_ids[SOS_CHANNELS_MAX][SOS_CHANNEL_ID_LEN];   // default all zero
 
   // --- Font helpers (inline, no overhead) ---
   // Returns the DisplayDriver text-size index for "small/body" text.

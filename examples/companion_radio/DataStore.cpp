@@ -309,8 +309,8 @@ void DataStore::loadPrefsInt(const char *filename, NodePrefs& _prefs, double& no
     if (file.read((uint8_t *)&_prefs.sos_btn, sizeof(_prefs.sos_btn)) != sizeof(_prefs.sos_btn)) {
       _prefs.sos_btn = 1;  // default: SOS button on
     }
-    if (file.read((uint8_t *)&_prefs.sos_channels, sizeof(_prefs.sos_channels)) != sizeof(_prefs.sos_channels)) {
-      _prefs.sos_channels = 0;  // default: public channel only
+    if (file.read((uint8_t *)_prefs.sos_channel_ids, sizeof(_prefs.sos_channel_ids)) != sizeof(_prefs.sos_channel_ids)) {
+      memset(_prefs.sos_channel_ids, 0, sizeof(_prefs.sos_channel_ids));  // default: public channel only
     }
 
     // Clamp to valid ranges
@@ -410,7 +410,7 @@ void DataStore::savePrefs(const NodePrefs& _prefs, double node_lat, double node_
     file.write((uint8_t *)&_prefs.agc_reset_interval, sizeof(_prefs.agc_reset_interval));        // 1525
     file.write((uint8_t *)&_prefs.lock_sleep, sizeof(_prefs.lock_sleep));                        // 1526
     file.write((uint8_t *)&_prefs.sos_btn, sizeof(_prefs.sos_btn));                              // 1527
-    file.write((uint8_t *)&_prefs.sos_channels, sizeof(_prefs.sos_channels));                    // 1528
+    file.write((uint8_t *)_prefs.sos_channel_ids, sizeof(_prefs.sos_channel_ids));              // 1528
 
     file.close();
   }

@@ -190,18 +190,11 @@ void meckHapticTest(const char* arg) {
 
 // Debug CLI "sos haptic": the motor's state, without making it buzz
 void meckHapticDiag() {
-  Wire.beginTransmission(0x5A);
-  int ack = Wire.endTransmission();
+  bool ack = s_haptic.present();
   uint8_t r[7] = { 0, 0, 0, 0, 0, 0, 0 };
   // status, mode, library, feedback, go, rated voltage, overdrive clamp
   const uint8_t regs[7] = { 0x00, 0x01, 0x03, 0x1A, 0x0C, 0x16, 0x17 };
-  for (int i = 0; i < 7 && ack == 0; i++) {
-    Wire.beginTransmission(0x5A);
-    Wire.write(regs[i]);
-    Wire.endTransmission(false);
-    Wire.requestFrom((uint8_t)0x5A, (uint8_t)1);
-    r[i] = Wire.available() ? Wire.read() : 0xFF;
-  }
+  for (int i = 0; i < 7 && ack; i++) r[i] = s_haptic.reg(regs[i]);
   Serial.printf("[Haptic] rail=%d ready=%d ack=%d status=0x%02X mode=0x%02X lib=%u feedback=0x%02X go=%u "
                 "rated=0x%02X odclamp=0x%02X cpu=%uMHz\n",
                 board.xl9555_digitalRead(XL_PIN_MOTOR_EN), s_hapticReady, ack, r[0], r[1], r[2], r[3], r[4],
@@ -2805,9 +2798,11 @@ void UITask::newMsg(uint8_t path_len, const char* from_name, const char* text, i
 
 #if defined(LilyGo_TDeck_Pro)
   // SOS running: a DM or a message on an SOS channel may be the answer, so
-  // the SOS screen shows it, muted channel or not
-  if (meckSos.running() && ((channel_idx == 0xFF && !isRoomMsg) || meckSosChannelWatched(channel_idx))) {
-    meckSos.setReply(from_name, text, millis());
+  // the SOS screen shows it, muted channel or not. Public chatter does not
+  // push a DM or an SOS-channel message off it.
+  bool sosDM = channel_idx == 0xFF && !isRoomMsg;
+  if (meckSos.running() && (sosDM || meckSosChannelWatched(channel_idx))) {
+    meckSos.setReply(from_name, text, millis(), sosDM || channel_idx != 0);
     keepAlive();
     _next_refresh = 100;
   }
@@ -3115,28 +3110,7 @@ void UITask::loop() {
     c = handleTripleClick(KEY_SELECT);
   }
 #if defined(LilyGo_TDeck_Pro)
-  // SOS (docs/sos.md): a 3 s hold arms the countdown (or opens the SOS
-  // menu while one runs); a new press during the countdown cancels it. The
-  // first seconds after boot stay with the CLI rescue long press.
-  {
-    bool down = user_btn.isPressed();
-    unsigned long now = millis();
-    if (down && !_sosBtnDown) {
-      _sosBtnDown = true;
-      _sosBtnAt = now;
-      _sosBtnUsed = meckSosCancelInput();
-      if (_sosBtnUsed) user_btn.cancelClick();
-    } else if (!down && _sosBtnDown) {
-      _sosBtnDown = false;
-      if (_sosDeferredEnter && !_sosBtnUsed) c = KEY_ENTER;
-      _sosDeferredEnter = false;
-    }
-    if (down && !_sosBtnUsed && now - _sosBtnAt >= MeckSos::HOLD_MS && now - ui_started_at >= 8000) {
-      _sosBtnUsed = true;
-      _sosDeferredEnter = false;
-      meckSosHold();
-    }
-  }
+  if (sosPoll()) c = KEY_ENTER;   // a long press released before the SOS hold
 #endif
 #endif
 #if defined(PIN_USER_BTN_ANA)
@@ -3197,14 +3171,6 @@ void UITask::loop() {
     kbBacklightFlashWrite(false);
   #endif
     _kb_flash_off_at = 0;
-  }
-#endif
-
-  // SOS countdown pulse: end the vibration
-#if defined(LilyGo_TDeck_Pro_Max)
-  if (_sosVibOffAt && (long)(millis() - _sosVibOffAt) >= 0) {
-    if (s_hapticReady) s_haptic.rtpStop();
-    _sosVibOffAt = 0;
   }
 #endif
 
@@ -3637,6 +3603,7 @@ void UITask::unlockScreen() {
   _locked = false;
   if (meckSos.running()) {
     ((SosScreen*)sos_screen)->resetMenu();   // SOS running: straight to its menu
+    if (_screenBeforeLock != sos_screen) _screenBeforeSos = _screenBeforeLock;
     setCurrScreen(sos_screen);
   } else if (_screenBeforeLock) {
     setCurrScreen(_screenBeforeLock);
@@ -3654,12 +3621,58 @@ void UITask::unlockScreen() {
   Serial.println("[UI] Screen unlocked — exiting low-power mode");
 }
 
+// SOS (docs/sos.md): a 3 s hold arms the countdown (or opens the SOS menu
+// while one runs); a new press during the countdown cancels it. The first
+// seconds after boot stay with the CLI rescue long press. Also ends the
+// countdown vibration. Runs from loop(), and from main.cpp while loop() is
+// held off (compose mode). True when a long press (Enter) was released
+// before the hold reached 3 s.
+bool UITask::sosPoll() {
+  bool enter = false;
+#if defined(PIN_USER_BTN)
+  bool down = user_btn.isPressed();
+  unsigned long now = millis();
+  if (down && !_sosBtnDown) {
+    _sosBtnDown = true;
+    _sosBtnAt = now;
+    _sosBtnUsed = meckSosCancelInput();
+    if (_sosBtnUsed) user_btn.cancelClick();
+  } else if (!down && _sosBtnDown) {
+    _sosBtnDown = false;
+    enter = _sosDeferredEnter && !_sosBtnUsed;
+    _sosDeferredEnter = false;
+  }
+  if (down && !_sosBtnUsed && now - _sosBtnAt >= MeckSos::HOLD_MS && now - ui_started_at >= 8000) {
+    _sosBtnUsed = true;
+    _sosDeferredEnter = false;
+    meckSosHold();
+  }
+#endif
+#if defined(LilyGo_TDeck_Pro_Max)
+  if (_sosVibOffAt && (long)(millis() - _sosVibOffAt) >= 0) {
+    if (s_hapticReady) s_haptic.rtpStop();
+    _sosVibOffAt = 0;
+  }
+#endif
+  return enter;
+}
+
 void UITask::gotoSosScreen() {
   ((SosScreen*)sos_screen)->resetMenu();
   ((SosScreen*)sos_screen)->clearExit();
+  if (curr != sos_screen && curr != lock_screen) _screenBeforeSos = curr;
   setCurrScreen(sos_screen);
   keepAlive();
   _lastInputMillis = millis();
+  _next_refresh = 0;
+}
+
+void UITask::leaveSosScreen() {
+  UIScreen* back = _screenBeforeSos;
+  _screenBeforeSos = nullptr;
+  if (back) setCurrScreen(back);
+  else gotoHomeScreen();
+  keepAlive();
   _next_refresh = 0;
 }
 
@@ -3724,6 +3737,8 @@ void UITask::toggleGPS() {
         #endif
         #if defined(LilyGo_TDeck_Pro_Max)
           board.gpsPowerOn();  // MAX: GPS power is XL9555-routed, not PIN_GPS_EN
+          extern void meckGpsConfigureSoon();
+          meckGpsConfigureSoon();   // the module may have forgotten it with the power
         #endif
         notify(UIEventType::ack);
       }

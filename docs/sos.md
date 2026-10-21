@@ -8,8 +8,9 @@ as reliably.
 
 1. **Settings > SOS**: the public channel always gets the SOS. Switch on any
    other channel that people you trust listen to (a group channel with
-   friends or family, a regional emergency channel). They only see it if
-   their node has the same channel.
+   friends or family, a regional emergency channel), up to 8. They only see
+   it if their node has the same channel. The choice follows the channel
+   itself, so deleting or reordering channels does not move it.
 2. Tell them that an SOS from you looks like
    `SOS! Need help. [LOC]45.598765,24.612345 fix 2m bat 63% #3`.
 3. Get a GPS fix once before you set off (Home > GPS). A warm GPS finds the

@@ -506,7 +506,7 @@ private:
   int _rxlog_count;  // number of valid entries (<= RXLOG_SIZE)
 
     // Sent message repeat tracking
-  #define SENT_TRACK_SIZE          4
+  #define SENT_TRACK_SIZE          12      // an SOS goes to up to 9 channels at once
   #define SENT_FINGERPRINT_SIZE    12
   #define SENT_TRACK_EXPIRY_MS     600000  // keep heard-by viewable for 10 minutes
   #define SENT_ECHO_MAX            8       // distinct "heard by" repeaters stored per send

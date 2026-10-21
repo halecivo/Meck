@@ -58,6 +58,10 @@ public :
     }
 
     void begin() override {
+        // The parser still holds the fix from before the GPS was switched
+        // off and would report it as current until the module speaks
+        nmea.clear();
+        time_valid = 0;
         if (_peripher_power) _peripher_power->claim();
         if (_pin_en != -1) {
             digitalWrite(_pin_en, PIN_GPS_EN_ACTIVE);

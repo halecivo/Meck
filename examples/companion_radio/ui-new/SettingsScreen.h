@@ -19,6 +19,11 @@ extern const char* meckSleepBlockText(int code);
   #include "ui2/Ui2List.h"
   #include "ui2/Ui2TextCapture.h"
 #endif
+#if defined(LilyGo_TDeck_Pro)
+// SOS channels, kept by channel identity (main.cpp)
+extern bool meckSosChannelSelected(uint8_t ch);
+extern int meckSosChannelToggle(uint8_t ch);
+#endif
 #if defined(MECK_AUDIO_VARIANT) || defined(HAS_4G_MODEM)
 #include "NotifSounds.h"
 #endif
@@ -2321,7 +2326,7 @@ public:
           snprintf(tmp, sizeof(tmp), MECK_TR("%s: always", "%s : toujours"), name);
         else
           snprintf(tmp, sizeof(tmp), "%s: %s", name,
-                   ((_prefs->sos_channels >> ci) & 1) ? MECK_TR("ON", "OUI") : MECK_TR("OFF", "NON"));
+                   meckSosChannelSelected(ci) ? MECK_TR("ON", "OUI") : MECK_TR("OFF", "NON"));
         display.print(tmp);
         break;
       }
@@ -4708,9 +4713,14 @@ public:
         case ROW_SOS_CHANNEL: {
           uint8_t ci = _rows[_cursor].param;
           if (ci == 0) break;   // the public channel always gets the SOS
-          _prefs->sos_channels ^= (uint64_t)1 << ci;
-          the_mesh.savePrefs();
-          Serial.printf("Settings: SOS to channel %u = %s\n", ci, ((_prefs->sos_channels >> ci) & 1) ? "ON" : "OFF");
+          int on = meckSosChannelToggle(ci);
+          if (on < 0) {
+            extern void meckShowAlert(const char* text, int duration_millis);
+            char msg[48];
+            snprintf(msg, sizeof(msg), MECK_TR("At most %d SOS channels", "%d canaux SOS au plus"), SOS_CHANNELS_MAX);
+            meckShowAlert(msg, 1500);
+          }
+          Serial.printf("Settings: SOS to channel %u = %s\n", ci, on > 0 ? "ON" : on == 0 ? "OFF" : "full");
           break;
         }
 #endif

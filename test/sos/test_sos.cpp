@@ -35,14 +35,15 @@ static void testCountdownAndCancel() {
   CHECK(s.countdownSecs(9500) == 2);
   uint16_t a = s.tick(1000, false, 0, 0);
   CHECK(a & MeckSos::ACT_PULSE);
-  CHECK(a & MeckSos::ACT_GPS_ON);                            // GPS starts with the countdown
+  CHECK(s.gpsOn());                                          // GPS starts with the countdown
   CHECK(!(s.tick(1200, false, 0, 0) & MeckSos::ACT_PULSE));  // one pulse per second
   CHECK(s.tick(2000, false, 0, 0) & MeckSos::ACT_PULSE);
   CHECK(s.wantsAwake(2000));
   CHECK(s.cancelCountdown());
   CHECK(s.state() == MeckSos::IDLE);
   CHECK(s.outcome() == MeckSos::OUT_COUNTDOWN_CANCELLED);
-  CHECK(s.tick(3000, false, 0, 0) & MeckSos::ACT_GPS_OFF);
+  s.tick(3000, false, 0, 0);
+  CHECK(!s.gpsOn());
   CHECK(!s.cancelCountdown());                               // nothing to cancel any more
   CHECK(!(run(s, 3000, 20000) & MeckSos::ACT_SEND_SOS));     // and nothing is sent
 }
@@ -261,6 +262,23 @@ static void testMenuSosWhileCancelling() {
   CHECK(s.sends() == 0);
 }
 
+static void testReplyPriority() {
+  MeckSos s;
+  s.arm(0, 1000);
+  s.setReply("Public", "Tom: anyone on the ridge?", 1000, false);
+  CHECK(strstr(s.reply(), "ridge") != nullptr);
+  s.setReply("Salvamont", "We see you, stay put", 2000, true);       // a DM
+  s.setReply("Public", "Eva: nice weather", 3000, false);            // chatter
+  CHECK(strstr(s.reply(), "stay put") != nullptr);                   // the DM stays
+  s.setReply("Public", "Eva: still nice", 2000 + MeckSos::REPLY_KEEP_MS, false);
+  CHECK(strstr(s.reply(), "still nice") != nullptr);                 // until it is old
+  s.setReply("Salvamont", "On our way", 2000 + MeckSos::REPLY_KEEP_MS + 1000, true);
+  s.setReply("#family", "Coming too", 2000 + MeckSos::REPLY_KEEP_MS + 2000, true);
+  CHECK(strstr(s.reply(), "Coming too") != nullptr);                 // important replaces important
+  s.arm(10000000, 1000);                                             // a new SOS starts clean
+  CHECK(s.reply()[0] == 0);
+}
+
 static void testMillisWrap() {
   // millis() wraps after 49.7 days; the schedule must not stall or fire early
   MeckSos s;
@@ -295,6 +313,7 @@ int main() {
   testOneShotOk();
   testHeardCounting();
   testMenuSosWhileCancelling();
+  testReplyPriority();
   testMillisWrap();
   testFormatAge();
   printf("%d checks, %d failed\n", checks, failures);

@@ -147,6 +147,7 @@ class UITask : public AbstractUITask {
   bool _sosBtnUsed = false;            // this press already armed / cancelled
   bool _sosDeferredEnter = false;      // the 1 s long press: Enter on release
   unsigned long _sosVibOffAt = 0;      // countdown vibration ends at (0 = none)
+  UIScreen* _screenBeforeSos = nullptr; // where Q on the SOS screen goes back to
 #endif
 
   // --- Message dedup ring buffer (suppress retry spam at UI level) ---
@@ -314,6 +315,8 @@ public:
   void lockPromptKey(char c);
   // SOS screen (docs/sos.md). gotoSosScreen() opens it with nothing selected.
   void gotoSosScreen();
+  void leaveSosScreen();      // back to the screen it was opened over
+  bool sosPoll();             // top-button hold and countdown vibration (UITask.cpp)
   bool isOnSosScreen() const { return curr == sos_screen; }
   UIScreen* getSosScreen() const { return sos_screen; }
   // Countdown second: keyboard LED flash, and a buzz on the MAX

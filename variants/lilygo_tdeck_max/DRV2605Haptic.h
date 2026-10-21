@@ -58,6 +58,13 @@ public:
 
   // Status register: device ID (bits 7-5), over temperature (1), over current (0)
   uint8_t status() { return readReg(REG_STATUS); }
+  // Any register, for diagnostics
+  uint8_t reg(uint8_t r) { return readReg(r); }
+  // Whether the chip answers on the bus
+  bool present() {
+    _wire->beginTransmission(_addr);
+    return _wire->endTransmission() == 0;
+  }
 
 private:
   static const uint8_t REG_STATUS     = 0x00;
