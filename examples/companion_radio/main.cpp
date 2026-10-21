@@ -4616,8 +4616,14 @@ void loop() {
         Serial.printf("[Call] No answer: %s\n", callEvt.phone);
         ui_task.forceRefresh();
       } else if (callEvt.type == CallEventType::DIAL_FAILED) {
-        ui_task.showAlert(MECK_TR("Call failed", "\xC3\x89" "chec de l'appel"), 2000);
-        Serial.printf("[Call] Dial failed: %s\n", callEvt.phone);
+        char alertBuf[48];
+        if (callEvt.reason[0]) {
+          snprintf(alertBuf, sizeof(alertBuf), MECK_TR("Call failed: %s", "\xC3\x89" "chec : %s"), callEvt.reason);
+        } else {
+          snprintf(alertBuf, sizeof(alertBuf), MECK_TR("Call failed", "\xC3\x89" "chec de l'appel"));
+        }
+        ui_task.showAlert(alertBuf, 3000);
+        Serial.printf("[Call] Dial failed: %s (%s)\n", callEvt.phone, callEvt.reason);
         ui_task.forceRefresh();
       }
     }

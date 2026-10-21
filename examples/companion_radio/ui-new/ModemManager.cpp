@@ -580,13 +580,17 @@ void ModemManager::processURCLine(const char* line) {
   }
 }
 
-void ModemManager::queueCallEvent(CallEventType type, const char* phone, uint32_t duration) {
+void ModemManager::queueCallEvent(CallEventType type, const char* phone, uint32_t duration,
+                                  const char* reason) {
   CallEvent evt;
   memset(&evt, 0, sizeof(evt));
   evt.type = type;
   evt.duration = duration;
   if (phone) {
     strncpy(evt.phone, phone, SMS_PHONE_LEN - 1);
+  }
+  if (reason) {
+    strncpy(evt.reason, reason, sizeof(evt.reason) - 1);
   }
   xQueueSend(_callEvtQueue, &evt, 0);
 }
@@ -602,13 +606,27 @@ bool ModemManager::doDialCall(const char* phone) {
   _callPhone[SMS_PHONE_LEN - 1] = '\0';
   _state = ModemState::DIALING;
 
+  // Network state goes to the log first: a SIM that is not activated yet is
+  // usually refused here, and this is the only place that shows why.
+  logCallDiagnostics();
+
   // ATD<number>; -- the semicolon makes it a voice call (not data)
   char cmd[32];
   snprintf(cmd, sizeof(cmd), "ATD%s;", phone);
 
-  if (!sendAT(cmd, "OK", 30000)) {
-    MESH_DEBUG_PRINTLN("[Modem] ATD failed");
-    queueCallEvent(CallEventType::DIAL_FAILED, phone);
+  drainURCs();
+  Serial.printf("[Modem] TX: %s\n", cmd);
+  MODEM_SERIAL.println(cmd);
+
+  char reason[sizeof(CallEvent::reason)];
+  bool eventQueued = false;
+  if (!waitDialResult(30000, reason, sizeof(reason), eventQueued)) {
+    Serial.printf("[Modem] ATD failed: %s\n", reason);
+    if (!eventQueued) {
+      queueCallEvent(CallEventType::DIAL_FAILED, phone, 0, reason);
+    }
+    // No result code at all: the modem may still be setting the call up
+    if (strcmp(reason, "timeout") == 0) sendAT("AT+CHUP", "OK", 5000);
     _state = ModemState::READY;
     _callPhone[0] = '\0';
     return false;
@@ -620,6 +638,59 @@ bool ModemManager::doDialCall(const char* phone) {
   // For now, assume we're dialing and wait for URCs.
   MESH_DEBUG_PRINTLN("[Modem] ATD OK -- dialing...");
   return true;
+}
+
+bool ModemManager::waitDialResult(uint32_t timeout_ms, char* reason, size_t reasonLen,
+                                  bool& eventQueued) {
+  char line[64];
+  size_t pos = 0;
+  unsigned long start = millis();
+  reason[0] = '\0';
+
+  while (millis() - start < timeout_ms) {
+    while (MODEM_SERIAL.available()) {
+      char ch = MODEM_SERIAL.read();
+      if (ch != '\n') {
+        if (ch != '\r' && pos < sizeof(line) - 1) line[pos++] = ch;
+        continue;
+      }
+      line[pos] = '\0';
+      pos = 0;
+      if (!line[0]) continue;
+      Serial.printf("[Modem] ATD RX: %s\n", line);
+
+      if (strcmp(line, "OK") == 0) return true;
+
+      if (strstr(line, "ERROR") || strcmp(line, "NO DIALTONE") == 0) {
+        // "+CME ERROR: 30" -> "CME ERROR: 30"
+        snprintf(reason, reasonLen, "%s", line[0] == '+' ? line + 1 : line);
+        return false;
+      }
+      if (strcmp(line, "NO CARRIER") == 0 || strcmp(line, "BUSY") == 0 ||
+          strcmp(line, "NO ANSWER") == 0) {
+        // The URC handler queues the matching event and resets the state
+        processURCLine(line);
+        snprintf(reason, reasonLen, "%s", line);
+        eventQueued = true;
+        return false;
+      }
+      processURCLine(line);
+    }
+    vTaskDelay(pdMS_TO_TICKS(10));
+  }
+  snprintf(reason, reasonLen, "timeout");
+  return false;
+}
+
+// Read-only queries; unsupported ones just answer ERROR. sendAT logs each reply.
+void ModemManager::logCallDiagnostics() {
+  sendAT("AT+CREG?", "OK", 2000);
+  sendAT("AT+CEREG?", "OK", 2000);
+  sendAT("AT+CPSI?", "OK", 2000);
+  sendAT("AT+CNMP?", "OK", 2000);
+  sendAT("AT+CVOLTE?", "OK", 2000);
+  sendAT("AT+COPS?", "OK", 2000);
+  sendAT("AT+CSQ", "OK", 2000);
 }
 
 bool ModemManager::doAnswerCall() {

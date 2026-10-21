@@ -125,6 +125,7 @@ struct CallEvent {
   CallEventType type;
   char phone[SMS_PHONE_LEN];   // Caller/callee number (from +CLIP or dial)
   uint32_t duration;            // Call duration in seconds (for ENDED)
+  char reason[24];              // Modem's error text (for DIAL_FAILED), may be empty
 };
 
 // ---------------------------------------------------------------------------
@@ -260,6 +261,11 @@ private:
   bool modemPowerOn();
   bool sendAT(const char* cmd, const char* expect, uint32_t timeout_ms = 2000);
   bool waitResponse(const char* expect, uint32_t timeout_ms, char* buf = nullptr, size_t bufLen = 0);
+  // Wait for the final result code of ATD...; (OK, ERROR, +CME ERROR, NO CARRIER...).
+  // On failure `reason` holds the modem's text; `eventQueued` is set when the
+  // failure already produced a call event (BUSY, NO ANSWER, NO CARRIER).
+  bool waitDialResult(uint32_t timeout_ms, char* reason, size_t reasonLen, bool& eventQueued);
+  void logCallDiagnostics();
   void pollCSQ();
   void pollIncomingSMS();
   bool doSendSMS(const char* phone, const char* body);
@@ -277,7 +283,8 @@ private:
   bool doHangup();
   bool doSendDTMF(char digit);
   bool doSetVolume(uint8_t level);
-  void queueCallEvent(CallEventType type, const char* phone = nullptr, uint32_t duration = 0);
+  void queueCallEvent(CallEventType type, const char* phone = nullptr, uint32_t duration = 0,
+                      const char* reason = nullptr);
   void handleRingtone();  // Play tone bursts while incoming call rings
 
   // Notification tone transfer and playback (called from modem task)
