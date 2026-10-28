@@ -312,6 +312,9 @@ void DataStore::loadPrefsInt(const char *filename, NodePrefs& _prefs, double& no
     if (file.read((uint8_t *)_prefs.sos_channel_ids, sizeof(_prefs.sos_channel_ids)) != sizeof(_prefs.sos_channel_ids)) {
       memset(_prefs.sos_channel_ids, 0, sizeof(_prefs.sos_channel_ids));  // default: public channel only
     }
+    if (file.read((uint8_t *)&_prefs.ble_lock_window, sizeof(_prefs.ble_lock_window)) != sizeof(_prefs.ble_lock_window)) {
+      _prefs.ble_lock_window = 0;  // default: phone stays connected
+    }
 
     // Clamp to valid ranges
     if (_prefs.dark_mode > 1) _prefs.dark_mode = 0;
@@ -334,6 +337,7 @@ void DataStore::loadPrefsInt(const char *filename, NodePrefs& _prefs, double& no
     if (_prefs.rx_boosted_gain > 1) _prefs.rx_boosted_gain = 1;
     if (_prefs.lock_sleep > 1) _prefs.lock_sleep = 1;
     if (_prefs.sos_btn > 1) _prefs.sos_btn = 1;
+    if (_prefs.ble_lock_window > 60) _prefs.ble_lock_window = 0;
     // Force NUL termination on each canned message slot in case of garbage
     for (int i = 0; i < (int)(sizeof(_prefs.canned_msgs) / sizeof(_prefs.canned_msgs[0])); i++) {
       _prefs.canned_msgs[i][sizeof(_prefs.canned_msgs[0]) - 1] = '\0';
@@ -411,6 +415,7 @@ void DataStore::savePrefs(const NodePrefs& _prefs, double node_lat, double node_
     file.write((uint8_t *)&_prefs.lock_sleep, sizeof(_prefs.lock_sleep));                        // 1526
     file.write((uint8_t *)&_prefs.sos_btn, sizeof(_prefs.sos_btn));                              // 1527
     file.write((uint8_t *)_prefs.sos_channel_ids, sizeof(_prefs.sos_channel_ids));              // 1528
+    file.write((uint8_t *)&_prefs.ble_lock_window, sizeof(_prefs.ble_lock_window));              // 1592
 
     file.close();
   }

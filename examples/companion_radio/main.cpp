@@ -3395,6 +3395,65 @@ static void meckImportPoll() {
 #include <esp_sleep.h>
 
 static bool meckBleStoppedForSleep = false;
+
+#ifdef MECK_BLE_LOCK_WINDOWS
+// Sync windows (Settings: "Phone when locked"). Instead of a connected
+// phone keeping the deck awake, the deck sleeps with Bluetooth off and
+// turns it on for a short window every few minutes and on a new message.
+// A window advertises until the app reconnects, then lasts while the app
+// talks (messages wait in the offline queue meanwhile) and ends a little
+// after the link goes quiet: Bluetooth goes off again, which drops it.
+#define MECK_BLE_WIN_ADVERT_MS  30000UL    // waiting for the app to reconnect
+#define MECK_BLE_WIN_IDLE_MS     8000UL    // link quiet this long: done
+#define MECK_BLE_WIN_MAX_MS    120000UL    // one window at most
+static bool meckBleWinOpen = false;
+static unsigned long meckBleWinStart = 0;
+static unsigned long meckBleLinkAt = 0;      // when the link last came up
+static bool meckBleWasLinked = false;
+
+// Sync windows apply: chosen, power saving on, and Bluetooth switched on
+// (enabled, or paused here for sleep)
+static bool meckBleWindowed() {
+  NodePrefs* p = the_mesh.getNodePrefs();
+  return p->lock_sleep && p->ble_lock_window &&
+         (MECK_BLE_IFACE.isEnabled() || meckBleStoppedForSleep);
+}
+
+static void meckBleWindowStart(const char* why) {
+  if (!meckBleWindowed() || !ui_task.isLocked()) return;
+  if (!meckBleWinOpen) Serial.printf("[Power] BLE sync window (%s)\n", why);
+  meckBleWinOpen = true;
+  meckBleWinStart = millis();
+  meckBleWasLinked = false;   // an open link gets the idle time from now
+}
+
+// Called from UITask::newMsg for a message the user is notified of
+void meckBleWindowOnMessage() { meckBleWindowStart("message"); }
+
+// Is a window open? Closes it once its time is up.
+static bool meckBleWindowActive() {
+  if (!meckBleWinOpen) return false;
+  unsigned long now = millis();
+  bool linked = MECK_BLE_IFACE.isConnected();
+  if (linked && !meckBleWasLinked) meckBleLinkAt = now;
+  meckBleWasLinked = linked;
+  bool open;
+  if ((long)(now - meckBleWinStart) >= (long)MECK_BLE_WIN_MAX_MS) {
+    open = false;
+  } else if (linked) {
+    unsigned long last = MECK_BLE_IFACE.lastActivity();
+    if ((long)(meckBleLinkAt - last) > 0) last = meckBleLinkAt;
+    open = MECK_BLE_IFACE.hasPendingData() || (long)(now - last) < (long)MECK_BLE_WIN_IDLE_MS;
+  } else {
+    open = (long)(now - meckBleWinStart) < (long)MECK_BLE_WIN_ADVERT_MS;
+  }
+  if (!open) {
+    meckBleWinOpen = false;
+    Serial.printf("[Power] BLE sync window closed after %lu s\n", (now - meckBleWinStart) / 1000);
+  }
+  return open;
+}
+#endif
 static unsigned long meckAwakeUntil = 0;     // stay awake until (after a wake)
 static int meckRxPasses = -1;                // loop passes since a LoRa wake (-1: none)
 
@@ -3478,6 +3537,12 @@ int meckLockSleepBlocker() {
 #endif
   if (WiFi.getMode() != WIFI_MODE_NULL) return MECK_SLEEP_WIFI;
   if (board.isUsbPowered()) return MECK_SLEEP_USB;
+#ifdef MECK_BLE_LOCK_WINDOWS
+  if (meckBleWindowed()) {
+    // A connected phone does not count: once locked, the windows decide
+    if (ui_task.isLocked() && meckBleWindowActive()) return MECK_SLEEP_SYNC;
+  } else
+#endif
   if (serial_interface.isConnected()) return MECK_SLEEP_PHONE;
 #if defined(MECK_AUDIO_VARIANT) && defined(HAS_ES8311_AUDIO)
   if (es8311_active()) return MECK_SLEEP_AUDIO;
@@ -3488,12 +3553,26 @@ int meckLockSleepBlocker() {
 // Called at the end of loop() instead of the plain locked-loop delay
 static void meckLockSleepStep() {
   bool locked = ui_task.isLocked();
+#ifdef MECK_BLE_LOCK_WINDOWS
+  static bool wasLocked = false;
+  if (locked && !wasLocked && MECK_BLE_IFACE.isConnected()) {
+    meckBleWindowStart("lock");   // let a sync in progress finish first
+  } else if (!locked) {
+    meckBleWinOpen = false;
+  }
+  wasLocked = locked;
+#endif
   bool canSleep = locked && meckLockSleepBlocker() == MECK_SLEEP_OK;
 
 #if defined(BLE_PIN_CODE) && !defined(WIFI_SSID)
   // A phone that stays connected keeps the deck awake; while locked it gets
-  // a slow connection interval, and the fast one back on unlock for the sync
-  MECK_BLE_IFACE.setRelaxedLink(locked && the_mesh.getNodePrefs()->lock_sleep);
+  // a slow connection interval, and the fast one back on unlock for the
+  // sync. A sync window is short and wants the fast one.
+  bool relaxed = locked && the_mesh.getNodePrefs()->lock_sleep;
+  #ifdef MECK_BLE_LOCK_WINDOWS
+  if (meckBleWindowed()) relaxed = false;
+  #endif
+  MECK_BLE_IFACE.setRelaxedLink(relaxed);
 #endif
 
   // BLE advertising off while sleep is possible, back on otherwise
@@ -3551,6 +3630,12 @@ static void meckLockSleepStep() {
     default:                               // timer: redraw the clock
       meckAwakeUntil = millis() + 300;
       ui_task.forceRefresh();
+#ifdef MECK_BLE_LOCK_WINDOWS
+      // Every ble_lock_window minutes of the clock (the wake lands just
+      // after the minute boundary)
+      if (meckBleWindowed() && (rtc_clock.getCurrentTime() / 60) % the_mesh.getNodePrefs()->ble_lock_window == 0)
+        meckBleWindowStart("timer");
+#endif
       meckMeasureSlowClock();
       meckWakeTimer++;
       if (board.xl9555_digitalRead(XL_PIN_GPS_EN)) meckGpsWaitStart();   // the setting or SOS

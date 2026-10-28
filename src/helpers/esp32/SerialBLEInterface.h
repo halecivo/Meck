@@ -31,6 +31,7 @@ class SerialBLEInterface : public BaseSerialInterface, BLESecurityCallbacks, BLE
   uint32_t _pin_code;
   char _dev_name[48];      // stored in begin(), consumed by deferred _realBegin()
   unsigned long _last_write;
+  unsigned long _last_rx;
   unsigned long adv_restart_time;
 
   struct Frame {
@@ -87,6 +88,7 @@ public:
     _tx_off = 0; _rx_len = -1;
 #endif
     _last_write = 0;
+    _last_rx = 0;
     last_conn_id = 0;
     memset(_remote_bda, 0, 6);
     recv_queue = xQueueCreateStatic(
@@ -119,6 +121,11 @@ public:
   // update): interval in 1.25 ms units, latency in events
   static uint16_t linkInterval();
   static uint16_t linkLatency();
+
+  // millis() of the last frame sent or received
+  unsigned long lastActivity() const {
+    return (long)(_last_rx - _last_write) > 0 ? _last_rx : _last_write;
+  }
 
   bool isWriteBusy() const override;
   bool hasPendingData() const override { return deviceConnected && send_queue_len > 0; }

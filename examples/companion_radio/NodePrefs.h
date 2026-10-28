@@ -8,6 +8,12 @@
 #define ADVERT_LOC_NONE       0
 #define ADVERT_LOC_SHARE      1
 
+// Bluetooth sync windows while locked (ble_lock_window): T-Deck MAX builds
+// with the BLE companion
+#if defined(LilyGo_TDeck_Pro_Max) && !defined(MECK_40MHZ_TEST) && defined(BLE_PIN_CODE) && !defined(WIFI_SSID)
+  #define MECK_BLE_LOCK_WINDOWS 1
+#endif
+
 // Per-channel notification preferences (stored in channel_notif[])
 #define NOTIF_ALL       0   // Notify on all messages (default)
 #define NOTIF_MENTIONS  1   // Notify only when @nodename appears in message
@@ -143,6 +149,12 @@ struct NodePrefs {  // persisted to file
   // slot. All-zero entries are unused. Older prefs files short-read this
   // final field and keep the default (none).
   uint8_t sos_channel_ids[SOS_CHANNELS_MAX][SOS_CHANNEL_ID_LEN];   // default all zero
+  // Phone when locked (with power saving on): 0 = a connected phone stays
+  // connected and keeps the device awake; otherwise the device sleeps
+  // without Bluetooth and opens a short window for the app to reconnect and
+  // sync every this many minutes and on a new message. Older prefs files
+  // short-read this final field and keep the default 0.
+  uint8_t ble_lock_window;         // default 0
 
   // --- Font helpers (inline, no overhead) ---
   // Returns the DisplayDriver text-size index for "small/body" text.

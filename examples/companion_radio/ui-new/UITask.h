@@ -38,6 +38,7 @@ enum MeckSleepBlock {
   MECK_SLEEP_WIFI,       // Wi-Fi on
   MECK_SLEEP_AUDIO,      // audio playing or recently used
   MECK_SLEEP_SOS,        // SOS: counting down, GPS looking for a fix, or a send due
+  MECK_SLEEP_SYNC,       // Bluetooth sync window open (ble_lock_window)
 };
 
 #ifdef HAS_4G_MODEM

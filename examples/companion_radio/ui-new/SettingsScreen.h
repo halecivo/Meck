@@ -152,6 +152,26 @@ static inline int findAutoLockIndex(uint8_t minutes) {
   return 0;
 }
 
+#ifdef MECK_BLE_LOCK_WINDOWS
+// Phone while locked: stay connected (0) or sync every N minutes
+static const uint8_t BLE_WINDOW_OPTIONS[] = { 0, 5, 10, 15, 30, 60 };
+#define BLE_WINDOW_OPTION_COUNT 6
+
+static inline const char* bleWindowLabel(uint8_t minutes) {
+  if (minutes == 0) return MECK_TR("Stay connected", "Reste connect\xC3\xA9");
+  static char buf[20];
+  snprintf(buf, sizeof(buf), MECK_TR("Every %d min", "Toutes les %d min"), minutes);
+  return buf;
+}
+
+static inline int findBleWindowIndex(uint8_t minutes) {
+  for (int i = 0; i < BLE_WINDOW_OPTION_COUNT; i++) {
+    if (BLE_WINDOW_OPTIONS[i] == minutes) return i;
+  }
+  return 0;
+}
+#endif
+
 // ---------------------------------------------------------------------------
 // Settings row types
 // ---------------------------------------------------------------------------
@@ -178,6 +198,7 @@ enum SettingsRowType : uint8_t {
 #endif
 #if defined(LilyGo_TDeck_Pro_Max) && !defined(MECK_40MHZ_TEST)
   ROW_LOCK_SLEEP,     // Power saving (light sleep) while locked
+  ROW_LOCK_BLE,       // Phone while locked: stay connected / sync windows
 #endif
 #if defined(LilyGo_TDeck_Pro)
   ROW_SOS_SUBMENU,    // Folder row: enters the SOS sub-screen
@@ -619,6 +640,9 @@ private:
 #endif
 #if defined(LilyGo_TDeck_Pro_Max) && !defined(MECK_40MHZ_TEST)
       addRow(ROW_LOCK_SLEEP);
+#endif
+#ifdef MECK_BLE_LOCK_WINDOWS
+      if (_prefs->lock_sleep) addRow(ROW_LOCK_BLE);
 #endif
 #if defined(LilyGo_TDeck_Pro)
       addRow(ROW_SOS_SUBMENU);
@@ -2296,6 +2320,11 @@ public:
           snprintf(hint, sizeof(hint), "%s", MECK_TR("Phone stays reachable", "T\xC3\xA9l\xC3\xA9phone joignable"));
         } else if (why != 0 /* MECK_SLEEP_OK */) {
           snprintf(hint, sizeof(hint), MECK_TR("Awake now: %s", "\xC3\x89veill\xC3\xA9 : %s"), meckSleepBlockText(why));
+    #ifdef MECK_BLE_LOCK_WINDOWS
+        } else if (_prefs->ble_lock_window) {
+          snprintf(hint, sizeof(hint), MECK_TR("Phone syncs every %d min", "Synchro t\xC3\xA9l\xC3\xA9phone toutes les %d min"),
+                   _prefs->ble_lock_window);
+    #endif
         } else {
           snprintf(hint, sizeof(hint), "%s", MECK_TR("Phone connects after unlock", "T\xC3\xA9l\xC3\xA9phone apr\xC3\xA8s d\xC3\xA9verrouillage"));
         }
@@ -2304,6 +2333,18 @@ public:
   #endif
         break;
       }
+#endif
+#ifdef MECK_BLE_LOCK_WINDOWS
+      case ROW_LOCK_BLE:
+        if (editing && _editMode == EDIT_PICKER) {
+          snprintf(tmp, sizeof(tmp), MECK_TR("< Phone when locked: %s >", "< T\xC3\xA9l. verrouill\xC3\xA9 : %s >"),
+                   bleWindowLabel(BLE_WINDOW_OPTIONS[_editPickerIdx]));
+        } else {
+          snprintf(tmp, sizeof(tmp), MECK_TR("Phone when locked: %s", "T\xC3\xA9l. verrouill\xC3\xA9 : %s"),
+                   bleWindowLabel(_prefs->ble_lock_window));
+        }
+        display.print(tmp);
+        break;
 #endif
 
 #if defined(LilyGo_TDeck_Pro)
@@ -4366,6 +4407,11 @@ public:
           _editPickerIdx--;
           if (_editPickerIdx < 0) _editPickerIdx = AUTO_LOCK_OPTION_COUNT - 1;
 #endif
+#ifdef MECK_BLE_LOCK_WINDOWS
+        } else if (type == ROW_LOCK_BLE) {
+          _editPickerIdx--;
+          if (_editPickerIdx < 0) _editPickerIdx = BLE_WINDOW_OPTION_COUNT - 1;
+#endif
         } else if (type == ROW_FONT_STYLE) {
           _editPickerIdx--;
           if (_editPickerIdx < 0) _editPickerIdx = MECK_FONT_STYLE_COUNT - 1;
@@ -4390,6 +4436,11 @@ public:
         } else if (type == ROW_AUTO_LOCK) {
           _editPickerIdx++;
           if (_editPickerIdx >= AUTO_LOCK_OPTION_COUNT) _editPickerIdx = 0;
+#endif
+#ifdef MECK_BLE_LOCK_WINDOWS
+        } else if (type == ROW_LOCK_BLE) {
+          _editPickerIdx++;
+          if (_editPickerIdx >= BLE_WINDOW_OPTION_COUNT) _editPickerIdx = 0;
 #endif
         } else if (type == ROW_FONT_STYLE) {
           _editPickerIdx++;
@@ -4421,6 +4472,14 @@ public:
           _editMode = EDIT_NONE;
           Serial.printf("Settings: Auto lock = %s\n",
                         autoLockLabel(_prefs->auto_lock_minutes));
+#endif
+#ifdef MECK_BLE_LOCK_WINDOWS
+        } else if (type == ROW_LOCK_BLE) {
+          _prefs->ble_lock_window = BLE_WINDOW_OPTIONS[_editPickerIdx];
+          the_mesh.savePrefs();
+          _editMode = EDIT_NONE;
+          Serial.printf("Settings: Phone while locked = %s\n",
+                        bleWindowLabel(_prefs->ble_lock_window));
 #endif
         } else if (type == ROW_FONT_STYLE) {
           _prefs->ui_font_style = _editPickerIdx;
@@ -4694,6 +4753,12 @@ public:
           the_mesh.savePrefs();
           Serial.printf("Settings: Lock power saving = %s\n",
                         _prefs->lock_sleep ? "ON" : "OFF");
+          rebuildRows();   // "Phone when locked" only shows with it on
+          break;
+#endif
+#ifdef MECK_BLE_LOCK_WINDOWS
+        case ROW_LOCK_BLE:
+          startEditPicker(findBleWindowIndex(_prefs->ble_lock_window));
           break;
 #endif
 #if defined(LilyGo_TDeck_Pro)
