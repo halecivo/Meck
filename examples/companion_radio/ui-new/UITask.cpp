@@ -56,6 +56,7 @@ const char* meckSleepBlockText(int code) {
     case MECK_SLEEP_WIFI:  return MECK_TR("Wi-Fi is on", "Wi-Fi activ\xC3\xA9");
     case MECK_SLEEP_AUDIO: return MECK_TR("Audio in use", "Audio en cours");
     case MECK_SLEEP_SOS:   return MECK_TR("SOS running", "SOS en cours");
+    case MECK_SLEEP_SYNC:  return MECK_TR("Phone sync", "Synchro t\xC3\xA9l\xC3\xA9phone");
     default:               return "";
   }
 }
@@ -2708,6 +2709,13 @@ void UITask::newMsg(uint8_t path_len, const char* from_name, const char* text, i
       }
     }
   }
+#ifdef MECK_BLE_LOCK_WINDOWS
+  // Locked with sync windows: let the app reconnect and fetch it
+  if (!suppressNotif) {
+    extern void meckBleWindowOnMessage();
+    meckBleWindowOnMessage();
+  }
+#endif
   // Set the flag for notify() which is called immediately after newMsg().
   // If a custom notification tone is assigned and notifications are active,
   // request MP3 playback and suppress the RTTTL buzzer so they don't overlap.

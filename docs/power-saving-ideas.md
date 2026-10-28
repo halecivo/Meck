@@ -74,6 +74,38 @@ Steps, in order of effort:
 Until step 3 exists, a phone connected while locked keeps the deck awake;
 the lock warning says so (blocker PHONE).
 
+### Implemented (branch `ble-locked-relaxed`, not yet measured)
+
+- **Relaxed interval while locked (2.1).** With power saving on, locking
+  asks the phone for 100-150 ms, slave latency 4, 6 s timeout; unlocking
+  asks for 15-20 ms again. `pwrlink` on the debug CLI prints what the phone
+  accepted. Step 2.2 was already in place: `CPUPowerManager` runs the CPU
+  at 80 MHz while locked.
+- **Sync windows.** Settings > "Phone when locked" (shown with power
+  saving on): *Stay connected* (as before) or *Every 5 / 10 / 15 / 30 / 60 min*.
+  With a window period set, a connected phone no longer keeps the locked
+  deck awake. The deck sleeps with Bluetooth off and opens a window on
+  every Nth clock minute, on each new message the user is notified of
+  (muted channels don't count), and on locking while a phone is connected.
+  A window advertises for up to 30 s. Once the app has reconnected, the
+  window lasts while frames flow and ends 8 s after the link goes quiet,
+  2 min at most. Then Bluetooth goes off again, which drops the link.
+  Messages wait in the offline queue in the meantime. The blocker shows
+  as "Phone sync" (power log blocker 9).
+
+Expected: a window costs about 40 mA while it lasts. Every 5 min with a
+reconnect in ~10 s is about +1.5 mA, a window without a reconnect is
++2.7 mA. That gives about 19-20 mA on average instead of 100 mA.
+
+To check on the device:
+1. Does the app reconnect on its own within the 30 s window, on Android
+   and iOS, with the app in the background? If it does not, the windows
+   only cost power.
+2. `pwrlog`: the average with "Every 5 min" and "Every 15 min", with a
+   phone that was connected at lock time.
+3. `pwrlink` while locked with "Stay connected": the interval the phone
+   accepted, and how much the relaxed link saves on its own.
+
 ## 3. LoRa RX duty cycle
 
 The SX1262 can sleep between short listen windows and wake on a preamble
