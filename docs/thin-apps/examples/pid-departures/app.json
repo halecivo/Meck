@@ -1,0 +1,94 @@
+{
+  "manifest_version": 1,
+  "id": "cz.halecivo.pid-departures",
+  "version": "0.1.0",
+  "name": "PID departures",
+  "short_name": "Departures",
+  "description": "Live departures from one Prague public transport stop (Golemio API)",
+  "author": "halecivo",
+  "homepage": "https://api.golemio.cz/pid/docs/openapi/",
+  "lang": "cs",
+  "icon": "clock",
+
+  "requires": { "features": { "network": "required", "gps": "unused" } },
+
+  "permissions": {
+    "origins": ["https://api.golemio.cz"],
+    "location": "none",
+    "background": false,
+    "sleep": false,
+    "notifications": false
+  },
+
+  "settings": [
+    { "key": "token", "type": "secret", "label": "Golemio API key", "required": true },
+    { "key": "stop", "type": "string", "label": "Stop name", "default": "Můstek" },
+    { "key": "minutes", "type": "number", "label": "Minutes ahead", "default": 60, "min": 10, "max": 240 }
+  ],
+
+  "sources": [
+    {
+      "id": "dep",
+      "url": "https://api.golemio.cz/v2/pid/departureboards{?names,minutesAfter,limit,preferredTimezone}",
+      "vars": {
+        "names": "{settings.stop}",
+        "minutesAfter": "{settings.minutes}",
+        "limit": 20,
+        "preferredTimezone": "Europe/Prague"
+      },
+      "auth": { "type": "header", "name": "X-Access-Token", "value": "{settings.token}" },
+      "max_bytes": 32768
+    }
+  ],
+
+  "schedule": {
+    "foreground": { "interval": 30, "flex": 5 },
+    "bounds": { "min": 20, "max": 600 },
+    "on_open": 20
+  },
+
+  "ui": {
+    "schema": 1,
+    "designed_for": "meck.ui2",
+    "min_width": 240,
+    "min_height": 240,
+    "color": "mono",
+    "tile": { "icon": "clock", "label": "Departures" },
+    "screens": [
+      {
+        "id": "main",
+        "title": "{dep/stops/0/stop_name | default(settings.stop)}",
+        "title_right": "{now | time('HH:mm')}",
+        "body": [
+          {
+            "type": "list",
+            "each": "dep/departures",
+            "limit": 20,
+            "row": {
+              "title": "{$/route/short_name}  {$/trip/headsign}",
+              "sub": "{$/stop/platform_code | prefix('platform ')}",
+              "right": "{$/departure_timestamp/predicted | until | suffix(' min')}",
+              "right2": "{$/departure_timestamp/predicted | time('HH:mm')}",
+              "badge": "{$/delay/minutes | gt(0) | prefix('+')}",
+              "emphasis": { "field": "$/delay/minutes", "op": ">=", "value": 3 },
+              "open": "trip"
+            },
+            "empty": { "icon": "clock", "line": "No departures", "detail": "in the next {settings.minutes} minutes" }
+          }
+        ]
+      },
+      {
+        "id": "trip",
+        "title": "{$/route/short_name} → {$/trip/headsign}",
+        "body": [
+          { "type": "hero", "value": "{$/departure_timestamp/predicted | until}", "unit": "min",
+            "caption": "{$/departure_timestamp/predicted | time('HH:mm')}" },
+          { "type": "kv", "label": "Scheduled", "value": "{$/departure_timestamp/scheduled | time('HH:mm')}" },
+          { "type": "kv", "label": "Delay", "value": "{$/delay/minutes | default('–') | suffix(' min')}",
+            "visible_if": { "field": "$/delay/is_available", "op": "!=", "value": false } },
+          { "type": "kv", "label": "Platform", "value": "{$/stop/platform_code | default('–')}" }
+        ]
+      }
+    ]
+  }
+}

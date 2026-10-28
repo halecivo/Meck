@@ -1,0 +1,343 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/halecivo/meck/docs/thin-apps/manifest.schema.json",
+  "title": "Meck thin app manifest (app.json), manifest_version 1",
+  "description": "See docs/thin-apps/README.md. Unknown properties are allowed (and ignored by the firmware), so new optional fields do not need a version bump.",
+  "type": "object",
+  "required": ["manifest_version", "id", "version", "name", "permissions", "sources", "schedule", "ui"],
+  "properties": {
+    "manifest_version": { "const": 1 },
+    "id": { "type": "string", "pattern": "^[a-z0-9]+(\\.[a-z0-9-]+)+$", "maxLength": 64 },
+    "version": { "type": "string", "pattern": "^\\d+\\.\\d+\\.\\d+([-+][0-9A-Za-z.-]+)?$" },
+    "name": { "type": "string", "minLength": 1, "maxLength": 40 },
+    "short_name": { "type": "string", "minLength": 1, "maxLength": 12 },
+    "description": { "type": "string", "maxLength": 200 },
+    "author": { "type": "string" },
+    "homepage": { "type": "string", "format": "uri" },
+    "lang": { "type": "string" },
+    "icon": { "$ref": "#/$defs/icon" },
+    "update_url": { "type": "string", "pattern": "^https://" },
+    "extensions_required": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
+    "requires": {
+      "type": "object",
+      "properties": {
+        "features": {
+          "type": "object",
+          "propertyNames": { "enum": ["network", "wifi", "cellular", "gps", "keyboard", "touch", "audio"] },
+          "additionalProperties": { "enum": ["required", "optional", "unused"] }
+        }
+      }
+    },
+    "permissions": {
+      "type": "object",
+      "required": ["origins"],
+      "properties": {
+        "origins": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "anyOf": [
+              { "pattern": "^https?://[^/?#{}]+$" },
+              { "pattern": "^\\{settings\\.[a-z][a-z0-9_]*\\}$" }
+            ]
+          }
+        },
+        "location": { "enum": ["none", "coarse", "precise"] },
+        "background": { "type": "boolean" },
+        "sleep": { "type": "boolean" },
+        "notifications": { "type": "boolean" }
+      }
+    },
+    "settings": { "type": "array", "items": { "$ref": "#/$defs/setting" } },
+    "sources": { "type": "array", "minItems": 1, "maxItems": 8, "items": { "$ref": "#/$defs/source" } },
+    "schedule": { "$ref": "#/$defs/schedule" },
+    "notify": { "type": "array", "maxItems": 16, "items": { "$ref": "#/$defs/notifyRule" } },
+    "ui": { "$ref": "#/$defs/ui" }
+  },
+
+  "$defs": {
+    "template": { "type": "string", "maxLength": 256 },
+    "reference": {
+      "type": "string",
+      "pattern": "^(\\$|@?[a-z][a-z0-9_]*)(/[^/]*)*$|^settings\\.[a-z][a-z0-9_]*$"
+    },
+    "icon": { "type": "string", "pattern": "^([a-z0-9_]+|[A-Za-z0-9_./-]+\\.png)$" },
+    "screenId": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" },
+
+    "condition": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["field", "op"],
+          "properties": {
+            "field": { "$ref": "#/$defs/reference" },
+            "op": { "enum": ["==", "!=", ">", ">=", "<", "<=", "in", "contains", "exists", "empty", "changed"] },
+            "value": {
+              "anyOf": [
+                { "type": ["string", "number", "boolean", "null", "array"] },
+                { "type": "object", "required": ["ref"], "properties": { "ref": { "$ref": "#/$defs/reference" } }, "additionalProperties": false }
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
+        { "type": "object", "required": ["all"], "properties": { "all": { "type": "array", "items": { "$ref": "#/$defs/condition" } } }, "additionalProperties": false },
+        { "type": "object", "required": ["any"], "properties": { "any": { "type": "array", "items": { "$ref": "#/$defs/condition" } } }, "additionalProperties": false },
+        { "type": "object", "required": ["not"], "properties": { "not": { "$ref": "#/$defs/condition" } }, "additionalProperties": false }
+      ]
+    },
+
+    "setting": {
+      "type": "object",
+      "required": ["key", "type", "label"],
+      "properties": {
+        "key": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" },
+        "type": { "enum": ["string", "secret", "url", "number", "bool", "enum", "list"] },
+        "label": { "type": "string", "maxLength": 32 },
+        "required": { "type": "boolean" },
+        "default": {},
+        "options": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
+        "min": { "type": "number" },
+        "max": { "type": "number" }
+      },
+      "allOf": [
+        { "if": { "properties": { "type": { "const": "enum" } } }, "then": { "required": ["options"] } },
+        { "if": { "properties": { "type": { "const": "secret" } } }, "then": { "not": { "required": ["default"] } } },
+        { "if": { "properties": { "type": { "const": "list" } } }, "then": { "properties": { "default": { "type": "array", "items": { "type": "string" }, "maxItems": 32 } } } }
+      ]
+    },
+
+    "auth": {
+      "oneOf": [
+        { "type": "object", "required": ["type"], "properties": { "type": { "const": "none" } }, "additionalProperties": false },
+        { "type": "object", "required": ["type", "value"], "properties": { "type": { "const": "bearer" }, "value": { "$ref": "#/$defs/template" } }, "additionalProperties": false },
+        { "type": "object", "required": ["type", "user", "password"], "properties": { "type": { "const": "basic" }, "user": { "$ref": "#/$defs/template" }, "password": { "$ref": "#/$defs/template" } }, "additionalProperties": false },
+        { "type": "object", "required": ["type", "name", "value"], "properties": { "type": { "enum": ["header", "query"] }, "name": { "type": "string" }, "value": { "$ref": "#/$defs/template" } }, "additionalProperties": false }
+      ]
+    },
+
+    "source": {
+      "type": "object",
+      "required": ["id", "url"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$", "not": { "enum": ["device", "settings", "gps", "app", "now"] } },
+        "url": { "type": "string", "maxLength": 512 },
+        "vars": { "type": "object", "additionalProperties": { "type": ["string", "number", "boolean"] } },
+        "method": { "enum": ["GET", "POST"] },
+        "body": {},
+        "headers": { "type": "object", "additionalProperties": { "$ref": "#/$defs/template" } },
+        "auth": { "$ref": "#/$defs/auth" },
+        "each": { "type": "string", "pattern": "^\\{settings\\.[a-z][a-z0-9_]*\\}$" },
+        "route": { "enum": ["any", "wifi", "cellular"] },
+        "max_bytes": { "type": "integer", "minimum": 256, "maximum": 65536 },
+        "timeout": { "type": "integer", "minimum": 1, "maximum": 60 },
+        "hints": {
+          "type": "object",
+          "properties": { "next_poll": { "type": "string", "pattern": "^(/[^/]*)*$" } }
+        }
+      }
+    },
+
+    "pollMode": {
+      "type": "object",
+      "required": ["interval"],
+      "properties": {
+        "interval": { "type": "integer", "minimum": 0 },
+        "flex": { "type": "integer", "minimum": 0 },
+        "gps": { "enum": ["never", "if_stale", "always"] },
+        "gps_max_age": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "schedule": {
+      "type": "object",
+      "required": ["foreground"],
+      "properties": {
+        "foreground": { "$ref": "#/$defs/pollMode" },
+        "background": { "$ref": "#/$defs/pollMode" },
+        "sleep": { "$ref": "#/$defs/pollMode" },
+        "bounds": {
+          "type": "object",
+          "properties": { "min": { "type": "integer", "minimum": 1 }, "max": { "type": "integer", "minimum": 1 } }
+        },
+        "on_open": { "type": "integer", "minimum": 0 }
+      }
+    },
+
+    "notifyRule": {
+      "type": "object",
+      "required": ["id", "when", "title"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" },
+        "each": { "$ref": "#/$defs/reference" },
+        "where": { "$ref": "#/$defs/condition" },
+        "when": { "$ref": "#/$defs/condition" },
+        "trigger": { "enum": ["rising_edge", "while_true"] },
+        "key": { "$ref": "#/$defs/template" },
+        "cooldown": { "type": "integer", "minimum": 0 },
+        "title": { "$ref": "#/$defs/template" },
+        "body": { "$ref": "#/$defs/template" },
+        "priority": { "enum": ["silent", "normal", "high"] },
+        "in_sleep": { "type": "boolean" },
+        "open": { "$ref": "#/$defs/screenId" }
+      },
+      "dependentRequired": { "where": ["each"] }
+    },
+
+    "ui": {
+      "type": "object",
+      "required": ["schema", "screens"],
+      "properties": {
+        "schema": { "const": 1 },
+        "designed_for": { "type": "string" },
+        "min_width": { "type": "integer", "minimum": 1 },
+        "min_height": { "type": "integer", "minimum": 1 },
+        "color": { "enum": ["mono", "gray", "color"] },
+        "tile": {
+          "type": "object",
+          "properties": {
+            "icon": { "$ref": "#/$defs/icon" },
+            "label": { "type": "string", "maxLength": 12 },
+            "value": { "$ref": "#/$defs/template" }
+          }
+        },
+        "screens": { "type": "array", "minItems": 1, "maxItems": 8, "items": { "$ref": "#/$defs/screen" } }
+      }
+    },
+
+    "body": { "type": "array", "maxItems": 64, "items": { "$ref": "#/$defs/widget" } },
+    "screen": {
+      "type": "object",
+      "required": ["id"],
+      "properties": {
+        "id": { "$ref": "#/$defs/screenId" },
+        "title": { "$ref": "#/$defs/template" },
+        "title_right": { "$ref": "#/$defs/template" },
+        "body": { "$ref": "#/$defs/body" },
+        "variants": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": ["body"],
+            "properties": {
+              "when": {
+                "type": "object",
+                "properties": {
+                  "min_width": { "type": "integer" },
+                  "min_height": { "type": "integer" },
+                  "technology": { "enum": ["eink", "lcd"] }
+                },
+                "additionalProperties": false
+              },
+              "body": { "$ref": "#/$defs/body" }
+            }
+          }
+        }
+      },
+      "oneOf": [ { "required": ["body"] }, { "required": ["variants"] } ]
+    },
+
+    "rowFields": {
+      "type": "object",
+      "required": ["title"],
+      "properties": {
+        "icon": { "$ref": "#/$defs/template" },
+        "title": { "$ref": "#/$defs/template" },
+        "sub": { "$ref": "#/$defs/template" },
+        "right": { "$ref": "#/$defs/template" },
+        "right2": { "$ref": "#/$defs/template" },
+        "badge": { "$ref": "#/$defs/template" },
+        "toggle": {
+          "type": "object",
+          "required": ["field", "on", "off"],
+          "properties": {
+            "field": { "$ref": "#/$defs/reference" },
+            "on": { "type": ["string", "number", "boolean"] },
+            "off": { "type": ["string", "number", "boolean"] }
+          },
+          "additionalProperties": false
+        },
+        "dot": { "$ref": "#/$defs/condition" },
+        "emphasis": { "$ref": "#/$defs/condition" },
+        "open": { "$ref": "#/$defs/screenId" },
+        "visible_if": { "$ref": "#/$defs/condition" }
+      }
+    },
+    "emptyFields": {
+      "type": "object",
+      "required": ["line"],
+      "properties": {
+        "icon": { "$ref": "#/$defs/icon" },
+        "line": { "$ref": "#/$defs/template" },
+        "detail": { "$ref": "#/$defs/template" },
+        "visible_if": { "$ref": "#/$defs/condition" }
+      }
+    },
+
+    "widget": {
+      "type": "object",
+      "required": ["type"],
+      "properties": {
+        "type": { "enum": ["row", "list", "section", "kv", "hero", "spark", "text", "empty"] },
+        "visible_if": { "$ref": "#/$defs/condition" }
+      },
+      "allOf": [
+        { "if": { "properties": { "type": { "const": "row" } } }, "then": { "$ref": "#/$defs/rowFields" } },
+        {
+          "if": { "properties": { "type": { "const": "list" } } },
+          "then": {
+            "required": ["each", "row"],
+            "properties": {
+              "each": { "$ref": "#/$defs/reference" },
+              "where": { "$ref": "#/$defs/condition" },
+              "limit": { "type": "integer", "minimum": 1, "maximum": 50 },
+              "row": { "$ref": "#/$defs/rowFields" },
+              "empty": { "$ref": "#/$defs/emptyFields" }
+            }
+          }
+        },
+        { "if": { "properties": { "type": { "const": "section" } } }, "then": { "required": ["text"], "properties": { "text": { "$ref": "#/$defs/template" } } } },
+        { "if": { "properties": { "type": { "const": "kv" } } }, "then": { "required": ["label", "value"], "properties": { "label": { "$ref": "#/$defs/template" }, "value": { "$ref": "#/$defs/template" } } } },
+        {
+          "if": { "properties": { "type": { "const": "hero" } } },
+          "then": {
+            "required": ["value"],
+            "properties": {
+              "value": { "$ref": "#/$defs/template" },
+              "unit": { "$ref": "#/$defs/template" },
+              "caption": { "$ref": "#/$defs/template" },
+              "icon": { "$ref": "#/$defs/template" }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "type": { "const": "spark" } } },
+          "then": {
+            "required": ["values"],
+            "properties": {
+              "values": { "$ref": "#/$defs/reference" },
+              "labels": { "$ref": "#/$defs/reference" },
+              "min": { "type": "number" },
+              "max": { "type": "number" },
+              "height": { "type": "integer", "minimum": 2, "maximum": 20 },
+              "style": { "enum": ["bars", "line"] }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "type": { "const": "text" } } },
+          "then": {
+            "required": ["text"],
+            "properties": {
+              "text": { "$ref": "#/$defs/template" },
+              "max_lines": { "type": "integer", "minimum": 1, "maximum": 20 },
+              "size": { "enum": ["small", "body", "title"] }
+            }
+          }
+        },
+        { "if": { "properties": { "type": { "const": "empty" } } }, "then": { "$ref": "#/$defs/emptyFields" } }
+      ]
+    }
+  }
+}

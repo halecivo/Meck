@@ -1,0 +1,123 @@
+{
+  "manifest_version": 1,
+  "id": "cz.halecivo.ha-dashboard",
+  "version": "0.1.0",
+  "name": "Home Assistant",
+  "short_name": "Home",
+  "description": "State of chosen Home Assistant entities, read-only",
+  "author": "halecivo",
+  "lang": "en",
+  "icon": "home",
+
+  "requires": { "features": { "network": "required", "wifi": "optional" } },
+
+  "permissions": {
+    "origins": ["{settings.base_url}"],
+    "location": "none",
+    "background": true,
+    "sleep": false,
+    "notifications": true
+  },
+
+  "settings": [
+    { "key": "base_url", "type": "url", "label": "HA address", "default": "http://homeassistant.local:8123" },
+    { "key": "token", "type": "secret", "label": "Long-lived token", "required": true },
+    { "key": "hero", "type": "string", "label": "Main sensor", "default": "sensor.living_room_temperature" },
+    { "key": "entities", "type": "list", "label": "Entities",
+      "default": ["light.kitchen", "switch.boiler", "binary_sensor.front_door", "sensor.outdoor_temperature"] },
+    { "key": "door", "type": "string", "label": "Door sensor (notify)", "default": "binary_sensor.front_door" }
+  ],
+
+  "sources": [
+    {
+      "id": "hero",
+      "url": "{settings.base_url}/api/states/{settings.hero}",
+      "auth": { "type": "bearer", "value": "{settings.token}" },
+      "route": "wifi",
+      "max_bytes": 4096
+    },
+    {
+      "id": "ent",
+      "each": "{settings.entities}",
+      "url": "{settings.base_url}/api/states/{$}",
+      "auth": { "type": "bearer", "value": "{settings.token}" },
+      "route": "wifi",
+      "max_bytes": 4096
+    }
+  ],
+
+  "schedule": {
+    "foreground": { "interval": 30, "flex": 10 },
+    "background": { "interval": 900, "flex": 300 },
+    "sleep": { "interval": 0 },
+    "on_open": 60
+  },
+
+  "notify": [
+    {
+      "id": "door_open",
+      "each": "ent",
+      "where": { "field": "$/entity_id", "op": "==", "value": { "ref": "settings.door" } },
+      "when": { "field": "$/state", "op": "==", "value": "on" },
+      "trigger": "rising_edge",
+      "key": "{$/entity_id}",
+      "cooldown": 600,
+      "title": "{$/attributes/friendly_name | default($/entity_id)} open",
+      "body": "since {$/last_changed | time('HH:mm')}",
+      "priority": "normal",
+      "open": "detail"
+    }
+  ],
+
+  "ui": {
+    "schema": 1,
+    "designed_for": "meck.ui2",
+    "min_width": 240,
+    "min_height": 240,
+    "color": "mono",
+    "tile": { "icon": "home", "label": "Home", "value": "{hero/state | number(1) | suffix('°')}" },
+    "screens": [
+      {
+        "id": "main",
+        "title": "Home",
+        "title_right": "{@ent/age | ago}",
+        "body": [
+          {
+            "type": "hero",
+            "value": "{hero/state | number(1)}",
+            "unit": "{hero/attributes/unit_of_measurement}",
+            "caption": "{hero/attributes/friendly_name}",
+            "icon": "thermo"
+          },
+          { "type": "section", "text": "Entities" },
+          {
+            "type": "list",
+            "each": "ent",
+            "row": {
+              "icon": "{$/entity_id | before('.') | map(light:'light', switch:'switch', climate:'thermo', cover:'blind', scene:'scene', binary_sensor:'sensor', _:'sensor')}",
+              "title": "{$/attributes/friendly_name | default($/entity_id)}",
+              "sub": "{$/last_changed | ago}",
+              "right": "{$/state | map(on:'On', off:'Off', open:'Open', closed:'Closed', unavailable:'–')}{$/attributes/unit_of_measurement | prefix(' ')}",
+              "toggle": { "field": "$/state", "on": "on", "off": "off" },
+              "emphasis": { "field": "$/state", "op": "==", "value": "unavailable" },
+              "open": "detail"
+            },
+            "empty": { "icon": "home", "line": "No entities", "detail": "Add them in the app settings" }
+          }
+        ]
+      },
+      {
+        "id": "detail",
+        "title": "{$/attributes/friendly_name | default($/entity_id)}",
+        "body": [
+          { "type": "kv", "label": "State", "value": "{$/state}{$/attributes/unit_of_measurement | prefix(' ')}" },
+          { "type": "kv", "label": "Changed", "value": "{$/last_changed | time('d.M. HH:mm')}" },
+          { "type": "kv", "label": "Updated", "value": "{$/last_updated | ago}" },
+          { "type": "kv", "label": "Entity", "value": "{$/entity_id}" },
+          { "type": "kv", "label": "Brightness", "value": "{$/attributes/brightness}",
+            "visible_if": { "field": "$/attributes/brightness", "op": "exists" } }
+        ]
+      }
+    ]
+  }
+}
