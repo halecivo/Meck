@@ -56,12 +56,28 @@ void SerialBLEInterface::begin(const char* prefix, char* name, uint32_t pin_code
   _begun = false;
 }
 
+// What the phone accepted: it may round a request or ignore it, and only
+// this event says which (the power log needs the real interval)
+static volatile uint16_t s_link_interval = 0, s_link_latency = 0;
+
+static void onGapEvent(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t* param) {
+  if (event == ESP_GAP_BLE_UPDATE_CONN_PARAMS_EVT && param->update_conn_params.status == ESP_BT_STATUS_SUCCESS) {
+    s_link_interval = param->update_conn_params.conn_int;
+    s_link_latency = param->update_conn_params.latency;
+    BLE_DEBUG_PRINTLN("conn params: interval %u x 1.25ms, latency %u", s_link_interval, s_link_latency);
+  }
+}
+
+uint16_t SerialBLEInterface::linkInterval() { return s_link_interval; }
+uint16_t SerialBLEInterface::linkLatency() { return s_link_latency; }
+
 // Deferred BLE controller + GATT bring-up. Called from the first enable() so
 // the controller is not powered while BLE is disabled.
 void SerialBLEInterface::_realBegin() {
   // Create the BLE Device
   BLEDevice::init(_dev_name);
   BLEDevice::setSecurityCallbacks(this);
+  BLEDevice::setCustomGapHandler(onGapEvent);
   BLEDevice::setMTU(MAX_FRAME_SIZE);
 
   // Boost BLE TX power for improved range (MECK_BLE_TX_POWER above: +9 dBm
@@ -143,28 +159,7 @@ void SerialBLEInterface::onAuthenticationComplete(esp_ble_auth_cmpl_t cmpl) {
     // three requests below fail with "Invalid connection remote_bda".
     memcpy(_remote_bda, cmpl.bd_addr, 6);
 
-    // Request fast connection interval (15ms) for faster contact sync.
-    // Phone may negotiate higher, but most modern phones accept 15ms.
-    // Units are 1.25ms, so 12 = 15ms, 16 = 20ms.
-    esp_ble_conn_update_params_t conn_params;
-    memcpy(conn_params.bda, _remote_bda, 6);
-#ifdef MECK_BLE_SLOW_INTERVAL
-    // Watch link: a message every few minutes does not need a 15 ms interval,
-    // and a fast interval keeps the watch radio (and this stack) busy all day.
-    conn_params.min_int = 80;   // 100ms  (80 x 1.25ms)
-    conn_params.max_int = 160;  // 200ms  (160 x 1.25ms)
-    conn_params.latency = 2;    // peer may skip 2 intervals when idle
-    conn_params.timeout = 600;  // 6 seconds supervision timeout
-    esp_ble_gap_update_conn_params(&conn_params);
-    BLE_DEBUG_PRINTLN(" - Requested relaxed connection interval (100-200ms)");
-#else
-    conn_params.min_int = 12;   // 15ms   (12 × 1.25ms)
-    conn_params.max_int = 16;   // 20ms   (16 × 1.25ms)
-    conn_params.latency = 0;    // no skipped intervals
-    conn_params.timeout = 400;  // 4 seconds supervision timeout
-    esp_ble_gap_update_conn_params(&conn_params);
-    BLE_DEBUG_PRINTLN(" - Requested fast connection interval (15-20ms)");
-#endif
+    requestConnParams();
 
     // Request 2M PHY for doubled air data rate (BLE 5.0, supported on ESP32-S3)
     // Note: ESP-IDF misspells "preferred" as "prefered" in their API
@@ -183,6 +178,47 @@ void SerialBLEInterface::onAuthenticationComplete(esp_ble_auth_cmpl_t cmpl) {
     pServer->disconnect(pServer->getConnId());
     adv_restart_time = millis() + ADVERT_RESTART_DELAY;
   }
+}
+
+// Fast interval (15-20 ms) for a quick contact sync while the user is at the
+// deck; relaxed (100-150 ms, the deck may skip 4 events when it has nothing
+// to send) while locked, where a message every few minutes is all the link
+// carries. The relaxed values stay inside Apple's limits (interval max x
+// (latency + 1) <= 2 s, max >= min + 15 ms, timeout <= 6 s).
+// Units: interval 1.25 ms, timeout 10 ms.
+void SerialBLEInterface::requestConnParams() {
+  esp_ble_conn_update_params_t conn_params;
+  memcpy(conn_params.bda, _remote_bda, 6);
+#ifdef MECK_BLE_SLOW_INTERVAL
+  // Watch link: a message every few minutes does not need a 15 ms interval,
+  // and a fast interval keeps the watch radio (and this stack) busy all day.
+  conn_params.min_int = 80;   // 100ms
+  conn_params.max_int = 160;  // 200ms
+  conn_params.latency = 2;    // peer may skip 2 intervals when idle
+  conn_params.timeout = 600;  // 6 seconds supervision timeout
+  BLE_DEBUG_PRINTLN(" - Requested relaxed connection interval (100-200ms)");
+#else
+  if (_relaxed) {
+    conn_params.min_int = 80;   // 100ms
+    conn_params.max_int = 120;  // 150ms
+    conn_params.latency = 4;
+    conn_params.timeout = 600;  // 6 seconds
+    BLE_DEBUG_PRINTLN(" - Requested relaxed connection interval (100-150ms, latency 4)");
+  } else {
+    conn_params.min_int = 12;   // 15ms
+    conn_params.max_int = 16;   // 20ms
+    conn_params.latency = 0;
+    conn_params.timeout = 400;  // 4 seconds
+    BLE_DEBUG_PRINTLN(" - Requested fast connection interval (15-20ms)");
+  }
+#endif
+  esp_ble_gap_update_conn_params(&conn_params);
+}
+
+void SerialBLEInterface::setRelaxedLink(bool relaxed) {
+  if (_relaxed == relaxed) return;
+  _relaxed = relaxed;
+  if (_isEnabled && deviceConnected && _auth_ok) requestConnParams();
 }
 
 // -------- BLEServerCallbacks methods
