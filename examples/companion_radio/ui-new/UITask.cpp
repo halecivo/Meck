@@ -797,13 +797,9 @@ void renderBatteryIndicator(DisplayDriver& display, uint16_t batteryMilliVolts, 
       bt.icon = UI2_IC_BLE;
       bt.title = "Bluetooth";
       if (!btOn) {
-        bt.sub = MECK_TR("Off", "DÃ©sactivÃ©");
+        bt.sub = MECK_TR("Off", "D\xC3\xA9sactiv\xC3\xA9");
       } else if (meckCompanionBleConnected()) {
-        bt.sub = MECK_TR("App connected", "Appli connectÃ©" "e");
-      } else if (the_mesh.getBLEPin() != 0) {
-        snprintf(buf, sizeof(buf), MECK_TR("Waiting for the app, PIN %d", "Attente de l'appli, code %d"),
-                 (int)the_mesh.getBLEPin());
-        bt.sub = buf;
+        bt.sub = MECK_TR("App connected", "Appli connect\xC3\xA9" "e");
       } else {
         bt.sub = MECK_TR("Waiting for the app", "Attente de l'appli");
       }
@@ -819,11 +815,11 @@ void renderBatteryIndicator(DisplayDriver& display, uint16_t batteryMilliVolts, 
               : ui2Status.wifiLevel >= 3 ? UI2_IC_WIFI : ui2Status.wifiLevel == 2 ? UI2_IC_WIFI2 : UI2_IC_WIFI1;
       wf.title = "WiFi";
       if (!wifiOn) {
-        wf.sub = MECK_TR("Off", "DÃ©sactivÃ©");
+        wf.sub = MECK_TR("Off", "D\xC3\xA9sactiv\xC3\xA9");
       } else if (!joined) {
-        wf.sub = MECK_TR("Not connected to a network", "Pas de rÃ©seau");
+        wf.sub = MECK_TR("Not connected to a network", "Pas de r\xC3\xA9seau");
       } else if (meckCompanionWifiConnected()) {
-        wf.sub = MECK_TR("App connected", "Appli connectÃ©" "e");
+        wf.sub = MECK_TR("App connected", "Appli connect\xC3\xA9" "e");
       } else {
         wf.sub = MECK_TR("Waiting for the app", "Attente de l'appli");
       }
@@ -832,19 +828,25 @@ void renderBatteryIndicator(DisplayDriver& display, uint16_t batteryMilliVolts, 
       Ui2List::drawRow(c, y, wf);
       y += ROW_H + 8;
 
+      // The PIN gets its own row: next to the toggle the subtitle is too
+      // narrow and cut the PIN off
+      if (btOn && !meckCompanionBleConnected() && the_mesh.getBLEPin() != 0) {
+        snprintf(val, sizeof(val), "%u", (unsigned)the_mesh.getBLEPin());
+        Ui2List::kvRow(c, y, MECK_TR("Bluetooth PIN", "Code Bluetooth"), val); y += 20;
+      }
       if (joined) {
-        Ui2List::kvRow(c, y, MECK_TR("Network", "RÃ©seau"), WiFi.SSID().c_str()); y += 20;
+        Ui2List::kvRow(c, y, MECK_TR("Network", "R\xC3\xA9seau"), WiFi.SSID().c_str()); y += 20;
         snprintf(val, sizeof(val), "%d dBm", (int)WiFi.RSSI());
         Ui2List::kvRow(c, y, MECK_TR("Signal", "Signal"), val); y += 20;
         IPAddress ip = WiFi.localIP();
         snprintf(val, sizeof(val), "%d.%d.%d.%d:%d", ip[0], ip[1], ip[2], ip[3], TCP_PORT);
         Ui2List::kvRow(c, y, MECK_TR("Address", "Adresse"), val); y += 20;
       } else if (wifiOn) {
-        Ui2List::kvRow(c, y, MECK_TR("Network", "RÃ©seau"), MECK_TR("Settings > WiFi", "RÃ©glages > WiFi")); y += 20;
+        Ui2List::kvRow(c, y, MECK_TR("Network", "R\xC3\xA9seau"), MECK_TR("Settings > WiFi", "R\xC3\xA9glages > WiFi")); y += 20;
       }
       infoDots(c);
       const bool selOn = _connRow == 0 ? btOn : wifiOn;
-      const char* act = selOn ? MECK_TR("Turn off", "DÃ©sactiver") : MECK_TR("Turn on", "Activer");
+      const char* act = selOn ? MECK_TR("Turn off", "D\xC3\xA9sactiver") : MECK_TR("Turn on", "Activer");
       const Ui2Key keys[] = { ui2KeyIcon(UI2_IC_ENTER, act), ui2Key("W/S", MECK_TR("Select", "Choisir"), true),
                               ui2Key("A/D", MECK_TR("Page", "Page"), true) };
       Ui2Chrome::footer(c, keys, 3);
@@ -2104,7 +2106,7 @@ public:
       if (meckCompanionIsWiFi()) {
         meckCompanionWifiOff();
       } else if (!meckCompanionUseWiFi(true)) {
-        _task->showAlert(MECK_TR("WiFi failed to start", "Ã" "chec du WiFi"), 1500);
+        _task->showAlert(MECK_TR("WiFi failed to start", "\xC3\x89" "chec du WiFi"), 1500);
       }
       return true;
     }
