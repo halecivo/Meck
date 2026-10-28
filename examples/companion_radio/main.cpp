@@ -1144,6 +1144,15 @@ static uint32_t _atoi(const char* sp) {
       // Stop / restart the BLE companion interface (advertising + service)
       if (cmd[7] == '1') MECK_BLE_IFACE.enable(); else MECK_BLE_IFACE.disable();
       Serial.printf("pwr: BLE %s\n", cmd[7] == '1' ? "on" : "off");
+#if defined(BLE_PIN_CODE) && !defined(WIFI_SSID)
+    } else if (strcmp(cmd, "pwrlink") == 0) {
+      // Connection interval the phone accepted (relaxed while locked)
+      uint16_t iv = SerialBLEInterface::linkInterval();
+      Serial.printf("pwr: BLE link %s, interval %u.%02u ms, latency %u\n",
+                    MECK_BLE_IFACE.isConnected() ? "up" : "down",
+                    (unsigned)(iv * 125 / 100), (unsigned)(iv * 125 % 100),
+                    (unsigned)SerialBLEInterface::linkLatency());
+#endif
     } else if (strncmp(cmd, "pwrxl ", 6) == 0) {
       // GPS and the 1.8 V sensor rail can be switched freely. "lora" (radio
       // power) and "touch" (touch controller held in reset) are for measuring
@@ -3480,6 +3489,12 @@ int meckLockSleepBlocker() {
 static void meckLockSleepStep() {
   bool locked = ui_task.isLocked();
   bool canSleep = locked && meckLockSleepBlocker() == MECK_SLEEP_OK;
+
+#if defined(BLE_PIN_CODE) && !defined(WIFI_SSID)
+  // A phone that stays connected keeps the deck awake; while locked it gets
+  // a slow connection interval, and the fast one back on unlock for the sync
+  MECK_BLE_IFACE.setRelaxedLink(locked && the_mesh.getNodePrefs()->lock_sleep);
+#endif
 
   // BLE advertising off while sleep is possible, back on otherwise
   if (canSleep && !meckBleStoppedForSleep && MECK_BLE_IFACE.isEnabled()) {
