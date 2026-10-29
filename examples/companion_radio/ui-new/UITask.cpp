@@ -2925,6 +2925,10 @@ void UITask::updateUi2Status() {
   }
 #endif
   st.gpsOn = getGPSState();
+#if ENV_INCLUDE_GPS == 1
+  LocationProvider* gpsLoc = st.gpsOn ? sensors.getLocationProvider() : nullptr;
+  st.gpsFix = gpsLoc && gpsLoc->isValid();
+#endif
 #if defined(LilyGo_TDeck_Pro)
   st.sosActive = meckSos.running();
 #endif

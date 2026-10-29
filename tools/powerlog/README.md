@@ -67,8 +67,9 @@ mean current on battery), and the state and run tables can be limited to one ver
 
 ## Log format
 
-`utc,local_date,local_time,secs,asleep_s,wake_lora,wake_btn,wake_timer,pct,mv,avg_ma,temp_c,usb,charge,locked,blocker,saving,gps,modem,wifi,phone,ble,audio,light,rx,tx,refresh,full_refresh,clock_jump_s,utc_offset,rc_ppm`
+`utc,local_date,local_time,secs,asleep_s,wake_lora,wake_btn,wake_timer,pct,mv,avg_ma,temp_c,usb,charge,locked,blocker,saving,gps,modem,wifi,phone,ble,audio,light,rx,tx,refresh,full_refresh,clock_jump_s,utc_offset,rc_ppm,fix`
 
 `avg_ma` is negative while discharging; `charge` 0 off / 1 pre / 2 fast / 3 done; `blocker` is
-`MeckSleepBlock` (`ui-new/UITask.h`). The first firmware with the log had no `rc_ppm` column;
-both forms are read. Tests: `py -3 -m unittest discover -s tools/powerlog`.
+`MeckSleepBlock` (`ui-new/UITask.h`). `fix` is 1 when the GPS was powered and had a fix at the end
+of the minute (the "GPS fix" lane). The first firmware with the log had no `rc_ppm` column and the
+next ones no `fix` column (read as 0, so older records look like "no fix"); all forms are read. Tests: `py -3 -m unittest discover -s tools/powerlog`.

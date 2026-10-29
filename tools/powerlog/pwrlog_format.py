@@ -15,16 +15,17 @@ import datetime
 
 HEADER = ("utc,local_date,local_time,secs,asleep_s,wake_lora,wake_btn,wake_timer,"
           "pct,mv,avg_ma,temp_c,usb,charge,locked,blocker,saving,gps,modem,wifi,"
-          "phone,ble,audio,light,rx,tx,refresh,full_refresh,clock_jump_s,utc_offset,rc_ppm")
+          "phone,ble,audio,light,rx,tx,refresh,full_refresh,clock_jump_s,utc_offset,rc_ppm,fix")
 FIELDS = HEADER.split(",")
-# The first firmware with the log (6eb18730) had no rc_ppm column
-HEADER_V1 = HEADER.rsplit(",", 1)[0]
-OPTIONAL = {"rc_ppm": 0}
+# The first firmware with the log (6eb18730) had no rc_ppm column, the next ones no fix column
+HEADER_V2 = HEADER.rsplit(",", 1)[0]
+HEADER_V1 = HEADER_V2.rsplit(",", 1)[0]
+OPTIONAL = {"rc_ppm": 0, "fix": 0}   # in column order, the last ones; 0 when the column is missing
 FLOAT_FIELDS = {"asleep_s", "temp_c"}
 TEXT_FIELDS = {"local_date", "local_time"}
 
 # 0/1 columns, in the order the viewer shows them
-FLAGS = ["locked", "saving", "usb", "gps", "modem", "wifi", "phone", "ble", "audio", "light"]
+FLAGS = ["locked", "saving", "usb", "gps", "fix", "modem", "wifi", "phone", "ble", "audio", "light"]
 # MeckSleepBlock in examples/companion_radio/ui-new/UITask.h
 BLOCKERS = ["can sleep", "saving off", "USB", "phone", "GPS", "modem", "WiFi", "audio", "SOS"]
 CHARGE = ["off", "pre-charge", "fast charge", "done"]
@@ -36,7 +37,7 @@ PLAUSIBLE_FROM = 1735689600  # 2025-01-01: anything earlier is a clock that was 
 def parse_line(line):
     """One CSV record -> (dict, warnings). Raises ValueError when it is not a record."""
     parts = line.strip().split(",")
-    if len(parts) not in (len(FIELDS), len(FIELDS) - len(OPTIONAL)):
+    if not len(FIELDS) - len(OPTIONAL) <= len(parts) <= len(FIELDS):
         raise ValueError("%d fields instead of %d" % (len(parts), len(FIELDS)))
     rec = dict(OPTIONAL)
     for name, val in zip(FIELDS, parts):
@@ -85,7 +86,7 @@ def parse_fw(line):
 def classify(line):
     """'header', 'fw', 'record', 'bad' (looks like a record but does not parse) or 'noise'."""
     s = line.strip()
-    if s in (HEADER, HEADER_V1):
+    if s in (HEADER, HEADER_V2, HEADER_V1):
         return "header"
     if s.startswith("#fw,"):
         return "fw" if parse_fw(s) else "noise"

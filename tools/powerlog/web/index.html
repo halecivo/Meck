@@ -201,6 +201,7 @@ function buildLanes() {
     { name: "Power saving", get: i => flag(i, "saving") },
     { name: "Kept awake by", get: i => flag(i, "locked") && C.blocker[i] > 1 ? C.blocker[i] : 0, label: v => D.blockers[v] },
     { name: "GPS", get: i => flag(i, "gps") },
+    { name: "GPS fix", get: i => flag(i, "fix") },
     { name: "4G modem", get: i => flag(i, "modem") },
     { name: "WiFi", get: i => flag(i, "wifi") },
     { name: "Phone (BLE)", get: i => flag(i, "phone") },

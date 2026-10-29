@@ -3586,7 +3586,7 @@ enum {
   MECK_PWR_F_LOCKED = 1 << 0, MECK_PWR_F_USB = 1 << 1, MECK_PWR_F_GPS = 1 << 2,
   MECK_PWR_F_MODEM = 1 << 3, MECK_PWR_F_WIFI = 1 << 4, MECK_PWR_F_PHONE = 1 << 5,
   MECK_PWR_F_BLE = 1 << 6, MECK_PWR_F_AUDIO = 1 << 7, MECK_PWR_F_LIGHT = 1 << 8,
-  MECK_PWR_F_SAVING = 1 << 9,
+  MECK_PWR_F_SAVING = 1 << 9, MECK_PWR_F_FIX = 1 << 10,
 };
 
 #define MECK_PWR_CAP   120   // two hours, in case an SD write fails
@@ -3629,6 +3629,11 @@ static void meckPwrRecord(uint32_t now, unsigned long ms) {
   if (ui_task.isLocked()) f |= MECK_PWR_F_LOCKED;
   if (board.isUsbPowered()) f |= MECK_PWR_F_USB;
   if (p->gps_enabled) f |= MECK_PWR_F_GPS;
+  // The receiver is powered (the setting or SOS) and the last sentences gave a fix
+  if (board.xl9555_digitalRead(XL_PIN_GPS_EN)) {
+    LocationProvider* loc = sensors.getLocationProvider();
+    if (loc && loc->isValid()) f |= MECK_PWR_F_FIX;
+  }
 #ifdef HAS_4G_MODEM
   if (modemManager.getState() != ModemState::OFF) f |= MECK_PWR_F_MODEM;
 #endif
@@ -3683,21 +3688,21 @@ static void meckPwrLocalDate(uint32_t t, int8_t utc, char* date, size_t dlen, ch
 static const char MECK_PWR_HEADER[] =
   "utc,local_date,local_time,secs,asleep_s,wake_lora,wake_btn,wake_timer,"
   "pct,mv,avg_ma,temp_c,usb,charge,locked,blocker,saving,gps,modem,wifi,"
-  "phone,ble,audio,light,rx,tx,refresh,full_refresh,clock_jump_s,utc_offset,rc_ppm";
+  "phone,ble,audio,light,rx,tx,refresh,full_refresh,clock_jump_s,utc_offset,rc_ppm,fix";
 
 static int meckPwrCsv(const MeckPwrRec& r, char* buf, size_t len, char* date, size_t dlen) {
   char hm[8];
   meckPwrLocalDate(r.t, r.utc, date, dlen, hm, sizeof(hm));
   uint16_t f = r.flags;
   return snprintf(buf, len,
-    "%lu,%s,%s,%u,%u.%u,%u,%u,%u,%u,%u,%d,%d.%d,%d,%u,%d,%u,%d,%d,%d,%d,%d,%d,%d,%d,%u,%u,%u,%u,%ld,%d,%d",
+    "%lu,%s,%s,%u,%u.%u,%u,%u,%u,%u,%u,%d,%d.%d,%d,%u,%d,%u,%d,%d,%d,%d,%d,%d,%d,%d,%u,%u,%u,%u,%ld,%d,%d,%d",
     (unsigned long)r.t, date, hm, r.secs, r.sleptDs / 10, r.sleptDs % 10,
     r.wLora, r.wBtn, r.wTimer, r.pct, r.mv, r.avgMa, r.tempDc / 10, abs(r.tempDc % 10),
     (f & MECK_PWR_F_USB) ? 1 : 0, r.chg, (f & MECK_PWR_F_LOCKED) ? 1 : 0, r.blocker,
     (f & MECK_PWR_F_SAVING) ? 1 : 0, (f & MECK_PWR_F_GPS) ? 1 : 0, (f & MECK_PWR_F_MODEM) ? 1 : 0,
     (f & MECK_PWR_F_WIFI) ? 1 : 0, (f & MECK_PWR_F_PHONE) ? 1 : 0, (f & MECK_PWR_F_BLE) ? 1 : 0,
     (f & MECK_PWR_F_AUDIO) ? 1 : 0, (f & MECK_PWR_F_LIGHT) ? 1 : 0,
-    r.rx, r.tx, r.refresh, r.full, (long)r.jump, r.utc, r.rcPpm);
+    r.rx, r.tx, r.refresh, r.full, (long)r.jump, r.utc, r.rcPpm, (f & MECK_PWR_F_FIX) ? 1 : 0);
 }
 
 #ifndef MECK_GIT_HASH
