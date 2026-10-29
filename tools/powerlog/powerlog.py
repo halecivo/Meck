@@ -64,12 +64,13 @@ def analyse(store, capacity):
     return {
         "timeline": timeline, "unknown": unknown, "info": info, "segments": segs,
         "by_state": fmt.by_state(segs, capacity), "quiet": fmt.quiet_stretches(timeline),
+        "by_firmware": fmt.by_firmware(timeline, info["firmware"], capacity),
     }
 
 
 COLUMNS = ["t", "secs", "ma", "awake", "pct", "mv", "temp_c", "drain_pct_h", "gauge_pct_h",
            "charge", "blocker", "rx", "tx", "refresh", "full_refresh", "wake_lora", "wake_btn",
-           "wake_timer", "clock_jump_s", "gap", "shift", "utc_offset", "rc_ppm"]
+           "wake_timer", "clock_jump_s", "gap", "shift", "utc_offset", "rc_ppm", "fw"]
 
 
 def payload(store, capacity, static=False):
@@ -84,6 +85,7 @@ def payload(store, capacity, static=False):
         "static": static, "capacity": capacity,
         "generated": datetime.datetime.now().strftime("%Y-%m-%d %H:%M"),
         "flags": fmt.FLAGS, "blockers": fmt.BLOCKERS, "charge": fmt.CHARGE,
+        "firmware": a["info"]["firmware"], "by_firmware": a["by_firmware"],
         "cols": cols, "segments": a["segments"], "by_state": a["by_state"], "quiet": a["quiet"],
         "pulls": len(pulls), "last_pull": pulls[-1] if pulls else None,
         "last_pull_t0": min(last) if last else None,
@@ -120,6 +122,11 @@ def cmd_check(store, args):
         for j in jumps[:10]:
             print("  %s  %+d s" % (fmt_time(j["t"], j["utc_offset"]), j["clock_jump_s"]))
         print("quiet stretches the viewer compresses: %d" % len(a["quiet"]))
+        print("firmware (time logged, mean current on battery):")
+        for fw in a["by_firmware"]:
+            name = "%s%s %s, commit %s" % (fw["hash"], "+" if fw["dirty"] else "", fw["version"],
+                                           fmt_time(fw["git_time"], off)) if fw["fw"] >= 0 else "not named (older firmware)"
+            print("  %-60s %12s  %s" % (name[:60], fmt_dur(fw["secs"]), "%.1f mA" % fw["ma"] if fw["ma"] is not None else "-"))
         print("by state (time, mean current, drain):")
         for s in a["by_state"][:15]:
             print("  %-48s %12s  %6.1f mA  %5.2f %%/h" % (s["state"][:48], fmt_dur(s["secs"]), s["ma"], s["pct_h"]))

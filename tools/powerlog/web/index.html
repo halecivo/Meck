@@ -75,7 +75,9 @@ th { color: var(--ink-2); font-weight: 600; cursor: pointer; background: var(--b
 td.n, th.n { text-align: right; font-variant-numeric: tabular-nums; }
 td.wrap { white-space: normal; }
 tbody tr:hover { background: var(--band); }
-#segs tbody tr { cursor: pointer; }
+#segs tbody tr, #fwtab tbody tr { cursor: pointer; }
+#fwtab tr.sel td { background: var(--band); font-weight: 600; }
+select { font: inherit; color: var(--ink); background: var(--surface); border: 1px solid var(--axis); border-radius: 6px; padding: 4px 8px; }
 .scroll { overflow-x: auto; max-height: 460px; overflow-y: auto; border-radius: 8px; }
 details { margin-top: 16px; }
 summary { cursor: pointer; color: var(--ink-2); }
@@ -113,6 +115,9 @@ summary { cursor: pointer; color: var(--ink-2); }
 Hatched columns: no data (deck off, reset or flat). Shaded columns: long quiet stretches drawn narrow — click one to expand it.
 Times are the deck's local time.</p>
 
+<h2>Firmware versions <span style="font-weight:400;color:var(--muted)">(click a row to show only its runs below)</span></h2>
+<div class="scroll"><table id="fwtab"></table></div>
+<div class="toolbar"><label>Tables below for <select id="fwsel"></select></label></div>
 <h2>Time per state</h2>
 <div class="scroll"><table id="bystate"></table></div>
 <h2>Runs <span style="font-weight:400;color:var(--muted)">(click a row to zoom to it)</span></h2>
@@ -168,6 +173,8 @@ function load(data) {
   renderMeta();
   buildPieces();
   setRange(currentRange || "all");
+  if (fwFilter !== "all" && !D.by_firmware.some(f => f.fw === fwFilter)) fwFilter = "all";
+  renderFirmware();
   renderTables();
 }
 
@@ -201,6 +208,7 @@ function buildLanes() {
     { name: "Audio", get: i => flag(i, "audio") },
     { name: "Backlight", get: i => flag(i, "light") },
   ];
+  defs.unshift({ name: "Firmware", get: i => C.fw[i] + 1, label: v => fwName(v - 1), alt: true });
   lanes = defs.map(d => {
     const runs = []; let cur = null;
     for (let i = 0; i < N; i++) {
@@ -484,10 +492,16 @@ function render() {
     svg.appendChild(el("text", { x: L - 6, y: top + 11, "text-anchor": "end", class: "lane" }, ln.name));
     svg.appendChild(el("line", { x1: L, x2: L + layout.W, y1: top + laneH - 1, y2: top + laneH - 1, stroke: "var(--grid)" }));
     const g = el("g", { "clip-path": "url(#plot)" });
-    let d = "";
+    let d = "", d2 = "";
     for (const r of ln.runs) {
       if (r.b < t0v || r.a > t1v) continue;
       const xa = XT(r.a), xb = Math.max(XT(r.b), xa + 1);
+      if (ln.alt && r.v % 2 === 0) {   // neighbouring versions in two shades
+        d2 += "M" + xa.toFixed(1) + "," + (top + 2) + "H" + xb.toFixed(1) + "V" + (top + laneH - 3) + "H" + xa.toFixed(1) + "Z";
+        if (xb - xa > ln.label(r.v).length * 6 + 8)
+          g.appendChild(el("text", { x: ((xa + Math.min(xb, L + layout.W)) / 2).toFixed(1), y: top + 10.5, "text-anchor": "middle", style: "fill:#fff;font-size:10px" }, ln.label(r.v)));
+        continue;
+      }
       if (ln.shade) {
         g.appendChild(el("rect", { x: xa.toFixed(1), y: top + 2, width: (xb - xa).toFixed(1), height: laneH - 5, fill: "var(--s1)", "fill-opacity": (0.15 + 0.7 * r.v).toFixed(2) }));
         continue;
@@ -498,6 +512,7 @@ function render() {
       }
     }
     if (d) g.insertBefore(el("path", { d, fill: "var(--s1)", "fill-opacity": 0.8 }), g.firstChild);
+    if (d2) g.insertBefore(el("path", { d: d2, fill: "var(--s1)", "fill-opacity": 0.5 }), g.firstChild);
     svg.appendChild(g);
     top += laneH;
   }
@@ -645,10 +660,47 @@ function renderMeta() {
 }
 
 // ---------- tables ----------
+function fwName(id) {
+  if (id < 0 || !D.firmware[id]) return "not named";
+  const f = D.firmware[id];
+  return f.hash + (f.dirty ? "+" : "");
+}
+const fwTime = t => t ? full(t) : "–";
+let fwFilter = "all";
+const segsShown = () => D.segments.map((s, i) => Object.assign({ i }, s)).filter(s => fwFilter === "all" || s.fw === fwFilter);
+function byState(segs) {
+  const acc = new Map();
+  for (const s of segs) {
+    const a = acc.get(s.state) || { state: s.state, secs: 0, mas: 0, runs: 0, rx: 0, tx: 0 };
+    a.secs += s.secs; a.mas += s.ma * s.secs; a.runs++; a.rx += s.rx; a.tx += s.tx;
+    acc.set(s.state, a);
+  }
+  return [...acc.values()].map(a => {
+    const ma = a.secs ? a.mas / a.secs : 0;
+    return Object.assign(a, { ma, pct_h: ma / D.capacity * 100 });
+  }).sort((x, y) => y.secs - x.secs);
+}
+function renderFirmware() {
+  const sel = $("fwsel");
+  sel.innerHTML = '<option value="all">all firmware</option>' + D.by_firmware.map(f =>
+    '<option value="' + f.fw + '">' + esc(f.fw < 0 ? "not named (firmware before the #fw line)" : fwName(f.fw) + " · " + f.version + " · commit " + fwTime(f.git_time)) + "</option>").join("");
+  sel.value = String(fwFilter);
+  $("fwtab").innerHTML = "<thead><tr><th>Firmware</th><th>Version</th><th>Commit</th><th>Built</th><th>Logged</th><th class=n>Time</th><th class=n>Mean mA on battery</th><th class=n>%/h</th><th class=n>Asleep</th></tr></thead><tbody>" +
+    D.by_firmware.map(f => "<tr data-fw=" + f.fw + (fwFilter === f.fw ? " class=sel" : "") + "><td>" + esc(f.fw < 0 ? "not named" : fwName(f.fw)) + "</td><td>" + esc(f.version || "older, before the #fw line") +
+      "</td><td>" + fwTime(f.git_time) + "</td><td>" + fwTime(f.build_time) + "</td><td>" + full(f.t0) + " – " + full(f.t1) + "</td><td class=n>" + dur(f.secs) +
+      "</td><td class=n>" + f1(f.ma) + "</td><td class=n>" + f2(f.pct_h) + "</td><td class=n>" + (f.asleep == null ? "–" : Math.round(f.asleep * 100) + " %") + "</td></tr>").join("") + "</tbody>";
+}
+function setFw(v) { fwFilter = v === "all" ? "all" : +v; renderFirmware(); renderTables(); }
+$("fwsel").addEventListener("change", e => setFw(e.target.value));
+$("fwtab").addEventListener("click", e => {
+  const tr = e.target.closest("tr[data-fw]");
+  if (tr) setFw(fwFilter === +tr.dataset.fw ? "all" : tr.dataset.fw);
+});
+
 let segSort = { k: "t0", dir: -1 };
 function renderTables() {
   $("bystate").innerHTML = "<thead><tr><th>State (what was on)</th><th class=n>Time</th><th class=n>Runs</th><th class=n>Mean mA</th><th class=n>%/h</th><th class=n>Full battery lasts</th><th class=n>RX / TX</th></tr></thead><tbody>" +
-    D.by_state.map(s => "<tr><td class=wrap>" + esc(s.state) + "</td><td class=n>" + dur(s.secs) + "</td><td class=n>" + s.runs + "</td><td class=n>" + f1(s.ma) + "</td><td class=n>" + f2(s.pct_h) + "</td><td class=n>" + (s.state.includes("usb") ? "–" : runtime(s.pct_h)) + "</td><td class=n>" + s.rx + " / " + s.tx + "</td></tr>").join("") + "</tbody>";
+    byState(segsShown()).map(s => "<tr><td class=wrap>" + esc(s.state) + "</td><td class=n>" + dur(s.secs) + "</td><td class=n>" + s.runs + "</td><td class=n>" + f1(s.ma) + "</td><td class=n>" + f2(s.pct_h) + "</td><td class=n>" + (s.state.includes("usb") ? "–" : runtime(s.pct_h)) + "</td><td class=n>" + s.rx + " / " + s.tx + "</td></tr>").join("") + "</tbody>";
   renderSegs();
   const unk = $("unk");
   unk.style.display = D.unknown_count ? "" : "none";
@@ -663,16 +715,16 @@ function renderTables() {
     D.warnings.map(w => "<tr><td>" + esc(w.where) + "</td><td>" + esc(w.why) + "</td><td></td></tr>").join("") + "</tbody>";
 }
 function renderSegs() {
-  const cols = [["t0", "Start"], ["secs", "Duration", 1], ["state", "What was on"], ["ma", "Mean mA", 1], ["pct_h", "%/h current", 1], ["gauge_pct_h", "%/h gauge", 1], ["awake", "Awake", 1], ["rx", "RX / TX", 1]];
-  const rows = D.segments.map((s, i) => Object.assign({ i }, s));
+  const cols = [["t0", "Start"], ["secs", "Duration", 1], ["state", "What was on"], ["fw", "Firmware"], ["ma", "Mean mA", 1], ["pct_h", "%/h current", 1], ["gauge_pct_h", "%/h gauge", 1], ["awake", "Awake", 1], ["rx", "RX / TX", 1]];
+  const rows = segsShown();
   rows.sort((a, b) => {
     const x = a[segSort.k], y = b[segSort.k];
     return (x == null ? -1e9 : x) < (y == null ? -1e9 : y) ? -segSort.dir : (x === y ? 0 : segSort.dir);
   });
   const shown = rows.slice(0, 500);
   $("segs").innerHTML = "<thead><tr>" + cols.map(([k, n, num]) => "<th data-k=" + k + (num ? " class=n" : "") + ">" + n + (segSort.k === k ? (segSort.dir > 0 ? " ▲" : " ▼") : "") + "</th>").join("") + "</tr></thead><tbody>" +
-    shown.map(s => "<tr data-i=" + s.i + "><td>" + full(s.t0) + "</td><td class=n>" + dur(s.secs) + "</td><td class=wrap>" + esc(s.state) + "</td><td class=n>" + f1(s.ma) + "</td><td class=n>" + f2(s.pct_h) + "</td><td class=n>" + f2(s.gauge_pct_h) + "</td><td class=n>" + Math.round(s.awake * 100) + " %</td><td class=n>" + s.rx + " / " + s.tx + "</td></tr>").join("") +
-    (rows.length > 500 ? "<tr><td colspan=8>… " + (rows.length - 500) + " more (sort to see others)</td></tr>" : "") + "</tbody>";
+    shown.map(s => "<tr data-i=" + s.i + "><td>" + full(s.t0) + "</td><td class=n>" + dur(s.secs) + "</td><td class=wrap>" + esc(s.state) + "</td><td>" + esc(fwName(s.fw)) + "</td><td class=n>" + f1(s.ma) + "</td><td class=n>" + f2(s.pct_h) + "</td><td class=n>" + f2(s.gauge_pct_h) + "</td><td class=n>" + Math.round(s.awake * 100) + " %</td><td class=n>" + s.rx + " / " + s.tx + "</td></tr>").join("") +
+    (rows.length > 500 ? "<tr><td colspan=9>… " + (rows.length - 500) + " more (sort to see others)</td></tr>" : "") + "</tbody>";
 }
 $("segs").addEventListener("click", e => {
   const th = e.target.closest("th");
@@ -704,6 +756,7 @@ function tipHtml(i) {
     ["Display", C.refresh[i] + " refreshes (" + C.full_refresh[i] + " full)"],
   ];
   if (flag(i, "locked")) rows.push(["Sleep", D.blockers[C.blocker[i]]]);
+  rows.push(["Firmware", esc(fwName(C.fw[i]))]);
   if (C.clock_jump_s[i]) rows.push(["Clock changed", (C.clock_jump_s[i] > 0 ? "+" : "") + C.clock_jump_s[i] + " s"]);
   if (C.shift[i]) rows.push(["Time repaired", (C.shift[i] > 0 ? "+" : "") + dur(Math.abs(C.shift[i]))]);
   return "<b>" + full(S[i], C.utc_offset[i]) + " – " + hm(T[i], C.utc_offset[i]) + "</b><br>" +

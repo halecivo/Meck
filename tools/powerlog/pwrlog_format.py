@@ -6,6 +6,10 @@ covers the interval that ends at its "utc"; "avg_ma" is the gauge's average
 current, negative while discharging. Records written before the clock was set
 carry a wrong epoch; the record during which the clock changed has the jump
 in "clock_jump_s" and the corrected time in "utc".
+
+Since git_version.py, a "#fw,<hash>,<commit time>,<build time>,<version>"
+line before a boot's first records in a file names the firmware that wrote
+them; older firmware wrote none.
 """
 import datetime
 
@@ -65,11 +69,26 @@ def local_date_time(utc, offset_h):
     return t.strftime("%Y%m%d"), t.strftime("%H:%M")
 
 
+def parse_fw(line):
+    """A "#fw" line -> dict, or None."""
+    parts = line.strip().split(",", 4)
+    if len(parts) != 5 or parts[0] != "#fw":
+        return None
+    try:
+        git_time, build_time = int(parts[2]), int(parts[3])
+    except ValueError:
+        return None
+    return {"hash": parts[1].rstrip("+"), "dirty": parts[1].endswith("+"),
+            "git_time": git_time, "build_time": build_time, "version": parts[4]}
+
+
 def classify(line):
-    """'header', 'record', 'bad' (looks like a record but does not parse) or 'noise'."""
+    """'header', 'fw', 'record', 'bad' (looks like a record but does not parse) or 'noise'."""
     s = line.strip()
     if s in (HEADER, HEADER_V1):
         return "header"
+    if s.startswith("#fw,"):
+        return "fw" if parse_fw(s) else "noise"
     if not s or not s[0].isdigit() or s.count(",") < 5:
         return "noise"   # CLI echo, other log output, listings
     try:
@@ -281,6 +300,10 @@ def state_key(r):
     return (tuple(r[f] for f in FLAGS), r["charge"])
 
 
+def run_key(r):
+    return state_key(r) + (r.get("fw", -1),)
+
+
 def state_label(r):
     on = [f for f in FLAGS if r[f]]
     if r["usb"] and r["charge"]:
@@ -289,11 +312,11 @@ def state_label(r):
 
 
 def segments(timeline, capacity=DESIGN_CAPACITY_MAH):
-    """Runs of one state (flags + charge) without a gap."""
+    """Runs of one state (flags + charge) and one firmware without a gap."""
     segs, cur = [], None
     for r in timeline:
-        if cur is None or r["gap"] or state_key(r) != cur["key"]:
-            cur = {"key": state_key(r), "state": state_label(r), "recs": []}
+        if cur is None or r["gap"] or run_key(r) != cur["key"]:
+            cur = {"key": run_key(r), "state": state_label(r), "fw": r.get("fw", -1), "recs": []}
             segs.append(cur)
         cur["recs"].append(r)
     out = []
@@ -303,7 +326,7 @@ def segments(timeline, capacity=DESIGN_CAPACITY_MAH):
         ma = sum(r["ma"] * r["secs"] for r in rs) / dur if dur else 0
         out.append({
             "t0": rs[0]["t"] - rs[0]["secs"], "t1": rs[-1]["t"], "secs": dur, "n": len(rs),
-            "state": s["state"], "ma": round(ma, 1),
+            "state": s["state"], "fw": s["fw"], "ma": round(ma, 1),
             "pct_h": round(ma / capacity * 100, 2),
             "gauge_pct_h": round((rs[0]["pct"] - rs[-1]["pct"]) / dur * 3600, 2) if dur >= 1800 else None,
             "awake": round(sum(r["awake"] * r["secs"] for r in rs) / dur, 3) if dur else 0,
@@ -329,6 +352,33 @@ def by_state(segs, capacity=DESIGN_CAPACITY_MAH):
         a["pct_h"] = round(ma / capacity * 100, 2)
         out.append(a)
     out.sort(key=lambda a: -a["secs"])
+    return out
+
+
+def by_firmware(timeline, firmware, capacity=DESIGN_CAPACITY_MAH):
+    """Per firmware (and -1 for unnamed): time logged and current on battery."""
+    acc = {}
+    for r in timeline:
+        a = acc.setdefault(r.get("fw", -1), {"fw": r.get("fw", -1), "n": 0, "secs": 0, "t0": r["t"] - r["secs"],
+                                             "t1": r["t"], "bat": 0, "mas": 0.0, "asleep": 0.0})
+        a["n"] += 1
+        a["secs"] += r["secs"]
+        a["t1"] = r["t"]
+        if not r["usb"]:
+            a["bat"] += r["secs"]
+            a["mas"] += r["ma"] * r["secs"]
+            a["asleep"] += (1 - r["awake"]) * r["secs"]
+    out = []
+    for a in acc.values():
+        bat = a["bat"]
+        ma = a.pop("mas") / bat if bat else None
+        a["ma"] = round(ma, 1) if ma is not None else None
+        a["pct_h"] = round(ma / capacity * 100, 2) if ma is not None else None
+        a["asleep"] = round(a["asleep"] / bat, 3) if bat else None
+        info = firmware[a["fw"]] if a["fw"] >= 0 else {}
+        a.update({k: info.get(k) for k in ("hash", "dirty", "git_time", "build_time", "version")})
+        out.append(a)
+    out.sort(key=lambda a: a["t1"], reverse=True)
     return out
 
 

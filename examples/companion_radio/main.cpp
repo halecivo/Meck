@@ -3521,6 +3521,10 @@ static void meckLockSleepStep() {
 // lost on a reset or power-off. Debug CLI: "pwrlog" prints the records in
 // RAM, "pwrlog flush" writes them now.
 //
+// A "#fw,<git hash>,<commit time>,<build time>,<version>" line before a
+// boot's first records in each file (and before the records in RAM) says
+// which firmware wrote them (hash and times from git_version.py).
+//
 // Cost: the readings are taken while the device is awake anyway (the minute
 // wake), and one SD write an hour.
 // ============================================================================
@@ -3663,6 +3667,19 @@ static int meckPwrCsv(const MeckPwrRec& r, char* buf, size_t len, char* date, si
     r.rx, r.tx, r.refresh, r.full, (long)r.jump, r.utc, r.rcPpm);
 }
 
+#ifndef MECK_GIT_HASH
+#define MECK_GIT_HASH "unknown"
+#define MECK_GIT_TIME 0UL
+#define MECK_BUILD_TIME 0UL
+#endif
+
+static void meckPwrFwLine(char* buf, size_t len) {
+  snprintf(buf, len, "#fw,%s,%lu,%lu,%s", MECK_GIT_HASH, (unsigned long)MECK_GIT_TIME,
+           (unsigned long)MECK_BUILD_TIME, FIRMWARE_VERSION);
+}
+
+static char meckPwrFwFile[12] = "";   // the last file this boot named its firmware in
+
 // Append all records in RAM to the SD card. True when the buffer was written.
 bool meckPwrLogFlush() {
   if (meckPwrCount == 0) return true;
@@ -3681,6 +3698,12 @@ bool meckPwrLogFlush() {
       f = SD.open(path, FILE_APPEND);
       if (!f) break;
       if (f.size() == 0) f.println(MECK_PWR_HEADER);
+      if (strcmp(date, meckPwrFwFile) != 0) {
+        char fw[96];
+        meckPwrFwLine(fw, sizeof(fw));
+        f.println(fw);
+        strcpy(meckPwrFwFile, date);
+      }
       strcpy(openDate, date);
     }
     if (f.println(line) == 0) break;
@@ -3695,6 +3718,8 @@ bool meckPwrLogFlush() {
 void meckPwrLogPrint() {
   Serial.println(MECK_PWR_HEADER);
   char line[200], date[12];
+  meckPwrFwLine(line, sizeof(line));
+  Serial.println(line);
   for (int i = 0; i < meckPwrCount; i++) {
     meckPwrCsv(meckPwrBuf[(meckPwrHead + i) % MECK_PWR_CAP], line, sizeof(line), date, sizeof(date));
     Serial.println(line);
