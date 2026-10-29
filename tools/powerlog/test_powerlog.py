@@ -185,6 +185,38 @@ class StoreTest(unittest.TestCase):
         self.assertEqual(info["bad"], [])
         self.assertEqual(len({r["utc"] for r in recs}), 73)
 
+    def test_firmware_lines(self):
+        fw_a = "#fw,9d4bb1d9,1793293985,1793295000,Meck v1.15.1"
+        fw_b = "#fw,1234abcd+,1793300000,1793301000,Meck v1.15.1"
+        self.assertEqual(fmt.classify(fw_a), "fw")
+        self.assertEqual(fmt.parse_fw(fw_b)["dirty"], True)
+        old_boot = series(T0, 5)                     # firmware that wrote no #fw line
+        boot_a = series(T0 + 3600, 5)
+        boot_b = series(T0 + 7200, 5)
+        self.store.save_pull({"20261026.csv": [fmt.HEADER] + old_boot + [fw_a] + boot_a[:3],
+                              "ram.csv": [fmt.HEADER, fw_a] + boot_a[3:]})
+        # later: the RAM records reached the SD, and a newer firmware booted
+        self.store.save_pull({"20261026.csv": [fmt.HEADER] + old_boot + [fw_a] + boot_a + [fw_b] + boot_b,
+                              "ram.csv": [fmt.HEADER, fw_b] + boot_b[3:]})
+        recs, info = self.store.load()
+        self.assertEqual(len(recs), 15)
+        self.assertEqual([f["hash"] for f in info["firmware"]], ["9d4bb1d9", "1234abcd"])
+        by_t = {r["utc"]: r["fw"] for r in recs}
+        self.assertEqual([by_t[T0 + 60 * i] for i in range(5)], [-1] * 5)
+        self.assertEqual([by_t[T0 + 3600 + 60 * i] for i in range(5)], [0] * 5)
+        self.assertEqual([by_t[T0 + 7200 + 60 * i] for i in range(5)], [1] * 5)
+
+    def test_unnamed_boot_after_named_one(self):
+        # a boot of older firmware after a named one, in the same file
+        fw_a = "#fw,9d4bb1d9,1793293985,1793295000,Meck v1.15.1"
+        self.store.save_pull({"20261026.csv": [fw_a] + series(T0, 5) + series(T0 + 3600, 5)})
+        recs, info = self.store.load()
+        self.assertEqual([r["fw"] for r in recs], [0] * 5 + [-1] * 5)
+        tl, _ = fmt.build_timeline(recs, now=T0 + 86400)
+        fws = fmt.by_firmware(tl, info["firmware"])
+        self.assertEqual(sorted(f["fw"] for f in fws), [-1, 0])
+        self.assertEqual(fws[0]["hash"], None)        # newest first: the unnamed boot
+
     def test_bad_lines_kept_once(self):
         cut = make_line(T0)[:40]
         self.store.save_pull({"a.csv": [cut, make_line(T0)]})

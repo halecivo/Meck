@@ -9,14 +9,15 @@ record. Lines keep the order they had on the deck: per daily file, the
 records of one pull come before those of a later one, and records still in
 RAM (ram.csv) after that pull's SD records. pull.json holds the deck's and
 the computer's clock at the pull, which dates records the deck wrote before
-its clock was ever set. state.json remembers how big each SD file was when
+its clock was ever set. "#fw" lines are kept like headers, in their place, so
+the records after them still know their firmware. state.json remembers how big each SD file was when
 it was last pulled completely, so the next pull dumps only new or grown files.
 """
 import datetime
 import json
 import os
 
-from pwrlog_format import classify, parse_line
+from pwrlog_format import classify, parse_fw, parse_line
 
 
 class Store:
@@ -52,18 +53,39 @@ class Store:
         return not self.known_lines()
 
     def load(self):
-        """All distinct records in write order per file, and what was skipped."""
+        """All distinct records in write order per file, and what was skipped.
+
+        Each record gets "fw": its index in info["firmware"], from the last
+        "#fw" line before it in its file, or -1. A record that does not follow
+        the one before it (a new boot) without a "#fw" line in between was
+        written by firmware that did not name itself.
+        """
         recs, bad, warnings = [], [], []
+        firmware, fw_ids = [], {}
         seen = set()
         dupes = 0
         for pull, name, path in self.files():
             src = "ram" if name.startswith("ram") else name
+            fw, prev = -1, None
             with open(path, encoding="utf-8", errors="replace") as f:
                 for n, line in enumerate(f, 1):
                     s = line.strip()
                     kind = classify(s)
+                    if kind == "fw":
+                        info = parse_fw(s)
+                        key = (info["hash"], info["dirty"], info["build_time"])
+                        if key not in fw_ids:
+                            fw_ids[key] = len(firmware)
+                            firmware.append(dict(info, id=len(firmware)))
+                        fw, prev = fw_ids[key], None
+                        continue
                     if kind in ("header", "noise"):
                         continue
+                    if kind == "record":
+                        rec, warn = parse_line(s)
+                        if prev is not None and abs(prev - (rec["utc"] - rec["clock_jump_s"] - rec["secs"])) > 5:
+                            fw = -1
+                        prev = rec["utc"]
                     if s in seen:
                         dupes += 1
                         continue
@@ -75,12 +97,11 @@ class Store:
                         except ValueError as e:
                             bad.append({"where": where, "line": s, "why": str(e)})
                         continue
-                    rec, warn = parse_line(s)
-                    rec.update(src=src, pull=pull, where=where)
+                    rec.update(src=src, pull=pull, where=where, fw=fw)
                     for w in warn:
                         warnings.append({"where": where, "why": w})
                     recs.append(rec)
-        return recs, {"duplicates": dupes, "bad": bad, "warnings": warnings}
+        return recs, {"duplicates": dupes, "bad": bad, "warnings": warnings, "firmware": firmware}
 
     def anchors(self):
         """(deck_utc, host_utc, pull) of every pull that noted the deck's clock."""
@@ -104,7 +125,7 @@ class Store:
             for line in lines:
                 s = line.strip()
                 kind = classify(s)
-                if kind == "header":
+                if kind in ("header", "fw"):
                     keep.append(s)
                 elif kind in ("record", "bad") and s not in seen:
                     seen.add(s)
