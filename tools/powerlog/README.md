@@ -67,9 +67,13 @@ mean current on battery), and the state and run tables can be limited to one ver
 
 ## Log format
 
-`utc,local_date,local_time,secs,asleep_s,wake_lora,wake_btn,wake_timer,pct,mv,avg_ma,temp_c,usb,charge,locked,blocker,saving,gps,modem,wifi,phone,ble,audio,light,rx,tx,refresh,full_refresh,clock_jump_s,utc_offset,rc_ppm,fix`
+`utc,local_date,local_time,secs,asleep_s,wake_lora,wake_btn,wake_timer,pct,mv,avg_ma,temp_c,usb,charge,locked,blocker,saving,gps,modem,wifi,phone,ble,audio,light,rx,tx,refresh,full_refresh,clock_jump_s,utc_offset,rc_ppm,fix,ble_win,sync_win,sync_link,sync_s,link_ms`
 
 `avg_ma` is negative while discharging; `charge` 0 off / 1 pre / 2 fast / 3 done; `blocker` is
 `MeckSleepBlock` (`ui-new/UITask.h`). `fix` is 1 when the GPS was powered and had a fix at the end
 of the minute (the "GPS fix" lane). The first firmware with the log had no `rc_ppm` column and the
-next ones no `fix` column (read as 0, so older records look like "no fix"); all forms are read. Tests: `py -3 -m unittest discover -s tools/powerlog`.
+next ones no `fix` column (read as 0, so older records look like "no fix"), then none of the
+Bluetooth sync window columns (read as 0); all forms are read. `ble_win` is the "Phone when
+locked" setting (minutes between sync windows, 0 = stay connected); `sync_win` the windows
+opened in the minute and `sync_link` how many of them the app reconnected in; `sync_s` the time
+spent in windows; `link_ms` the BLE connection interval the phone accepted (0 = no link). Tests: `py -3 -m unittest discover -s tools/powerlog`.

@@ -206,6 +206,9 @@ function buildLanes() {
     { name: "WiFi", get: i => flag(i, "wifi") },
     { name: "Phone (BLE)", get: i => flag(i, "phone") },
     { name: "Bluetooth", get: i => flag(i, "ble") },
+    { name: "Phone when locked", get: i => C.ble_win[i], label: v => "sync every " + v + " min" },
+    { name: "Sync window", get: i => C.sync_win[i] ? (C.sync_link[i] ? 2 : 1) : 0,
+      label: v => v == 2 ? "app reconnected" : "no reconnect" },
     { name: "Audio", get: i => flag(i, "audio") },
     { name: "Backlight", get: i => flag(i, "light") },
   ];

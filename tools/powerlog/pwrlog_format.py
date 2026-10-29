@@ -15,19 +15,24 @@ import datetime
 
 HEADER = ("utc,local_date,local_time,secs,asleep_s,wake_lora,wake_btn,wake_timer,"
           "pct,mv,avg_ma,temp_c,usb,charge,locked,blocker,saving,gps,modem,wifi,"
-          "phone,ble,audio,light,rx,tx,refresh,full_refresh,clock_jump_s,utc_offset,rc_ppm,fix")
+          "phone,ble,audio,light,rx,tx,refresh,full_refresh,clock_jump_s,utc_offset,rc_ppm,fix,"
+          "ble_win,sync_win,sync_link,sync_s,link_ms")
 FIELDS = HEADER.split(",")
-# The first firmware with the log (6eb18730) had no rc_ppm column, the next ones no fix column
-HEADER_V2 = HEADER.rsplit(",", 1)[0]
+# The first firmware with the log (6eb18730) had no rc_ppm column, the next ones no fix column,
+# then none of the Bluetooth sync window columns (ble_win .. link_ms)
+SYNC_FIELDS = ["ble_win", "sync_win", "sync_link", "sync_s", "link_ms"]
+HEADER_V3 = HEADER.rsplit(",", len(SYNC_FIELDS))[0]
+HEADER_V2 = HEADER_V3.rsplit(",", 1)[0]
 HEADER_V1 = HEADER_V2.rsplit(",", 1)[0]
-OPTIONAL = {"rc_ppm": 0, "fix": 0}   # in column order, the last ones; 0 when the column is missing
-FLOAT_FIELDS = {"asleep_s", "temp_c"}
+# In column order, the last ones; 0 when the column is missing
+OPTIONAL = {"rc_ppm": 0, "fix": 0, "ble_win": 0, "sync_win": 0, "sync_link": 0, "sync_s": 0.0, "link_ms": 0.0}
+FLOAT_FIELDS = {"asleep_s", "temp_c", "sync_s", "link_ms"}
 TEXT_FIELDS = {"local_date", "local_time"}
 
 # 0/1 columns, in the order the viewer shows them
 FLAGS = ["locked", "saving", "usb", "gps", "fix", "modem", "wifi", "phone", "ble", "audio", "light"]
 # MeckSleepBlock in examples/companion_radio/ui-new/UITask.h
-BLOCKERS = ["can sleep", "saving off", "USB", "phone", "GPS", "modem", "WiFi", "audio", "SOS"]
+BLOCKERS = ["can sleep", "saving off", "USB", "phone", "GPS", "modem", "WiFi", "audio", "SOS", "phone sync"]
 CHARGE = ["off", "pre-charge", "fast charge", "done"]
 
 DESIGN_CAPACITY_MAH = 1400   # BQ27220_DESIGN_CAPACITY_MAH in variants/lilygo_tdeck_max
@@ -86,7 +91,7 @@ def parse_fw(line):
 def classify(line):
     """'header', 'fw', 'record', 'bad' (looks like a record but does not parse) or 'noise'."""
     s = line.strip()
-    if s in (HEADER, HEADER_V2, HEADER_V1):
+    if s in (HEADER, HEADER_V3, HEADER_V2, HEADER_V1):
         return "header"
     if s.startswith("#fw,"):
         return "fw" if parse_fw(s) else "noise"
