@@ -1,0 +1,64 @@
+# Power log viewer (T-Deck MAX)
+
+The MAX firmware logs its power state once a minute (`examples/companion_radio/main.cpp`,
+"Power log"): battery %, voltage, the gauge's average current, how long it slept and why it
+could not, and what was switched on. Records go to `/meshcore/powerlog/YYYYMMDD.csv` on the SD
+card once an hour; the newest ones are still in RAM. This tool pulls them over USB, keeps a
+history across pulls, and shows it in the browser.
+
+```
+py -3 tools/powerlog/powerlog.py            # viewer at http://127.0.0.1:8765/
+py -3 tools/powerlog/powerlog.py pull       # pull new records only
+py -3 tools/powerlog/powerlog.py check      # validate the history, print a summary
+py -3 tools/powerlog/powerlog.py export -o report.html   # one file to share, no Pull button
+```
+
+On Linux or macOS use `python3`. Pulling needs `pyserial`; the rest only the standard library.
+Options: `--data DIR` (default `powerlogs/` next to the main checkout, shared by all worktrees),
+`--port` (default: the Espressif USB device), `--capacity` (mAh for %/h, default 1400).
+
+## Pulling
+
+The deck has to be awake on USB (after light sleep on battery its USB is gone until reset) and
+run a build with the debug CLI (`meck_max_ui2`). Only read-only commands are sent: `pwrlog sd`,
+`pwrlog sd YYYYMMDD`, `pwrlog` and `clock`. The viewer pulls by itself only when the history is
+empty; afterwards the **Pull from deck** button does it.
+
+The history in `powerlogs/` never loses anything: each pull adds a folder under `pulls/` with
+only the lines that were new, so wiping the SD card does not wipe the history. A record printed
+from RAM and later from the SD card is the same line, so repeated pulls add no duplicates.
+`state.json` remembers the SD file sizes (only new or grown files are read again) and the deck's
+USB serial number, which picks the deck when several ESP32 boards are plugged in.
+
+Windows: when another device got the same COM name, or the COM name stopped opening, the tool
+opens the deck through its USB interface path instead.
+
+## Wrong clocks, gaps, quiet stretches
+
+- After a reset the deck's clock starts at a fixed time in May 2024 until the phone, GPS or
+  `clock sync` sets it. The record during which it changed carries the jump (`clock_jump_s`); the
+  records before it are moved onto the right clock by following them back in write order. Each
+  pull also notes the deck's clock against the computer's, which dates a boot whose clock was
+  never set. Records still without a plausible time are listed under "unknown time".
+- No data for a while (switched off, flat, reset) is drawn as a narrow hatched column.
+- Long uneventful stretches (same state, steady current, nothing sent, no key press, over an
+  hour) are drawn narrow and shaded; click one to expand it, or tick "Real time scale".
+
+## What is shown
+
+- Current in mA (positive = drawn from the battery; charging below zero, clipped).
+- Battery drain in %/h: from the current (15 min average, `current / capacity`) and from the
+  gauge's percentage (2 h slope; the gauge reports whole percent).
+- Battery %, the switched-on lanes (locked, asleep share, USB/charging, power saving, what kept a
+  locked deck awake, GPS, modem, WiFi, phone, Bluetooth, audio, backlight), and per-minute counts
+  of LoRa packets, display refreshes and wakes.
+- Tiles for the visible range: mean current on battery, %/h, how long a full battery would last.
+- Tables: time and mean current per combination of what was on, and every run of one state.
+
+## Log format
+
+`utc,local_date,local_time,secs,asleep_s,wake_lora,wake_btn,wake_timer,pct,mv,avg_ma,temp_c,usb,charge,locked,blocker,saving,gps,modem,wifi,phone,ble,audio,light,rx,tx,refresh,full_refresh,clock_jump_s,utc_offset,rc_ppm`
+
+`avg_ma` is negative while discharging; `charge` 0 off / 1 pre / 2 fast / 3 done; `blocker` is
+`MeckSleepBlock` (`ui-new/UITask.h`). The first firmware with the log had no `rc_ppm` column;
+both forms are read. Tests: `py -3 -m unittest discover -s tools/powerlog`.
