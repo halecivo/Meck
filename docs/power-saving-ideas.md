@@ -11,6 +11,7 @@ From the power log of one night on battery (10.7 h, 99 % to 85 %):
 | State | Current | Note |
 |---|---|---|
 | Locked, asleep 97 % of the time | 17.4 mA | about 75-80 h standby |
+| Locked, asleep, GPS on with a fix | 31.7 mA | 47 min by a window on battery (branch gps-lock-sleep): blocker "can sleep", asleep 59.3 s of 60, one timer wake a minute, awake time as without GPS; the GPS costs about 15 mA. Whether the position was updated is not confirmed: the log has no fix or position field |
 | Light sleep floor | about 13 mA | between wakes |
 | Locked and awake (a blocker holds it) | about 35 mA | e.g. on USB |
 | Locked with a phone connected over BLE | about 100 mA | blocker PHONE, never sleeps |
