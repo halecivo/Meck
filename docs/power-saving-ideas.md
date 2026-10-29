@@ -91,7 +91,10 @@ the lock warning says so (blocker PHONE).
   window lasts while frames flow and ends 8 s after the link goes quiet,
   2 min at most. Then Bluetooth goes off again, which drops the link.
   Messages wait in the offline queue in the meantime. The blocker shows
-  as "Phone sync" (power log blocker 9).
+  as "Phone sync" (power log blocker 9). The power log has the setting
+  (`ble_win`), the windows per minute and how many the app reconnected in
+  (`sync_win`, `sync_link`), the time in windows (`sync_s`) and the
+  accepted interval (`link_ms`).
 
 Expected: a window costs about 40 mA while it lasts. Every 5 min with a
 reconnect in ~10 s is about +1.5 mA, a window without a reconnect is

@@ -3410,6 +3410,12 @@ static bool meckBleWinOpen = false;
 static unsigned long meckBleWinStart = 0;
 static unsigned long meckBleLinkAt = 0;      // when the link last came up
 static bool meckBleWasLinked = false;
+static bool meckBleWinLinked = false;        // the app reconnected in this window
+// For the power log, reset with each logged minute: windows opened, of
+// which the app reconnected in, and time spent in closed windows
+static uint16_t meckSyncWins = 0, meckSyncLinked = 0;
+static unsigned long meckSyncMs = 0;
+static unsigned long meckSyncFrom = 0;       // open window counted from here
 
 // Sync windows apply: chosen, power saving on, and Bluetooth switched on
 // (enabled, or paused here for sleep)
@@ -3421,7 +3427,12 @@ static bool meckBleWindowed() {
 
 static void meckBleWindowStart(const char* why) {
   if (!meckBleWindowed() || !ui_task.isLocked()) return;
-  if (!meckBleWinOpen) Serial.printf("[Power] BLE sync window (%s)\n", why);
+  if (!meckBleWinOpen) {
+    Serial.printf("[Power] BLE sync window (%s)\n", why);
+    meckSyncWins++;
+    meckBleWinLinked = false;
+    meckSyncFrom = millis();
+  }
   meckBleWinOpen = true;
   meckBleWinStart = millis();
   meckBleWasLinked = false;   // an open link gets the idle time from now
@@ -3436,6 +3447,7 @@ static bool meckBleWindowActive() {
   unsigned long now = millis();
   bool linked = MECK_BLE_IFACE.isConnected();
   if (linked && !meckBleWasLinked) meckBleLinkAt = now;
+  if (linked && !meckBleWinLinked) { meckBleWinLinked = true; meckSyncLinked++; }
   meckBleWasLinked = linked;
   bool open;
   if ((long)(now - meckBleWinStart) >= (long)MECK_BLE_WIN_MAX_MS) {
@@ -3449,6 +3461,7 @@ static bool meckBleWindowActive() {
   }
   if (!open) {
     meckBleWinOpen = false;
+    meckSyncMs += now - meckSyncFrom;
     Serial.printf("[Power] BLE sync window closed after %lu s\n", (now - meckBleWinStart) / 1000);
   }
   return open;
@@ -3557,8 +3570,9 @@ static void meckLockSleepStep() {
   static bool wasLocked = false;
   if (locked && !wasLocked && MECK_BLE_IFACE.isConnected()) {
     meckBleWindowStart("lock");   // let a sync in progress finish first
-  } else if (!locked) {
+  } else if (!locked && meckBleWinOpen) {
     meckBleWinOpen = false;
+    meckSyncMs += millis() - meckSyncFrom;
   }
   wasLocked = locked;
 #endif
@@ -3680,6 +3694,10 @@ struct MeckPwrRec {
   uint8_t  rx, tx;     // LoRa packets received / sent
   uint8_t  refresh, full;           // display refreshes / of which full
   int16_t  rcPpm;      // last RC slow clock measurement vs the boot calibration, ppm
+  uint8_t  bleWin;     // "Phone when locked": minutes between sync windows, 0 = stay connected
+  uint8_t  syncWins, syncLinked;    // sync windows opened / of which the app reconnected in
+  uint16_t syncDs;     // time in sync windows, 0.1 s
+  uint16_t linkIv;     // BLE connection interval the phone accepted, 1.25 ms (0 = none yet)
 };
 
 enum {
@@ -3765,6 +3783,20 @@ static void meckPwrRecord(uint32_t now, unsigned long ms) {
   if (meckPwrCount < MECK_PWR_CAP) meckPwrCount++;
   else meckPwrHead = (meckPwrHead + 1) % MECK_PWR_CAP;
 
+#ifdef MECK_BLE_LOCK_WINDOWS
+  r.bleWin = p->ble_lock_window;
+  r.syncWins = (uint8_t)min(meckSyncWins, (uint16_t)255);
+  r.syncLinked = (uint8_t)min(meckSyncLinked, (uint16_t)255);
+  unsigned long syncMs = meckSyncMs;
+  if (meckBleWinOpen) { syncMs += ms - meckSyncFrom; meckSyncFrom = ms; }   // still open: this minute's part
+  r.syncDs = (uint16_t)min(syncMs / 100, 65535UL);
+  meckSyncWins = meckSyncLinked = 0;
+  meckSyncMs = 0;
+#endif
+#if defined(BLE_PIN_CODE) && !defined(WIFI_SSID)
+  r.linkIv = MECK_BLE_IFACE.isConnected() ? SerialBLEInterface::linkInterval() : 0;
+#endif
+
   meckSleptUs = 0;
   meckWakeLora = meckWakeBtn = meckWakeTimer = 0;
   meckPwrJump = 0;
@@ -3788,21 +3820,24 @@ static void meckPwrLocalDate(uint32_t t, int8_t utc, char* date, size_t dlen, ch
 static const char MECK_PWR_HEADER[] =
   "utc,local_date,local_time,secs,asleep_s,wake_lora,wake_btn,wake_timer,"
   "pct,mv,avg_ma,temp_c,usb,charge,locked,blocker,saving,gps,modem,wifi,"
-  "phone,ble,audio,light,rx,tx,refresh,full_refresh,clock_jump_s,utc_offset,rc_ppm,fix";
+  "phone,ble,audio,light,rx,tx,refresh,full_refresh,clock_jump_s,utc_offset,rc_ppm,fix,"
+  "ble_win,sync_win,sync_link,sync_s,link_ms";
 
 static int meckPwrCsv(const MeckPwrRec& r, char* buf, size_t len, char* date, size_t dlen) {
   char hm[8];
   meckPwrLocalDate(r.t, r.utc, date, dlen, hm, sizeof(hm));
   uint16_t f = r.flags;
   return snprintf(buf, len,
-    "%lu,%s,%s,%u,%u.%u,%u,%u,%u,%u,%u,%d,%d.%d,%d,%u,%d,%u,%d,%d,%d,%d,%d,%d,%d,%d,%u,%u,%u,%u,%ld,%d,%d,%d",
+    "%lu,%s,%s,%u,%u.%u,%u,%u,%u,%u,%u,%d,%d.%d,%d,%u,%d,%u,%d,%d,%d,%d,%d,%d,%d,%d,%u,%u,%u,%u,%ld,%d,%d,%d,%u,%u,%u,%u.%u,%u.%02u",
     (unsigned long)r.t, date, hm, r.secs, r.sleptDs / 10, r.sleptDs % 10,
     r.wLora, r.wBtn, r.wTimer, r.pct, r.mv, r.avgMa, r.tempDc / 10, abs(r.tempDc % 10),
     (f & MECK_PWR_F_USB) ? 1 : 0, r.chg, (f & MECK_PWR_F_LOCKED) ? 1 : 0, r.blocker,
     (f & MECK_PWR_F_SAVING) ? 1 : 0, (f & MECK_PWR_F_GPS) ? 1 : 0, (f & MECK_PWR_F_MODEM) ? 1 : 0,
     (f & MECK_PWR_F_WIFI) ? 1 : 0, (f & MECK_PWR_F_PHONE) ? 1 : 0, (f & MECK_PWR_F_BLE) ? 1 : 0,
     (f & MECK_PWR_F_AUDIO) ? 1 : 0, (f & MECK_PWR_F_LIGHT) ? 1 : 0,
-    r.rx, r.tx, r.refresh, r.full, (long)r.jump, r.utc, r.rcPpm, (f & MECK_PWR_F_FIX) ? 1 : 0);
+    r.rx, r.tx, r.refresh, r.full, (long)r.jump, r.utc, r.rcPpm, (f & MECK_PWR_F_FIX) ? 1 : 0,
+    r.bleWin, r.syncWins, r.syncLinked, r.syncDs / 10, r.syncDs % 10,
+    (unsigned)(r.linkIv * 125 / 100), (unsigned)(r.linkIv * 125 % 100));
 }
 
 #ifndef MECK_GIT_HASH
