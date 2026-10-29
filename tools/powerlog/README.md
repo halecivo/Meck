@@ -36,7 +36,8 @@ opens the deck through its USB interface path instead.
 ## Wrong clocks, gaps, quiet stretches
 
 - After a reset the deck's clock starts at a fixed time in May 2024 until the phone, GPS or
-  `clock sync` sets it. The record during which it changed carries the jump (`clock_jump_s`); the
+  `clock sync` sets it. Since `MECK_CLOCK_NVS_BACKUP` the MAX resumes from the time it last saved
+  (every 2 minutes) instead, so it is only a few minutes behind. The record during which it changed carries the jump (`clock_jump_s`); the
   records before it are moved onto the right clock by following them back in write order. Each
   pull also notes the deck's clock against the computer's, which dates a boot whose clock was
   never set. Records still without a plausible time are listed under "unknown time".
