@@ -55,6 +55,16 @@ opens the deck through its USB interface path instead.
 - Tiles for the visible range: mean current on battery, %/h, how long a full battery would last.
 - Tables: time and mean current per combination of what was on, and every run of one state.
 
+## Firmware versions
+
+`git_version.py` (a pre-build script of the MAX envs) gives `main.cpp` the short commit hash
+(with `+` when tracked files were changed), the commit time and the build time. The power log
+writes `#fw,<hash>,<commit utc>,<build utc>,<version>` once per boot in each daily file, before
+that boot's first records, and `pwrlog` prints it before the RAM records. The viewer gives every
+record the firmware of the last `#fw` line before it; a new boot without one is older firmware
+("not named"). It shows a Firmware lane, a table of versions (commit and build date, time logged,
+mean current on battery), and the state and run tables can be limited to one version.
+
 ## Log format
 
 `utc,local_date,local_time,secs,asleep_s,wake_lora,wake_btn,wake_timer,pct,mv,avg_ma,temp_c,usb,charge,locked,blocker,saving,gps,modem,wifi,phone,ble,audio,light,rx,tx,refresh,full_refresh,clock_jump_s,utc_offset,rc_ppm`
