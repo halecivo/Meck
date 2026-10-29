@@ -52,7 +52,6 @@ const char* meckSleepBlockText(int code) {
     case MECK_SLEEP_OFF:   return MECK_TR("Power saving off", "\xC3\x89" "conomie d\xC3\xA9sactiv\xC3\xA9" "e");
     case MECK_SLEEP_USB:   return MECK_TR("On USB power", "Sur alimentation USB");
     case MECK_SLEEP_PHONE: return MECK_TR("Phone connected", "T\xC3\xA9l\xC3\xA9phone connect\xC3\xA9");
-    case MECK_SLEEP_GPS:   return MECK_TR("GPS is on", "GPS activ\xC3\xA9");
     case MECK_SLEEP_MODEM: return MECK_TR("4G modem is on", "Modem 4G activ\xC3\xA9");
     case MECK_SLEEP_WIFI:  return MECK_TR("Wi-Fi is on", "Wi-Fi activ\xC3\xA9");
     case MECK_SLEEP_AUDIO: return MECK_TR("Audio in use", "Audio en cours");
@@ -64,19 +63,12 @@ const char* meckSleepBlockText(int code) {
 #ifdef MECK_UI_V2
 // Lock warning: what keeps the device awake and what the keys do
 static void drawLockPrompt(Ui2Canvas& c, int reason) {
-  if (reason == MECK_SLEEP_GPS) {
-    Ui2List::dialog(c, UI2_IC_GPS, MECK_TR("GPS is on", "GPS activ\xC3\xA9"),
-                    MECK_TR("It keeps the device awake and drains the battery while locked.",
-                            "Il emp\xC3\xAA" "che la mise en veille et vide la batterie."),
-                    MECK_TR("Lock", "Verrouiller"), MECK_TR("GPS off", "GPS off"));
-  } else {
-    char body[96];
-    snprintf(body, sizeof(body), "%s", reason == MECK_SLEEP_PHONE
-             ? MECK_TR("No power saving until it disconnects.", "Pas d'\xC3\xA9" "conomie tant qu'il est connect\xC3\xA9.")
-             : MECK_TR("The device stays awake while locked.", "L'appareil reste \xC3\xA9veill\xC3\xA9."));
-    Ui2List::dialog(c, UI2_IC_WARN, meckSleepBlockText(reason), body,
-                    MECK_TR("Cancel", "Annuler"), MECK_TR("Lock", "Verrouiller"));
-  }
+  char body[96];
+  snprintf(body, sizeof(body), "%s", reason == MECK_SLEEP_PHONE
+           ? MECK_TR("No power saving until it disconnects.", "Pas d'\xC3\xA9" "conomie tant qu'il est connect\xC3\xA9.")
+           : MECK_TR("The device stays awake while locked.", "L'appareil reste \xC3\xA9veill\xC3\xA9."));
+  Ui2List::dialog(c, UI2_IC_WARN, meckSleepBlockText(reason), body,
+                  MECK_TR("Cancel", "Annuler"), MECK_TR("Lock", "Verrouiller"));
 }
 #endif
 #endif
@@ -3571,8 +3563,7 @@ void UITask::requestLock() {
   int reason = meckLockSleepBlocker();
   // Warn only about things the user may have forgotten; "power saving off"
   // is their choice, USB power and recent audio are fine.
-  if (reason == MECK_SLEEP_GPS || reason == MECK_SLEEP_PHONE ||
-      reason == MECK_SLEEP_MODEM || reason == MECK_SLEEP_WIFI) {
+  if (reason == MECK_SLEEP_PHONE || reason == MECK_SLEEP_MODEM || reason == MECK_SLEEP_WIFI) {
     _lockPromptReason = reason;
     _lockPromptUntil = millis() + 6000;   // then it locks anyway
     _next_refresh = 0;
@@ -3587,15 +3578,9 @@ void UITask::lockPromptKey(char c) {
   bool enter = (c == '\r' || c == KEY_ENTER);
   bool back = (c == 'q' || c == 'Q' || c == KEY_CANCEL);
   if (!enter && !back) return;              // other keys: keep the warning
-  int reason = _lockPromptReason;
   _lockPromptUntil = 0;
   _next_refresh = 0;
-  if (reason == MECK_SLEEP_GPS) {
-    if (enter) toggleGPS();                  // "GPS off", then lock
-    lockScreen();                            // Q: lock anyway
-  } else if (enter) {
-    lockScreen();                            // Enter: lock; Q: cancel
-  }
+  if (enter) lockScreen();                  // Enter: lock; Q: cancel
 }
 
 void UITask::unlockScreen() {

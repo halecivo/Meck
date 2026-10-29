@@ -33,7 +33,7 @@ enum MeckSleepBlock {
   MECK_SLEEP_OFF,        // "Power saving when locked" is switched off
   MECK_SLEEP_USB,        // on USB power
   MECK_SLEEP_PHONE,      // phone connected over BLE
-  MECK_SLEEP_GPS,        // GPS on
+  MECK_SLEEP_GPS,        // unused (GPS no longer blocks sleep); keeps the power log codes
   MECK_SLEEP_MODEM,      // 4G modem on
   MECK_SLEEP_WIFI,       // Wi-Fi on
   MECK_SLEEP_AUDIO,      // audio playing or recently used

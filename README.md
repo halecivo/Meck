@@ -376,7 +376,7 @@ From the companion app, `set wifi.enabled 0|1` turns WiFi off or on without touc
 
 Replies from the device go to every connected app, so with two apps at once each can see replies meant for the other (as in MeshCore).
 
-With power saving when locked on, a locked device pauses Bluetooth advertising and light-sleeps; WiFi being on keeps it awake (the lock warning says so).
+With power saving when locked on, a locked device pauses Bluetooth advertising and light-sleeps; WiFi being on keeps it awake (the lock warning says so). The GPS can stay on: it keeps tracking while the device sleeps, and the position is updated once a minute.
 
 ### Clock & Timezone
 

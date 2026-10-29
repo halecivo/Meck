@@ -117,25 +117,29 @@ public :
     }
 
     void loop() override {
+        bool rmc = false;   // a fresh date and time came in
 
         while (_gps_serial->available()) {
             char c = _gps_serial->read();
             #ifdef GPS_NMEA_DEBUG
             Serial.print(c);
             #endif
-            nmea.process(c);
+            if (nmea.process(c) && !strcmp(nmea.getMessageID(), "RMC")) rmc = true;
         }
 
         if (!isValid()) time_valid = 0;
 
+        // Set the clock right as an RMC arrives: after a light sleep the time
+        // parsed before it is a sleep old
+        if (rmc && _time_sync_needed && time_valid > 2) {
+            if (_clock != NULL) {
+                _clock->setCurrentTime(getTimestamp());
+                _time_sync_needed = false;
+            }
+        }
+
         if ((long)(millis() - next_check) > 0) {
             next_check = millis() + 1000;
-            if (_time_sync_needed && time_valid > 2) {
-                if (_clock != NULL) {
-                    _clock->setCurrentTime(getTimestamp());
-                    _time_sync_needed = false;
-                }
-            }
             if (isValid()) {
                 time_valid ++;
             }

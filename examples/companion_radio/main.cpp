@@ -3378,6 +3378,9 @@ static void meckImportPoll() {
 // cannot sleep on this framework, so a phone could not connect anyway) and
 // restarts on unlock. Sleep is skipped entirely while one of
 // meckLockSleepBlocker()'s conditions holds.
+//
+// The GPS does not keep the device awake: the receiver keeps tracking on its
+// own, and the minute wake stays up until its next GGA has been read.
 // ============================================================================
 #include <WiFi.h>
 #include <esp_sleep.h>
@@ -3398,6 +3401,36 @@ static bool meckRxHandled() {
   if (!radio_driver.isInRecvMode()) return false;     // not listening again yet
   if (ui_task.needsAwake()) return false;             // redraw / kb flash due
   meckRxPasses = -1;
+  return true;
+}
+
+// What the GPS sends while the ESP32 sleeps is lost, so after a timer wake
+// with the GPS on the device stays up for the receiver's next GGA (1 Hz),
+// at most 1.5 s.
+static bool meckGpsWaiting = false;
+static unsigned long meckGpsMinUntil = 0;    // the clock redraw window, as without GPS
+static uint32_t meckGpsGgaAtWake = 0;
+
+static void meckGpsWaitStart() {
+  meckGpsGgaAtWake = gpsStream.getGgaCount();
+  meckGpsMinUntil = meckAwakeUntil;
+  meckAwakeUntil = millis() + 1500;
+  meckGpsWaiting = true;
+}
+
+static bool meckGpsFixRead() {
+  if ((long)(millis() - meckGpsMinUntil) < 0) return false;
+  if (gpsStream.getGgaCount() == meckGpsGgaAtWake) return false;
+  if (ui_task.needsAwake()) return false;
+  // EnvironmentSensorManager copies the fix at most once a second, possibly
+  // just before this GGA came in
+  LocationProvider* loc = sensors.getLocationProvider();
+  if (loc->isValid()) {
+    sensors.node_lat = ((double)loc->getLatitude()) / 1000000.;
+    sensors.node_lon = ((double)loc->getLongitude()) / 1000000.;
+    sensors.node_altitude = ((double)loc->getAltitude()) / 1000.0;
+  }
+  meckGpsWaiting = false;
   return true;
 }
 
@@ -3427,13 +3460,10 @@ int meckLockSleepBlocker() {
   NodePrefs* p = the_mesh.getNodePrefs();
   if (!p->lock_sleep) return MECK_SLEEP_OFF;
   // SOS: awake only while it counts down, its GPS looks for a fix or a send
-  // is due; it switches the GPS itself, so the GPS setting does not count
-  if (meckSos.running()) {
-    if (meckSos.wantsAwake(millis())) return MECK_SLEEP_SOS;
-  } else
+  // is due
+  if (meckSos.running() && meckSos.wantsAwake(millis())) return MECK_SLEEP_SOS;
   // Radios the user switched on come first: they still drain the battery
   // once the cable is out, so the lock warning names them even on USB.
-  if (p->gps_enabled) return MECK_SLEEP_GPS;
 #ifdef HAS_4G_MODEM
   if (modemManager.getState() != ModemState::OFF) return MECK_SLEEP_MODEM;
 #endif
@@ -3465,6 +3495,7 @@ static void meckLockSleepStep() {
   if (!locked) return;
   bool inWindow = (long)(millis() - meckAwakeUntil) < 0;
   if (inWindow && meckRxPasses >= 0 && meckRxHandled()) inWindow = false;   // packet done early
+  if (inWindow && meckGpsWaiting && meckGpsFixRead()) inWindow = false;     // GPS fix read
   // The button held down: maybe the 3 s SOS hold, which is longer than the
   // wake window
   if (!canSleep || the_mesh.hasPendingWork() || inWindow || ui_task.isButtonPressed()) {
@@ -3472,6 +3503,7 @@ static void meckLockSleepStep() {
     return;
   }
   meckRxPasses = -1;
+  meckGpsWaiting = false;
 
   // Sleep until just after the next minute boundary, a LoRa packet or the
   // button, or until the SOS has something to do
@@ -3506,6 +3538,7 @@ static void meckLockSleepStep() {
       ui_task.forceRefresh();
       meckMeasureSlowClock();
       meckWakeTimer++;
+      if (board.xl9555_digitalRead(XL_PIN_GPS_EN)) meckGpsWaitStart();   // the setting or SOS
       break;
   }
 }
