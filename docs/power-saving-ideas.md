@@ -100,6 +100,17 @@ the lock warning says so (blocker PHONE).
   (`ble_win`), the windows per minute and how many the app reconnected in
   (`sync_win`, `sync_link`), the time in windows (`sync_s`) and the
   accepted interval (`link_ms`).
+- **Reconnect windows for "Stay connected".** A connected phone still keeps
+  the locked deck awake, but once the link is gone while locked (or no
+  phone was connected at lock) the deck no longer stays dark until unlock.
+  It opens a window at once, then at every minute wake for 5 min, every
+  5 min up to an hour, then every 15 min, and on each new message as with
+  sync windows. When the phone is back the windows stop and the link keeps
+  the deck awake again. Only with Bluetooth switched on. A window that finds
+  no phone costs 30 s awake with advertising, so an hour away is about 16
+  windows, 1-2 mA on average. The power log has `app_rx`, frames the app
+  sent in the minute (a window with `sync_link` but no `app_rx` is iOS
+  reconnecting without the app talking), and `ble_drop`, why a link ended.
 
 Expected: a window costs about 40 mA while it lasts. Every 5 min with a
 reconnect in ~10 s is about +1.5 mA, a window without a reconnect is
@@ -170,13 +181,13 @@ at it (display, backlight, keyboard light), so it reads lower than the
 locked drain gives.
 
 Next:
-1. "Stay connected": after a link drop while locked, keep advertising for
-   a reconnect window, then fall back to windows (e.g. every 5 min) rather
-   than staying dark until unlock.
-2. Why iOS drops the link soon after locking: test "Stay connected"
-   without the relaxed request (this branch now), and watch the BLE
-   disconnect reason on the serial console with the deck locked on USB.
-3. Shorter windows: find what keeps the link busy for a minute after the
+1. Test the reconnect windows: walk away with the phone and come back
+   (app in the background, not closed), and see in `sync_link` / `app_rx`
+   whether the app itself talks in the window or only iOS reconnects. If it
+   is only iOS, the app has to handle a background reconnect; the deck
+   cannot make it sync. An app closed from the app switcher is not woken by
+   iOS at all.
+2. Shorter windows: find what keeps the link busy for a minute after the
    app reconnects (`sync_s` per window now that it is logged).
 
 ## 3. LoRa RX duty cycle

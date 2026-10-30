@@ -227,6 +227,12 @@ void SerialBLEInterface::onDisconnect(BLEServer* pServer) {
   }
 }
 
+void SerialBLEInterface::onDisconnect(BLEServer* pServer, esp_ble_gatts_cb_param_t* param) {
+  _drop_reason = (uint8_t)param->disconnect.reason;
+  _drops++;
+  BLE_DEBUG_PRINTLN("onDisconnect(), reason 0x%02x", _drop_reason);
+}
+
 // -------- BLECharacteristicCallbacks methods
 
 void SerialBLEInterface::onWrite(BLECharacteristic* pCharacteristic, esp_ble_gatts_cb_param_t* param) {
@@ -398,6 +404,7 @@ size_t SerialBLEInterface::checkRecvFrame(uint8_t dest[]) {
   Frame frame;
   if (xQueueReceive(recv_queue, &frame, 0) == pdTRUE) {   // check recv queue
     _last_rx = millis();
+    _rx_frames++;
     memcpy(dest, frame.buf, frame.len);
     BLE_DEBUG_PRINTLN("readBytes: sz=%d, hdr=%d", (uint32_t) frame.len, (uint32_t) dest[0]);
     return frame.len;
