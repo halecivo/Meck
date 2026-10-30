@@ -289,6 +289,44 @@ deck's clock (UBX-MGA-INI-TIME_UTC, only once the clock is synced) and
 real UBX configuration instead of the $PCAS/$PMTK lines, which the u-blox
 module ignores.
 
+### Measured (2026-10-30, "Every 10 min", by a window, on battery)
+
+56 minutes locked (19:51-20:46, firmware 191bd9f0, "Phone when locked"
+Stay connected with no phone). The rest of the run was lost: records still
+in RAM do not survive the reset that USB needs after light sleep.
+
+| | Minutes | Current | Awake per minute |
+|---|---|---|---|
+| All | 55 | 33.5 mA | 6.3 s |
+| Without a try | 49 | 30.9 mA | 4.6 s |
+| With a try | 6 | 54.7 mA | 19.8 s |
+
+- The cycle works: a try every 10 minutes (20:01, 20:10, 20:20, 20:30,
+  20:40), and every one got a fix. The fix column is 1 between tries.
+  It is 0 only in the minute records taken while a try was still
+  looking.
+- Time to fix: a try kept the deck awake 15-23 s longer than a minute
+  without one (about 18 s on average). Without the three GGAs the fix has
+  to hold for, that is about 12-20 s to the fix, slower than the 10 s
+  expected.
+- A try costs about 0.5 mAh, so "Every 10 min" adds about 3 mA on average.
+  "Stays on" costs about 14 mA (31.7 vs 17.4 mA).
+- The total does not show the saving: 33.5 mA is no better than 31.7 mA
+  with "Stays on". This run is not comparable with those two numbers,
+  though. It received 35 LoRa packets a minute, against 0-6 in the
+  earlier runs, so the deck was awake 4.6 s a minute between tries
+  instead of about 1 s. It also ran at 10 C. The log's current is the
+  gauge's average read at the minute wake, which busy minutes push up.
+  Between tries the GPS goes off the same way as with the GPS setting
+  off (EN low, UART pins released), so the 30.9 mA is not the GPS left
+  on.
+- To get a number that compares: run "Stays on" and "Every 10 min" one
+  after the other, each for an hour in the same place with similar
+  traffic.
+- Minor: a LoRa wake can start a try up to 10 s early (the slack meant for
+  the minute wake), so tries creep about 10 s earlier each time. The
+  20:10 try started at the end of the 20:09 minute.
+
 ## WiFi while locked
 
 WiFi on is a sleep blocker (about 100 mA or more). Turning it off on lock
