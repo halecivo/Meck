@@ -77,11 +77,15 @@ the lock warning says so (blocker PHONE).
 
 ### Implemented (branch `ble-locked-relaxed`)
 
-- **Relaxed interval while locked (2.1).** With power saving on, locking
-  asks the phone for 100-150 ms, slave latency 4, 6 s timeout; unlocking
-  asks for 15-20 ms again. `pwrlink` on the debug CLI prints what the phone
-  accepted. Step 2.2 was already in place: `CPUPowerManager` runs the CPU
-  at 80 MHz while locked.
+- **Relaxed interval while locked (2.1)**, now on its own branch
+  `ble-relaxed-interval`, to come back with step 3. With power saving on,
+  locking asks the phone for 100-150 ms, slave latency 4, 6 s timeout;
+  unlocking asks for 15-20 ms again. Measured below, it saved nothing
+  while the deck stays awake, and the link dropped soon after locking a
+  few times, so it is out of this branch until it can be tested on its
+  own. `pwrlink` on the debug CLI and `link_ms` still show the interval the
+  phone accepted. Step 2.2 was already in place: `CPUPowerManager` runs
+  the CPU at 80 MHz while locked.
 - **Sync windows.** Settings > "Phone when locked" (shown with power
   saving on): *Stay connected* (as before) or *Every 5 / 10 / 15 / 30 / 60 min*.
   With a window period set, a connected phone no longer keeps the locked
@@ -155,9 +159,9 @@ Next:
 1. "Stay connected": after a link drop while locked, keep advertising for
    a reconnect window, then fall back to windows (e.g. every 5 min) rather
    than staying dark until unlock.
-2. Why iOS drops the link soon after locking: watch the BLE disconnect
-   reason on the serial console with the deck locked on USB (the relaxed
-   interval is requested there too), with and without the relaxed request.
+2. Why iOS drops the link soon after locking: test "Stay connected"
+   without the relaxed request (this branch now), and watch the BLE
+   disconnect reason on the serial console with the deck locked on USB.
 3. Shorter windows: find what keeps the link busy for a minute after the
    app reconnects (`sync_s` per window now that it is logged).
 

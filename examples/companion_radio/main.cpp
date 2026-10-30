@@ -1146,7 +1146,7 @@ static uint32_t _atoi(const char* sp) {
       Serial.printf("pwr: BLE %s\n", cmd[7] == '1' ? "on" : "off");
 #if defined(BLE_PIN_CODE) && !defined(WIFI_SSID)
     } else if (strcmp(cmd, "pwrlink") == 0) {
-      // Connection interval the phone accepted (relaxed while locked)
+      // Connection interval the phone accepted
       uint16_t iv = SerialBLEInterface::linkInterval();
       Serial.printf("pwr: BLE link %s, interval %u.%02u ms, latency %u\n",
                     MECK_BLE_IFACE.isConnected() ? "up" : "down",
@@ -3577,17 +3577,6 @@ static void meckLockSleepStep() {
   wasLocked = locked;
 #endif
   bool canSleep = locked && meckLockSleepBlocker() == MECK_SLEEP_OK;
-
-#if defined(BLE_PIN_CODE) && !defined(WIFI_SSID)
-  // A phone that stays connected keeps the deck awake; while locked it gets
-  // a slow connection interval, and the fast one back on unlock for the
-  // sync. A sync window is short and wants the fast one.
-  bool relaxed = locked && the_mesh.getNodePrefs()->lock_sleep;
-  #ifdef MECK_BLE_LOCK_WINDOWS
-  if (meckBleWindowed()) relaxed = false;
-  #endif
-  MECK_BLE_IFACE.setRelaxedLink(relaxed);
-#endif
 
   // BLE advertising off while sleep is possible, back on otherwise
   if (canSleep && !meckBleStoppedForSleep && MECK_BLE_IFACE.isEnabled()) {

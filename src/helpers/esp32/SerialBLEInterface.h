@@ -17,7 +17,6 @@ class SerialBLEInterface : public BaseSerialInterface, BLESecurityCallbacks, BLE
   bool _isEnabled;
   bool _begun;              // has _realBegin() run? (deferred BLE bring-up)
   bool _auth_ok;            // authentication completed on the current link (see checkRecvFrame)
-  bool _relaxed;            // relaxed connection interval wanted (setRelaxedLink)
 #ifdef MECK_BLE_SMALL_MTU_SPLIT
   // Small-MTU peers (e.g. a Garmin watch, which never raises the ATT MTU above
   // 23) can only carry 20 bytes per notification or write. Frames to and from
@@ -54,7 +53,6 @@ class SerialBLEInterface : public BaseSerialInterface, BLESecurityCallbacks, BLE
   }
 
   void _realBegin();       // deferred BLE controller + GATT bring-up
-  void requestConnParams();
 
 protected:
   // BLESecurityCallbacks methods
@@ -83,7 +81,6 @@ public:
     _isEnabled = false;
     _begun = false;
     _auth_ok = false;
-    _relaxed = false;
 #ifdef MECK_BLE_SMALL_MTU_SPLIT
     _tx_off = 0; _rx_len = -1;
 #endif
@@ -111,11 +108,6 @@ public:
   bool isEnabled() const override { return _isEnabled; }
 
   bool isConnected() const override;
-
-  // Ask the phone for a slow connection interval (e.g. while the screen is
-  // locked) or for the fast one again. Applies to the open link at once and
-  // to later links on connect; the phone may round or refuse it.
-  void setRelaxedLink(bool relaxed);
 
   // Connection parameters the link last settled on (0 until the first
   // update): interval in 1.25 ms units, latency in events
