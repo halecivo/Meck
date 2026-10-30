@@ -3777,12 +3777,6 @@ static void meckPwrRecord(uint32_t now, unsigned long ms) {
     r.rcPpm = (int16_t)constrain(d, -32000LL, 32000LL);
   }
 
-  // Append; when full, drop the oldest record
-  int idx = (meckPwrHead + meckPwrCount) % MECK_PWR_CAP;
-  meckPwrBuf[idx] = r;
-  if (meckPwrCount < MECK_PWR_CAP) meckPwrCount++;
-  else meckPwrHead = (meckPwrHead + 1) % MECK_PWR_CAP;
-
 #ifdef MECK_BLE_LOCK_WINDOWS
   r.bleWin = p->ble_lock_window;
   r.syncWins = (uint8_t)min(meckSyncWins, (uint16_t)255);
@@ -3796,6 +3790,12 @@ static void meckPwrRecord(uint32_t now, unsigned long ms) {
 #if defined(BLE_PIN_CODE) && !defined(WIFI_SSID)
   r.linkIv = MECK_BLE_IFACE.isConnected() ? SerialBLEInterface::linkInterval() : 0;
 #endif
+
+  // Append once the record is complete; when full, drop the oldest record
+  int idx = (meckPwrHead + meckPwrCount) % MECK_PWR_CAP;
+  meckPwrBuf[idx] = r;
+  if (meckPwrCount < MECK_PWR_CAP) meckPwrCount++;
+  else meckPwrHead = (meckPwrHead + 1) % MECK_PWR_CAP;
 
   meckSleptUs = 0;
   meckWakeLora = meckWakeBtn = meckWakeTimer = 0;

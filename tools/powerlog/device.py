@@ -186,7 +186,7 @@ def pull(store, port=None, log=print):
             out = deck.command("pwrlog sd " + name[:-4],
                                done=lambda l: l == "pwrlog: end" or "not found" in l,
                                timeout=15 + size / 2000)
-            got = sum(len(l) + 2 for l in out if classify(l) in ("header", "record", "bad"))
+            got = sum(len(l) + 2 for l in out if classify(l) in ("header", "fw", "record", "bad"))
             dumps[name] = out
             if got >= size:
                 complete[name] = size
