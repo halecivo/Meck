@@ -156,6 +156,12 @@ struct NodePrefs {  // persisted to file
   // short-read this final field and keep the default 0.
   uint8_t ble_lock_window;         // default 0
 
+  // GPS when locked (Experimental Features, T-Deck MAX): minutes between
+  // fixes while the device sleeps locked, the GPS switched off in between;
+  // 0 = the GPS stays on. Older prefs files short-read this final field and
+  // keep the default 0.
+  uint8_t gps_lock_interval;       // default 0
+
   // --- Font helpers (inline, no overhead) ---
   // Returns the DisplayDriver text-size index for "small/body" text.
   // T-Deck Pro: 0 = built-in 6×8 (or 7pt with custom fonts), 1 = 9pt.

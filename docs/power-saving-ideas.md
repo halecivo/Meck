@@ -264,6 +264,31 @@ partial e-ink refresh plus the wake costs some energy every minute.
 Optional setting: redraw the clock every 5 minutes, or show only the date
 and battery. Small saving (well under 1 mA).
 
+## 6. GPS when locked: a fix every few minutes (experimental)
+
+With the GPS on, the locked device sleeps and the receiver keeps tracking
+on its own (31.7 mA measured, the GPS about 15 mA of it). Settings >
+Experimental Features > "GPS when locked" can instead switch the GPS off
+and power it only for a fix every 2-60 minutes; the default ("Stays on")
+keeps the behaviour above.
+
+The MIA-M10Q's V_BCKP is fed from the MS621FE cell (VRTC), so with GPS_EN
+off the receiver keeps its orbit data, but it has no RTC crystal and loses
+the time: it has to get the time from the satellites first (about 7 s
+with a good sky, by the integration manual) before the orbits help.
+Expected per fix: about 10 s awake at roughly 50 mA (ESP32 35 mA plus the
+GPS acquiring 15 mA). Every 10 min that is under 1 mA on top of the
+17.4 mA sleep, so about 18-19 mA; every 2 min about 21-22 mA. Without a
+sky each try runs into the 60 s timeout (about 50 mA for a minute), so
+the interval doubles, then quadruples after misses.
+
+To check on a battery run: the power log's awake seconds in the minutes
+with a try (they show the time to the fix), the fix lane, and the average
+current. Next steps if the starts are slow: coarse time aiding from the
+deck's clock (UBX-MGA-INI-TIME_UTC, only once the clock is synced) and
+real UBX configuration instead of the $PCAS/$PMTK lines, which the u-blox
+module ignores.
+
 ## WiFi while locked
 
 WiFi on is a sleep blocker (about 100 mA or more). Turning it off on lock

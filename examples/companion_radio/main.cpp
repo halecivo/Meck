@@ -3525,20 +3525,106 @@ static void meckGpsWaitStart() {
   meckGpsWaiting = true;
 }
 
+// EnvironmentSensorManager copies the fix at most once a second, possibly
+// just before the last GGA came in
+static bool meckGpsTakeFix() {
+  LocationProvider* loc = sensors.getLocationProvider();
+  if (!loc->isValid()) return false;
+  sensors.node_lat = ((double)loc->getLatitude()) / 1000000.;
+  sensors.node_lon = ((double)loc->getLongitude()) / 1000000.;
+  sensors.node_altitude = ((double)loc->getAltitude()) / 1000.0;
+  return true;
+}
+
 static bool meckGpsFixRead() {
   if ((long)(millis() - meckGpsMinUntil) < 0) return false;
   if (gpsStream.getGgaCount() == meckGpsGgaAtWake) return false;
   if (ui_task.needsAwake()) return false;
-  // EnvironmentSensorManager copies the fix at most once a second, possibly
-  // just before this GGA came in
-  LocationProvider* loc = sensors.getLocationProvider();
-  if (loc->isValid()) {
-    sensors.node_lat = ((double)loc->getLatitude()) / 1000000.;
-    sensors.node_lon = ((double)loc->getLongitude()) / 1000000.;
-    sensors.node_altitude = ((double)loc->getAltitude()) / 1000.0;
-  }
+  meckGpsTakeFix();
   meckGpsWaiting = false;
   return true;
+}
+
+// Experimental: "GPS when locked" (Settings > Experimental). With an
+// interval set, the locked device powers the GPS only for a fix every N
+// minutes and keeps GPS_EN off in between. The backup cell on V_BCKP keeps
+// the receiver's orbit data, though not its time (no RTC crystal): a start
+// takes some 10 s to get the time from the satellites instead of the 30 s
+// of a cold start. The device stays awake until the fix (three GGAs with a
+// fix, the first one can be rough) or the timeout. After a miss (no sky) the next try
+// waits twice, then four times the interval. 0 = the GPS stays on and keeps
+// tracking while the device sleeps (above). SOS has the GPS to itself while
+// it runs.
+static void meckGpsSetPower(bool on);        // with the SOS code below
+enum { MECK_GPS_DUTY_IDLE, MECK_GPS_DUTY_OFF, MECK_GPS_DUTY_ACQ };
+static uint8_t meckGpsDuty = MECK_GPS_DUTY_IDLE;   // IDLE: not cycling
+static unsigned long meckGpsDutyAt = 0;      // OFF: next start, ACQ: give up
+static unsigned long meckGpsDutyFrom = 0;    // ACQ: started at
+static uint32_t meckGpsDutyGga = 0;          // GGAs seen so far
+static uint8_t meckGpsDutyGood = 0;          // GGAs with a fix since the start
+static uint8_t meckGpsDutyMisses = 0;        // tries in a row without a fix
+static const uint32_t MECK_GPS_DUTY_TIMEOUT_MS = 60000;
+
+static void meckGpsDutyAcquire() {
+  if (!board.xl9555_digitalRead(XL_PIN_GPS_EN)) meckGpsSetPower(true);   // clears the old fix
+  meckGpsDuty = MECK_GPS_DUTY_ACQ;
+  meckGpsDutyFrom = millis();
+  meckGpsDutyAt = meckGpsDutyFrom + MECK_GPS_DUTY_TIMEOUT_MS;
+  meckGpsDutyGga = gpsStream.getGgaCount();
+  meckGpsDutyGood = 0;
+}
+
+// Every loop pass; true while the device must stay awake for a fix. A
+// Bluetooth sync window keeps the device awake only for a while, so the
+// cycle goes on through it.
+static bool meckGpsDutyStep(bool locked, int blocker) {
+  NodePrefs* p = the_mesh.getNodePrefs();
+  bool sleeps = blocker == MECK_SLEEP_OK || blocker == MECK_SLEEP_SYNC;
+  bool want = locked && sleeps && p->gps_enabled && p->gps_lock_interval && !meckSos.running();
+  if (!want) {
+    if (meckGpsDuty != MECK_GPS_DUTY_IDLE) {
+      meckGpsDuty = MECK_GPS_DUTY_IDLE;
+      // Back to the setting, unless SOS switches the GPS now
+      if (!meckSos.running() && p->gps_enabled && !board.xl9555_digitalRead(XL_PIN_GPS_EN))
+        meckGpsSetPower(true);
+    }
+    return false;
+  }
+  unsigned long now = millis();
+  if (meckGpsDuty == MECK_GPS_DUTY_IDLE) {
+    meckGpsDutyMisses = 0;
+    meckGpsDutyAcquire();                    // first fix with the GPS as it is
+    return true;
+  }
+  if (meckGpsDuty == MECK_GPS_DUTY_OFF) {
+    if ((long)(now - meckGpsDutyAt) < 0) return false;
+    meckGpsDutyAcquire();
+    return true;
+  }
+  uint32_t gga = gpsStream.getGgaCount();
+  if (gga != meckGpsDutyGga) {
+    meckGpsDutyGga = gga;
+    if (sensors.getLocationProvider()->isValid()) meckGpsDutyGood++;
+  }
+  bool got = meckGpsDutyGood >= 3;
+  if (!got && (long)(now - meckGpsDutyAt) < 0) return true;
+  if (got) {
+    meckGpsTakeFix();
+    meckGpsDutyMisses = 0;
+  } else if (meckGpsDutyMisses < 2) {
+    meckGpsDutyMisses++;
+  }
+  Serial.printf("[GPS] locked: %s after %lu ms, GPS off\n", got ? "fix" : "no fix",
+                (unsigned long)(now - meckGpsDutyFrom));
+  meckGpsSetPower(false);
+  meckGpsDuty = MECK_GPS_DUTY_OFF;
+  meckGpsDutyAt = now + ((uint32_t)p->gps_lock_interval * 60000UL << meckGpsDutyMisses);
+  return false;
+}
+
+// For the power log: the GPS has a fix now, or (cycling) the last try got one
+static bool meckGpsDutyHadFix() {
+  return meckGpsDuty == MECK_GPS_DUTY_OFF && meckGpsDutyMisses == 0;
 }
 
 // Light sleep is timed by the RC slow clock (the MAX has no 32 kHz crystal),
@@ -3624,7 +3710,8 @@ static void meckLockSleepStep() {
     meckBleLost = false;
   }
 #endif
-  bool canSleep = locked && meckLockSleepBlocker() == MECK_SLEEP_OK;
+  int blocker = meckLockSleepBlocker();
+  bool canSleep = locked && blocker == MECK_SLEEP_OK;
 
   // BLE advertising off while sleep is possible, back on otherwise
   if (canSleep && !meckBleStoppedForSleep && MECK_BLE_IFACE.isEnabled()) {
@@ -3637,10 +3724,11 @@ static void meckLockSleepStep() {
     Serial.println("[Power] BLE advertising resumed");
   }
 
+  bool gpsDutyAwake = meckGpsDutyStep(locked, blocker);
   if (!locked) return;
-  bool inWindow = (long)(millis() - meckAwakeUntil) < 0;
-  if (inWindow && meckRxPasses >= 0 && meckRxHandled()) inWindow = false;   // packet done early
-  if (inWindow && meckGpsWaiting && meckGpsFixRead()) inWindow = false;     // GPS fix read
+  bool inWindow = (long)(millis() - meckAwakeUntil) < 0 || gpsDutyAwake;
+  if (inWindow && !gpsDutyAwake && meckRxPasses >= 0 && meckRxHandled()) inWindow = false;   // packet done early
+  if (inWindow && !gpsDutyAwake && meckGpsWaiting && meckGpsFixRead()) inWindow = false;     // GPS fix read
   // The button held down: maybe the 3 s SOS hold, which is longer than the
   // wake window
   if (!canSleep || the_mesh.hasPendingWork() || inWindow || ui_task.isButtonPressed()) {
@@ -3801,6 +3889,8 @@ static void meckPwrRecord(uint32_t now, unsigned long ms) {
   if (board.xl9555_digitalRead(XL_PIN_GPS_EN)) {
     LocationProvider* loc = sensors.getLocationProvider();
     if (loc && loc->isValid()) f |= MECK_PWR_F_FIX;
+  } else if (meckGpsDutyHadFix()) {
+    f |= MECK_PWR_F_FIX;
   }
 #ifdef HAS_4G_MODEM
   if (modemManager.getState() != ModemState::OFF) f |= MECK_PWR_F_MODEM;
@@ -7666,8 +7756,9 @@ static void meckGpsConfigPoll() {
 }
 #endif
 
-// GPS power for the SOS; the GPS setting itself is not changed
-static void meckSosGpsPower(bool on) {
+// GPS power for the SOS and the locked GPS cycle; the GPS setting itself
+// is not changed
+static void meckGpsSetPower(bool on) {
 #if ENV_INCLUDE_GPS == 1 && !defined(MECK_40MHZ_TEST)
   if (on) {
   #ifdef PIN_GPS_EN
@@ -7687,7 +7778,7 @@ static void meckSosGpsPower(bool on) {
     board.gpsPowerOff();
   #endif
   }
-  Serial.printf("[SOS] GPS %s\n", on ? "on" : "off");
+  Serial.printf("[GPS] power %s\n", on ? "on" : "off");
 #endif
 }
 
@@ -7837,10 +7928,10 @@ void meckSosLoop() {
 #if ENV_INCLUDE_GPS == 1 && !defined(MECK_40MHZ_TEST)
   if (meckSos.running()) {
     meckSosOwnsGps = true;
-    if (powered != meckSos.gpsOn()) meckSosGpsPower(meckSos.gpsOn());
+    if (powered != meckSos.gpsOn()) meckGpsSetPower(meckSos.gpsOn());
   } else if (meckSosOwnsGps) {
     meckSosOwnsGps = false;
-    if (powered != (p->gps_enabled != 0)) meckSosGpsPower(p->gps_enabled != 0);
+    if (powered != (p->gps_enabled != 0)) meckGpsSetPower(p->gps_enabled != 0);
   }
 #endif
 

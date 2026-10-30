@@ -172,6 +172,24 @@ static inline int findBleWindowIndex(uint8_t minutes) {
 }
 #endif
 
+// GPS when locked (Experimental, MAX): minutes between fixes, 0 = stays on
+static const uint8_t GPS_LOCK_OPTIONS[] = { 0, 2, 5, 10, 15, 30, 60 };
+#define GPS_LOCK_OPTION_COUNT 7
+
+static inline const char* gpsLockLabel(uint8_t minutes) {
+  if (minutes == 0) return MECK_TR("Stays on", "Reste allum\xC3\xA9");
+  static char buf[24];
+  snprintf(buf, sizeof(buf), MECK_TR("Every %d min", "Toutes les %d min"), minutes);
+  return buf;
+}
+
+static inline int findGpsLockIndex(uint8_t minutes) {
+  for (int i = 0; i < GPS_LOCK_OPTION_COUNT; i++) {
+    if (GPS_LOCK_OPTIONS[i] == minutes) return i;
+  }
+  return 0;
+}
+
 // ---------------------------------------------------------------------------
 // Settings row types
 // ---------------------------------------------------------------------------
@@ -264,6 +282,9 @@ enum SettingsRowType : uint8_t {
   ROW_TELEM_PROMPT,     // Toggle: ask before answering a contact's first telemetry request (NVS)
   ROW_RX_BOOSTED_GAIN,  // Toggle: SX126x boosted RX gain (default on)
   ROW_AGC_RESET_INT,    // Text entry: AGC reset interval in seconds (0 = off)
+#if defined(LilyGo_TDeck_Pro_Max) && !defined(MECK_40MHZ_TEST)
+  ROW_GPS_LOCK_INT,     // Picker: GPS when locked, stays on / a fix every N min (MAX only)
+#endif
 };
 
 // ---------------------------------------------------------------------------
@@ -590,6 +611,9 @@ private:
 #endif
       addRow(ROW_RX_BOOSTED_GAIN);
       addRow(ROW_AGC_RESET_INT);
+#if defined(LilyGo_TDeck_Pro_Max) && !defined(MECK_40MHZ_TEST)
+      addRow(ROW_GPS_LOCK_INT);
+#endif
       addRow(ROW_PURGE_CONTACTS);
 #ifdef ESP32
       addRow(ROW_TELEM_PROMPT);
@@ -2687,6 +2711,19 @@ public:
         display.print(tmp);
         break;
 
+#if defined(LilyGo_TDeck_Pro_Max) && !defined(MECK_40MHZ_TEST)
+      case ROW_GPS_LOCK_INT:
+        if (editing && _editMode == EDIT_PICKER) {
+          snprintf(tmp, sizeof(tmp), MECK_TR("< GPS when locked: %s >", "< GPS verrouill\xC3\xA9 : %s >"),
+                   gpsLockLabel(GPS_LOCK_OPTIONS[_editPickerIdx]));
+        } else {
+          snprintf(tmp, sizeof(tmp), MECK_TR("GPS when locked: %s", "GPS verrouill\xC3\xA9 : %s"),
+                   gpsLockLabel(_prefs->gps_lock_interval));
+        }
+        display.print(tmp);
+        break;
+#endif
+
       case ROW_PURGE_CONTACTS:
         display.print(MECK_TR("Delete all contacts", "Supprimer tous les contacts"));
         break;
@@ -4412,6 +4449,11 @@ public:
           _editPickerIdx--;
           if (_editPickerIdx < 0) _editPickerIdx = BLE_WINDOW_OPTION_COUNT - 1;
 #endif
+#if defined(LilyGo_TDeck_Pro_Max) && !defined(MECK_40MHZ_TEST)
+        } else if (type == ROW_GPS_LOCK_INT) {
+          _editPickerIdx--;
+          if (_editPickerIdx < 0) _editPickerIdx = GPS_LOCK_OPTION_COUNT - 1;
+#endif
         } else if (type == ROW_FONT_STYLE) {
           _editPickerIdx--;
           if (_editPickerIdx < 0) _editPickerIdx = MECK_FONT_STYLE_COUNT - 1;
@@ -4441,6 +4483,11 @@ public:
         } else if (type == ROW_LOCK_BLE) {
           _editPickerIdx++;
           if (_editPickerIdx >= BLE_WINDOW_OPTION_COUNT) _editPickerIdx = 0;
+#endif
+#if defined(LilyGo_TDeck_Pro_Max) && !defined(MECK_40MHZ_TEST)
+        } else if (type == ROW_GPS_LOCK_INT) {
+          _editPickerIdx++;
+          if (_editPickerIdx >= GPS_LOCK_OPTION_COUNT) _editPickerIdx = 0;
 #endif
         } else if (type == ROW_FONT_STYLE) {
           _editPickerIdx++;
@@ -4480,6 +4527,14 @@ public:
           _editMode = EDIT_NONE;
           Serial.printf("Settings: Phone while locked = %s\n",
                         bleWindowLabel(_prefs->ble_lock_window));
+#endif
+#if defined(LilyGo_TDeck_Pro_Max) && !defined(MECK_40MHZ_TEST)
+        } else if (type == ROW_GPS_LOCK_INT) {
+          _prefs->gps_lock_interval = GPS_LOCK_OPTIONS[_editPickerIdx];
+          the_mesh.savePrefs();
+          _editMode = EDIT_NONE;
+          Serial.printf("Settings: GPS when locked = %u min (0 = stays on)\n",
+                        (unsigned)_prefs->gps_lock_interval);
 #endif
         } else if (type == ROW_FONT_STYLE) {
           _prefs->ui_font_style = _editPickerIdx;
@@ -4745,6 +4800,11 @@ public:
 #if defined(LilyGo_TDeck_Pro)
         case ROW_AUTO_LOCK:
           startEditPicker(findAutoLockIndex(_prefs->auto_lock_minutes));
+          break;
+#endif
+#if defined(LilyGo_TDeck_Pro_Max) && !defined(MECK_40MHZ_TEST)
+        case ROW_GPS_LOCK_INT:
+          startEditPicker(findGpsLockIndex(_prefs->gps_lock_interval));
           break;
 #endif
 #if defined(LilyGo_TDeck_Pro_Max) && !defined(MECK_40MHZ_TEST)
