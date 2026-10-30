@@ -125,7 +125,7 @@ To check on the device:
 3. `pwrlink` while locked with "Stay connected": the interval the phone
    accepted, and how much the relaxed link saves on its own.
 
-### Measured (2026-10-30, iPhone, firmware 1a4425be, on battery)
+### Measured (2026-10-30, iPhone, on battery)
 
 Power log of one morning: "Stay connected" 09:35-10:37 and 12:15-12:20,
 "Every 10 min" 11:29-12:13 (deck clock). The sync window columns and
@@ -166,7 +166,7 @@ phone flag instead.
   May 2024 until the GPS set it at 05:55 (the NVS clock backup does not
   cover a flash), so those records sit in `20240515.csv`.
 
-Second run (2026-10-30 11:46-12:49, firmware 2f0af66c, without the relaxed
+Second run (2026-10-30 11:46-12:49, without the relaxed
 request, "Stay connected"): the link held the whole hour, locked, with no
 drop. iOS settled on a 30 ms interval (`link_ms`), not the 15-20 ms the
 deck asks for. Current 97-101 mA, the same as with the relaxed request, so
@@ -180,14 +180,14 @@ average current, and the average rises while the deck is unlocked to look
 at it (display, backlight, keyboard light), so it reads lower than the
 locked drain gives.
 
-Third run (2026-10-30 afternoon, iPhone, firmware 5b15734d / 83e42fbc,
+Third run (2026-10-30 afternoon, iPhone, reconnect windows,
 with `app_rx` and `ble_drop`):
 - **The app does talk after iOS reconnects it in the background**: 6-85
   frames in the minute after a reconnect in a window.
 - **A link with no app behind it.** Once, iOS reconnected but the app
   never talked, and opening the app did not help: the deck saw a phone,
   stopped advertising, and the app could not find it until Bluetooth was
-  switched off and on. Since 83e42fbc a link with no frame from the app
+  switched off and on. Now a link with no frame from the app
   within 30 s is dropped (shows as `ble_drop` 22) and advertising resumes.
 - **The link drops every 1-3 minutes** after the phone has been out of
   range once, even next to the deck, unlocked and on USB: `ble_drop` 40
@@ -197,19 +197,38 @@ with `app_rx` and `ble_drop`):
   switched on, 23 min with no drop (debug log: 2M PHY, 251-byte data
   length, 30 ms interval). Not explained yet.
 
+BLE debug log on USB (`-D BLE_DEBUG_LOGGING=1`, the same evening, walking
+out of range and back):
+- **Frames were lost during a contact sync.** The app asks for the
+  contacts changed since its last sync after every reconnect, and Meck
+  marks a contact changed whenever its advert is heard, so after a while
+  that is most of them (650 here). The deck queued one every 7 ms; on the
+  30 ms iOS link the stack's buffers filled, `notify()` failed (rc=-1,
+  1811 times in 45 min) and the frames were gone, as was a contact that
+  did not fit the send queue. Now the deck sends only while the controller
+  has a free buffer for the link and reports busy until the queue has room
+  for a batch: 650 contacts and the end frame in 5 s, no errors.
+- **A sync cut by a drop carried on into the next link.** The contact
+  iterator kept running; after an iOS background reconnect (no
+  `CMD_APP_START`) the deck sent the rest of the list unasked and answered
+  the app's own `CMD_GET_CONTACTS` with "busy", and the app hung until it
+  was restarted. The iterator now stops when the link drops.
+- Near the edge of range iOS opens the link with a 720 ms supervision
+  timeout (the deck then asks for 4 s), so drops there are expected.
+  Whether drops at close range remain with these fixes is not known yet.
+
 Next:
-1. Catch a 0x28 drop with the BLE debug log (`-D BLE_DEBUG_LOGGING=1`) on
-   USB: what precedes it (a connection parameter or PHY update from the
-   phone?), and whether it goes away without the deck's own 15-20 ms / 2M
-   PHY / data length requests at connect.
-2. Test the reconnect windows: walk away with the phone and come back
-   (app in the background, not closed), and see in `sync_link` / `app_rx`
-   whether the app itself talks in the window or only iOS reconnects. If it
-   is only iOS, the app has to handle a background reconnect; the deck
-   cannot make it sync. An app closed from the app switcher is not woken by
-   iOS at all.
-3. Shorter windows: find what keeps the link busy for a minute after the
-   app reconnects (`sync_s` per window now that it is logged).
+1. If 0x28 drops at close range come back, catch one with the debug log
+   and try without the deck's 15-20 ms / 2M PHY / data length requests at
+   connect.
+2. Messages: `CMD_SYNC_NEXT_MESSAGE` takes a message off the offline queue
+   when it is sent; if the link drops before it arrives, the app never gets
+   it (it stays in the deck's chat history). Remove it only when the app
+   asks for the next one.
+3. On battery: whether the app syncs in reconnect windows (`sync_link` /
+   `app_rx`). An app closed from the app switcher is not woken by iOS.
+4. Shorter windows: find what keeps the link busy for a minute after the
+   app reconnects (`sync_s` per window).
 
 ## 3. LoRa RX duty cycle
 
