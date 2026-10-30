@@ -3597,7 +3597,9 @@ static bool meckGpsDutyStep(bool locked, int blocker) {
     return true;
   }
   if (meckGpsDuty == MECK_GPS_DUTY_OFF) {
-    if ((long)(now - meckGpsDutyAt) < 0) return false;
+    // Only the minute wakes get here: 10 s early is fine, so a try does not
+    // slip to the minute after
+    if ((long)(now - meckGpsDutyAt) < -10000L) return false;
     meckGpsDutyAcquire();
     return true;
   }
@@ -3618,7 +3620,8 @@ static bool meckGpsDutyStep(bool locked, int blocker) {
                 (unsigned long)(now - meckGpsDutyFrom));
   meckGpsSetPower(false);
   meckGpsDuty = MECK_GPS_DUTY_OFF;
-  meckGpsDutyAt = now + ((uint32_t)p->gps_lock_interval * 60000UL << meckGpsDutyMisses);
+  // From the start of this try, which (but for the first) was at a minute wake
+  meckGpsDutyAt = meckGpsDutyFrom + ((uint32_t)p->gps_lock_interval * 60000UL << meckGpsDutyMisses);
   return false;
 }
 
