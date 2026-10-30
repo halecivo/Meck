@@ -4293,6 +4293,12 @@ void MyMesh::checkCLIRescueCmd() {
 }
 
 void MyMesh::checkSerialInterface() {
+  // A link lost mid-sync must not carry the rest of the contact list into
+  // the next one: the app did not ask for it there, and its own
+  // CMD_GET_CONTACTS would get ERR_CODE_BAD_STATE while the iterator runs.
+  // An iOS background reconnect sends no CMD_APP_START to reset it.
+  if (_iter_started && !_serial->isConnected()) _iter_started = false;
+
   size_t len = _serial->checkRecvFrame(cmd_frame);
   if (len > 0) {
     handleCmdFrame(len);
