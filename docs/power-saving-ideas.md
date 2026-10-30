@@ -155,6 +155,20 @@ phone flag instead.
   May 2024 until the GPS set it at 05:55 (the NVS clock backup does not
   cover a flash), so those records sit in `20240515.csv`.
 
+Second run (2026-10-30 11:46-12:49, firmware 2f0af66c, without the relaxed
+request, "Stay connected"): the link held the whole hour, locked, with no
+drop. iOS settled on a 30 ms interval (`link_ms`), not the 15-20 ms the
+deck asks for. Current 97-101 mA, the same as with the relaxed request, so
+that request bought nothing and probably caused the drops.
+
+The battery fell 99 % to 93 % in 50 min (7.2 %/h), which is what 100 mA
+takes from 1400 mAh (7.1 %/h); the gauge's percentage and current agree.
+At 93 % it held 1301 of 1400 mAh: about 13 h at 100 mA. The Battery
+page's "Remaining" is the gauge's TimeToEmpty, remaining capacity over its
+average current, and the average rises while the deck is unlocked to look
+at it (display, backlight, keyboard light), so it reads lower than the
+locked drain gives.
+
 Next:
 1. "Stay connected": after a link drop while locked, keep advertising for
    a reconnect window, then fall back to windows (e.g. every 5 min) rather
