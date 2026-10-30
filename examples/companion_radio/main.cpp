@@ -3425,8 +3425,28 @@ static bool meckBleWindowed() {
          (MECK_BLE_IFACE.isEnabled() || meckBleStoppedForSleep);
 }
 
+// "Stay connected" keeps the deck awake only while the link is up. Once it
+// is gone while locked (out of range, or never connected), nothing would
+// let the phone back in until unlock, so windows open there too: on a new
+// message, and on a schedule that thins out the longer the phone is away
+// (a short dropout usually comes back within a minute).
+static bool meckBleLost = false;
+static unsigned long meckBleLostAt = 0, meckBleRetryAt = 0;
+
+static bool meckBleStay() {
+  NodePrefs* p = the_mesh.getNodePrefs();
+  return p->lock_sleep && !p->ble_lock_window &&
+         (MECK_BLE_IFACE.isEnabled() || meckBleStoppedForSleep);
+}
+
+static unsigned long meckBleRetryGap(unsigned long away) {
+  if (away < 5 * 60000UL) return 60000UL;
+  if (away < 60 * 60000UL) return 5 * 60000UL;
+  return 15 * 60000UL;
+}
+
 static void meckBleWindowStart(const char* why) {
-  if (!meckBleWindowed() || !ui_task.isLocked()) return;
+  if (!(meckBleWindowed() || (meckBleStay() && meckBleLost)) || !ui_task.isLocked()) return;
   if (!meckBleWinOpen) {
     Serial.printf("[Power] BLE sync window (%s)\n", why);
     meckSyncWins++;
@@ -3465,6 +3485,12 @@ static bool meckBleWindowActive() {
     Serial.printf("[Power] BLE sync window closed after %lu s\n", (now - meckBleWinStart) / 1000);
   }
   return open;
+}
+
+static void meckBleWindowEnd() {
+  if (!meckBleWinOpen) return;
+  meckBleWinOpen = false;
+  meckSyncMs += millis() - meckSyncFrom;
 }
 #endif
 static unsigned long meckAwakeUntil = 0;     // stay awake until (after a wake)
@@ -3557,6 +3583,10 @@ int meckLockSleepBlocker() {
   } else
 #endif
   if (serial_interface.isConnected()) return MECK_SLEEP_PHONE;
+#ifdef MECK_BLE_LOCK_WINDOWS
+  // Stay connected with the phone gone: a window letting it back in
+  if (ui_task.isLocked() && meckBleStay() && meckBleWindowActive()) return MECK_SLEEP_SYNC;
+#endif
 #if defined(MECK_AUDIO_VARIANT) && defined(HAS_ES8311_AUDIO)
   if (es8311_active()) return MECK_SLEEP_AUDIO;
 #endif
@@ -3570,11 +3600,29 @@ static void meckLockSleepStep() {
   static bool wasLocked = false;
   if (locked && !wasLocked && MECK_BLE_IFACE.isConnected()) {
     meckBleWindowStart("lock");   // let a sync in progress finish first
-  } else if (!locked && meckBleWinOpen) {
-    meckBleWinOpen = false;
-    meckSyncMs += millis() - meckSyncFrom;
+  } else if (!locked) {
+    meckBleWindowEnd();
   }
   wasLocked = locked;
+
+  if (locked && meckBleStay()) {
+    if (MECK_BLE_IFACE.isConnected()) {
+      if (meckBleLost) {
+        Serial.printf("[Power] Phone back after %lu s\n", (millis() - meckBleLostAt) / 1000);
+        if (meckBleWinOpen && !meckBleWinLinked) { meckBleWinLinked = true; meckSyncLinked++; }
+        meckBleWindowEnd();   // connected: the phone keeps the deck awake again
+        meckBleLost = false;
+      }
+    } else if (!meckBleLost) {
+      Serial.printf("[Power] Phone link lost (last drop reason 0x%02x)\n", MECK_BLE_IFACE.lastDropReason());
+      meckBleLost = true;
+      meckBleLostAt = millis();
+      meckBleRetryAt = meckBleLostAt + meckBleRetryGap(0);
+      meckBleWindowStart("link lost");
+    }
+  } else {
+    meckBleLost = false;
+  }
 #endif
   bool canSleep = locked && meckLockSleepBlocker() == MECK_SLEEP_OK;
 
@@ -3638,6 +3686,13 @@ static void meckLockSleepStep() {
       // after the minute boundary)
       if (meckBleWindowed() && (rtc_clock.getCurrentTime() / 60) % the_mesh.getNodePrefs()->ble_lock_window == 0)
         meckBleWindowStart("timer");
+      // Stay connected, phone gone: the next retry, at a minute wake (10 s
+      // early is fine, so a one-minute gap does not skip every other wake)
+      if (meckBleLost && meckBleStay() && (long)(millis() - meckBleRetryAt) > -10000L) {
+        unsigned long now = millis();
+        meckBleRetryAt = now + meckBleRetryGap(now - meckBleLostAt);
+        meckBleWindowStart("retry");
+      }
 #endif
       meckMeasureSlowClock();
       meckWakeTimer++;
@@ -3687,6 +3742,8 @@ struct MeckPwrRec {
   uint8_t  syncWins, syncLinked;    // sync windows opened / of which the app reconnected in
   uint16_t syncDs;     // time in sync windows, 0.1 s
   uint16_t linkIv;     // BLE connection interval the phone accepted, 1.25 ms (0 = none yet)
+  uint8_t  appRx;      // frames received from the app over Bluetooth
+  uint8_t  drop;       // a Bluetooth link ended: why (esp_gatt_conn_reason_t), 0 = none
 };
 
 enum {
@@ -3705,6 +3762,10 @@ static uint32_t meckPwrMinute = 0, meckPwrRefEpoch = 0;
 static unsigned long meckPwrRefMs = 0, meckPwrStartMs = 0;
 static int32_t meckPwrJump = 0;
 static uint32_t meckPwrRx0 = 0, meckPwrTx0 = 0, meckPwrRef0 = 0, meckPwrFull0 = 0;
+#if defined(BLE_PIN_CODE) && !defined(WIFI_SSID)
+static uint32_t meckPwrAppRx0 = 0;
+static uint16_t meckPwrDrops0 = 0;
+#endif
 static unsigned long meckPwrLastFlushTry = 0;
 
 static void meckPwrCounters(uint32_t& rx, uint32_t& tx, uint32_t& ref, uint32_t& full) {
@@ -3778,6 +3839,12 @@ static void meckPwrRecord(uint32_t now, unsigned long ms) {
 #endif
 #if defined(BLE_PIN_CODE) && !defined(WIFI_SSID)
   r.linkIv = MECK_BLE_IFACE.isConnected() ? SerialBLEInterface::linkInterval() : 0;
+  uint32_t appRx = MECK_BLE_IFACE.rxFrames();
+  r.appRx = (uint8_t)min(appRx - meckPwrAppRx0, 255U);
+  meckPwrAppRx0 = appRx;
+  uint16_t drops = MECK_BLE_IFACE.drops();
+  if (drops != meckPwrDrops0) r.drop = MECK_BLE_IFACE.lastDropReason();
+  meckPwrDrops0 = drops;
 #endif
 
   // Append once the record is complete; when full, drop the oldest record
@@ -3810,14 +3877,14 @@ static const char MECK_PWR_HEADER[] =
   "utc,local_date,local_time,secs,asleep_s,wake_lora,wake_btn,wake_timer,"
   "pct,mv,avg_ma,temp_c,usb,charge,locked,blocker,saving,gps,modem,wifi,"
   "phone,ble,audio,light,rx,tx,refresh,full_refresh,clock_jump_s,utc_offset,rc_ppm,fix,"
-  "ble_win,sync_win,sync_link,sync_s,link_ms";
+  "ble_win,sync_win,sync_link,sync_s,link_ms,app_rx,ble_drop";
 
 static int meckPwrCsv(const MeckPwrRec& r, char* buf, size_t len, char* date, size_t dlen) {
   char hm[8];
   meckPwrLocalDate(r.t, r.utc, date, dlen, hm, sizeof(hm));
   uint16_t f = r.flags;
   return snprintf(buf, len,
-    "%lu,%s,%s,%u,%u.%u,%u,%u,%u,%u,%u,%d,%d.%d,%d,%u,%d,%u,%d,%d,%d,%d,%d,%d,%d,%d,%u,%u,%u,%u,%ld,%d,%d,%d,%u,%u,%u,%u.%u,%u.%02u",
+    "%lu,%s,%s,%u,%u.%u,%u,%u,%u,%u,%u,%d,%d.%d,%d,%u,%d,%u,%d,%d,%d,%d,%d,%d,%d,%d,%u,%u,%u,%u,%ld,%d,%d,%d,%u,%u,%u,%u.%u,%u.%02u,%u,%u",
     (unsigned long)r.t, date, hm, r.secs, r.sleptDs / 10, r.sleptDs % 10,
     r.wLora, r.wBtn, r.wTimer, r.pct, r.mv, r.avgMa, r.tempDc / 10, abs(r.tempDc % 10),
     (f & MECK_PWR_F_USB) ? 1 : 0, r.chg, (f & MECK_PWR_F_LOCKED) ? 1 : 0, r.blocker,
@@ -3826,7 +3893,7 @@ static int meckPwrCsv(const MeckPwrRec& r, char* buf, size_t len, char* date, si
     (f & MECK_PWR_F_AUDIO) ? 1 : 0, (f & MECK_PWR_F_LIGHT) ? 1 : 0,
     r.rx, r.tx, r.refresh, r.full, (long)r.jump, r.utc, r.rcPpm, (f & MECK_PWR_F_FIX) ? 1 : 0,
     r.bleWin, r.syncWins, r.syncLinked, r.syncDs / 10, r.syncDs % 10,
-    (unsigned)(r.linkIv * 125 / 100), (unsigned)(r.linkIv * 125 % 100));
+    (unsigned)(r.linkIv * 125 / 100), (unsigned)(r.linkIv * 125 % 100), r.appRx, r.drop);
 }
 
 #ifndef MECK_GIT_HASH
