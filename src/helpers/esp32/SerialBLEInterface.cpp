@@ -1,6 +1,7 @@
 #include "SerialBLEInterface.h"
 #include "esp_bt.h"
 #include "esp_gap_ble_api.h"
+#include "esp_gatt_common_api.h"
 
 // See the following for generating UUIDs:
 // https://www.uuidgenerator.net/
@@ -373,8 +374,20 @@ size_t SerialBLEInterface::writeFrame(const uint8_t src[], size_t len) {
 
 #define  BLE_WRITE_MIN_INTERVAL   7
 
+// MyMesh::checkSerialInterface() queues up to 8 contacts and then the end
+// frame in one go, and a contact it could not queue is lost: report busy
+// until that much room is free.
+#define  BLE_WRITE_BATCH_ROOM     9
+
+// The stack refuses a notification when its buffers for the link are full
+// (a contact sync outruns a 30 ms iOS link: "notify(): rc=-1"), and the
+// frame was lost. Wait while the controller has no room, but not forever,
+// in case the count is stuck.
+#define  BLE_CONGESTED_MAX_WAIT   1000
+
 bool SerialBLEInterface::isWriteBusy() const {
-  return millis() < _last_write + BLE_WRITE_MIN_INTERVAL;   // still too soon to start another write?
+  return millis() < _last_write + BLE_WRITE_MIN_INTERVAL     // still too soon to start another write?
+      || send_queue_len > FRAME_QUEUE_SIZE - BLE_WRITE_BATCH_ROOM;
 }
 
 size_t SerialBLEInterface::checkRecvFrame(uint8_t dest[]) {
@@ -382,6 +395,8 @@ size_t SerialBLEInterface::checkRecvFrame(uint8_t dest[]) {
 
   if (send_queue_len > 0   // first, check send queue
     && millis() >= _last_write + BLE_WRITE_MIN_INTERVAL    // space the writes apart
+    && (esp_ble_get_cur_sendable_packets_num(last_conn_id) > 0
+        || millis() >= _last_write + BLE_CONGESTED_MAX_WAIT)
   ) {
     _last_write = millis();
 #ifdef MECK_BLE_SMALL_MTU_SPLIT
