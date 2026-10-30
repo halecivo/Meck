@@ -180,14 +180,35 @@ average current, and the average rises while the deck is unlocked to look
 at it (display, backlight, keyboard light), so it reads lower than the
 locked drain gives.
 
+Third run (2026-10-30 afternoon, iPhone, firmware 5b15734d / 83e42fbc,
+with `app_rx` and `ble_drop`):
+- **The app does talk after iOS reconnects it in the background**: 6-85
+  frames in the minute after a reconnect in a window.
+- **A link with no app behind it.** Once, iOS reconnected but the app
+  never talked, and opening the app did not help: the deck saw a phone,
+  stopped advertising, and the app could not find it until Bluetooth was
+  switched off and on. Since 83e42fbc a link with no frame from the app
+  within 30 s is dropped (shows as `ble_drop` 22) and advertising resumes.
+- **The link drops every 1-3 minutes** after the phone has been out of
+  range once, even next to the deck, unlocked and on USB: `ble_drop` 40
+  (0x28, instant passed: the deck's controller missed a timed link change
+  from the phone) and 8 (supervision timeout). iOS reconnects within about
+  5 s, so it only shows in the new column. Right after Bluetooth was
+  switched on, 23 min with no drop (debug log: 2M PHY, 251-byte data
+  length, 30 ms interval). Not explained yet.
+
 Next:
-1. Test the reconnect windows: walk away with the phone and come back
+1. Catch a 0x28 drop with the BLE debug log (`-D BLE_DEBUG_LOGGING=1`) on
+   USB: what precedes it (a connection parameter or PHY update from the
+   phone?), and whether it goes away without the deck's own 15-20 ms / 2M
+   PHY / data length requests at connect.
+2. Test the reconnect windows: walk away with the phone and come back
    (app in the background, not closed), and see in `sync_link` / `app_rx`
    whether the app itself talks in the window or only iOS reconnects. If it
    is only iOS, the app has to handle a background reconnect; the deck
    cannot make it sync. An app closed from the app switcher is not woken by
    iOS at all.
-2. Shorter windows: find what keeps the link busy for a minute after the
+3. Shorter windows: find what keeps the link busy for a minute after the
    app reconnects (`sync_s` per window now that it is logged).
 
 ## 3. LoRa RX duty cycle
