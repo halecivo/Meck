@@ -35,6 +35,7 @@ class SerialBLEInterface : public BaseSerialInterface, BLESecurityCallbacks, BLE
   uint32_t _rx_frames;                // frames received from the app
   volatile uint16_t _drops;           // links lost
   volatile uint8_t _drop_reason;      // why the last one went (esp_gatt_conn_reason_t)
+  volatile unsigned long _link_at;    // authenticated link up, waiting for the app's first frame (0 = not waiting)
 
   struct Frame {
     uint8_t len;
@@ -93,6 +94,7 @@ public:
     _rx_frames = 0;
     _drops = 0;
     _drop_reason = 0;
+    _link_at = 0;
     last_conn_id = 0;
     memset(_remote_bda, 0, 6);
     recv_queue = xQueueCreateStatic(
