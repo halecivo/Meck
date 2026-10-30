@@ -14,7 +14,8 @@ From the power log of one night on battery (10.7 h, 99 % to 85 %):
 | Locked, asleep, GPS on with a fix | 31.7 mA | 47 min by a window on battery (branch gps-lock-sleep): blocker "can sleep", asleep 59.3 s of 60, one timer wake a minute, awake time as without GPS; the GPS costs about 15 mA. Whether the position was updated is not confirmed: the log has no fix or position field |
 | Light sleep floor | about 13 mA | between wakes |
 | Locked and awake (a blocker holds it) | about 35 mA | e.g. on USB |
-| Locked with a phone connected over BLE | about 100 mA | blocker PHONE, never sleeps |
+| Locked with a phone connected over BLE | about 100 mA | blocker PHONE, never sleeps; 97 mA with the relaxed interval |
+| Locked, phone syncs "Every 10 min" | 23.4 mA | sync windows, see 2 below |
 | Before power-fixes (locked, idle) | about 82 mA | for comparison |
 
 About 470 LoRa wakes per hour. Each one keeps the ESP32 up for at least
@@ -74,7 +75,7 @@ Steps, in order of effort:
 Until step 3 exists, a phone connected while locked keeps the deck awake;
 the lock warning says so (blocker PHONE).
 
-### Implemented (branch `ble-locked-relaxed`, not yet measured)
+### Implemented (branch `ble-locked-relaxed`)
 
 - **Relaxed interval while locked (2.1).** With power saving on, locking
   asks the phone for 100-150 ms, slave latency 4, 6 s timeout; unlocking
@@ -108,6 +109,57 @@ To check on the device:
    phone that was connected at lock time.
 3. `pwrlink` while locked with "Stay connected": the interval the phone
    accepted, and how much the relaxed link saves on its own.
+
+### Measured (2026-10-30, iPhone, firmware 1a4425be, on battery)
+
+Power log of one morning: "Stay connected" 09:35-10:37 and 12:15-12:20,
+"Every 10 min" 11:29-12:13 (deck clock). The sync window columns and
+`link_ms` came out as zeros: the firmware filled them in after the record
+had been stored (fixed since), so windows are read from blocker 9 and the
+phone flag instead.
+
+| Locked, power saving on | Mean | Awake |
+|---|---|---|
+| Phone connected, "Stay connected" (35 min) | 97 mA | 100% |
+| Phone gone, Bluetooth paused, asleep (68 min) | 13.7 mA | 1% |
+| "Every 10 min" (45 min, 5 windows) | 23.4 mA | 13% |
+| (the same between windows) | 14.7 mA | 4% |
+
+- **The relaxed interval saves nothing that shows.** 97-99 mA locked with
+  the phone against about 100 mA before it, and 100-110 mA unlocked. The
+  deck stays awake with the controller running either way; only step 3
+  (sleep between BLE events) would change that. Whether iOS accepted the
+  100-150 ms is unknown (`link_ms` was not logged).
+- **"Stay connected" loses the phone and does not get it back.** The link
+  held 35 min after the first lock, but later dropped 45-60 s after
+  locking (10:11, 10:34, 10:37) and once after 5 min (12:20). The reason is
+  not in the log. Once the link is gone nothing blocks sleep, so the deck
+  pauses Bluetooth (no advertising) until it is unlocked: the app cannot
+  reconnect while the deck is locked, which is what the user saw. After
+  each unlock the app was back within the minute.
+- **Sync windows work with iOS.** The app reconnected in the windows at
+  11:30, 11:50, 12:00 and 12:10, and in the window a received message
+  opened at 11:52. At 11:39 the deck was awake only about 10 s, so the app
+  either connected and had nothing to sync or did not come at all (the
+  sync columns would say). A window with the app is about 60-70 s at
+  ~98 mA, longer than the 10-20 s expected: about 1.6 mAh, or +1 mA on
+  average at 10 min, +2 mA at 5 min. Messages arrive with up to 10 min
+  delay, as the user reported.
+- **Wakes.** Locked and asleep the deck woke once a minute for the clock
+  and on the few LoRa packets; no button wakes it did not get from the
+  user. No resets during the day. After the flash at 22:52 the clock read
+  May 2024 until the GPS set it at 05:55 (the NVS clock backup does not
+  cover a flash), so those records sit in `20240515.csv`.
+
+Next:
+1. "Stay connected": after a link drop while locked, keep advertising for
+   a reconnect window, then fall back to windows (e.g. every 5 min) rather
+   than staying dark until unlock.
+2. Why iOS drops the link soon after locking: watch the BLE disconnect
+   reason on the serial console with the deck locked on USB (the relaxed
+   interval is requested there too), with and without the relaxed request.
+3. Shorter windows: find what keeps the link busy for a minute after the
+   app reconnects (`sync_s` per window now that it is logged).
 
 ## 3. LoRa RX duty cycle
 
