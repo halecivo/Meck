@@ -952,32 +952,28 @@ static uint32_t _atoi(const char* sp) {
     return Wire.read();
   }
 
+  static bool meckChgWrite(uint8_t reg, uint8_t val) {
+    Wire.beginTransmission(I2C_ADDR_SY6970);
+    Wire.write(reg);
+    Wire.write(val);
+    return Wire.endTransmission() == 0;
+  }
+
   static bool meckSetHiz(bool on) {
     int r0 = meckChgRead(0x00);
     if (r0 < 0) return false;
-    uint8_t v = on ? (r0 | 0x80) : (r0 & 0x7F);
-    Wire.beginTransmission(I2C_ADDR_SY6970);
-    Wire.write((uint8_t)0x00);
-    Wire.write(v);
-    bool ok = Wire.endTransmission() == 0;
+    // Writing EN_HIZ puts the SY6970 in host mode: 40 s later its I2C
+    // watchdog would restore the default registers and charge again. Off
+    // while HIZ is on (also through a light sleep), back to 40 s after.
+    int r7 = meckChgRead(0x07);
+    if (on && r7 >= 0) meckChgWrite(0x07, (uint8_t)(r7 & ~0x30));
+    bool ok = meckChgWrite(0x00, on ? (r0 | 0x80) : (r0 & 0x7F));
+    if (!on && r7 >= 0) meckChgWrite(0x07, (uint8_t)((r7 & ~0x30) | 0x10));
     meckHizUntil = (ok && on) ? millis() + 15UL * 60 * 1000 : 0;
     return ok;
   }
 
   void meckPowerTick() {
-    // Writing EN_HIZ puts the SY6970 in host mode: unless its I2C watchdog
-    // (40 s) is reset, it restores the default registers and charges again
-    static unsigned long nextKick = 0;
-    if (meckHizUntil && (long)(millis() - nextKick) >= 0) {
-      nextKick = millis() + 20000;
-      int r3 = meckChgRead(0x03);
-      if (r3 >= 0) {
-        Wire.beginTransmission(I2C_ADDR_SY6970);
-        Wire.write((uint8_t)0x03);
-        Wire.write((uint8_t)(r3 | 0x40));   // WD_RST
-        Wire.endTransmission();
-      }
-    }
     if (meckHizUntil && (long)(millis() - meckHizUntil) >= 0) {
       meckSetHiz(false);
       Serial.println("pwr: HIZ timeout, USB input back on");
