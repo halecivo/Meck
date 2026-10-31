@@ -965,6 +965,19 @@ static uint32_t _atoi(const char* sp) {
   }
 
   void meckPowerTick() {
+    // Writing EN_HIZ puts the SY6970 in host mode: unless its I2C watchdog
+    // (40 s) is reset, it restores the default registers and charges again
+    static unsigned long nextKick = 0;
+    if (meckHizUntil && (long)(millis() - nextKick) >= 0) {
+      nextKick = millis() + 20000;
+      int r3 = meckChgRead(0x03);
+      if (r3 >= 0) {
+        Wire.beginTransmission(I2C_ADDR_SY6970);
+        Wire.write((uint8_t)0x03);
+        Wire.write((uint8_t)(r3 | 0x40));   // WD_RST
+        Wire.endTransmission();
+      }
+    }
     if (meckHizUntil && (long)(millis() - meckHizUntil) >= 0) {
       meckSetHiz(false);
       Serial.println("pwr: HIZ timeout, USB input back on");
