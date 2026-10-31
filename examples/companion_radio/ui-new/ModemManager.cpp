@@ -1176,7 +1176,10 @@ restart:
   _sleepEnabled = sendAT("AT+CSCLK=1", "OK", 2000);
   _readySince = millis();
   _asleepMs = 0;
-  MESH_DEBUG_PRINTLN("[Modem] UART sleep %s", _sleepEnabled ? "enabled" : "NOT accepted");
+  // Always on serial (MESH_DEBUG is off in the normal builds): the one line
+  // that says whether the modem accepted UART sleep
+  Serial.printf("[Modem] UART sleep %s
+", _sleepEnabled ? "enabled" : "NOT accepted");
 #endif
 
   // ---- Phase 4: Main loop ----
