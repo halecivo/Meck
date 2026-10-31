@@ -327,6 +327,85 @@ in RAM do not survive the reset that USB needs after light sleep.
   the minute wake), so tries creep about 10 s earlier each time. The
   20:10 try started at the end of the 20:09 minute.
 
+## 4G modem while locked
+
+With the modem switched on, the locked deck does not sleep at all: any
+modem state but OFF is the sleep blocker MODEM. The modem itself never
+slept either: DTR was held low and UART sleep (`AT+CSCLK`) was off, and
+the modem task listed SMS every 10 s and read the signal every 30 s.
+The A7682E hardware design guide gives 12 mA for LTE idle and 2 mA for
+LTE sleep (VBAT 3.8 V); in sleep it still takes calls and SMS.
+
+What the schematic says (T-Deck Pro Max V0.1 25-09-11, page 6): RI goes
+to IO7 and DTR to IO8 through U17, an RS0104 auto-direction level shifter
+(A side VDD_EXT 1.8 V from the modem, B side 3.3 V). Its OE is VDD_EXT,
+so with the modem off the shifter is high-impedance. IO7 is not used for
+anything else on the MAX. The modem's USB only goes to test points
+(TP3-TP5), so USB does not keep it awake. RI is high normally, pulses low
+for 120 ms on an SMS and 60 ms on other URCs, and stays low while a call
+rings in (until ATA or the caller hangs up).
+
+### Implemented (branch `modem-sleep`)
+
+1. **SMS on +CMTI, no signal polling while locked.** SMS are read when
+   the +CMTI URC comes (also when it shows up inside an AT response), on
+   an RI pulse, and on unlock. A safety poll every 10 min catches lost
+   URCs. After a message has been read the list is read again until it
+   is empty (the 512-byte response buffer holds only a few). AT+CSQ runs
+   every 30 s only while unlocked, and once right after unlocking. Both
+   4G builds get this, the Pro too.
+2. **UART sleep (MAX only, `MODEM_UART_SLEEP`).** After init the modem
+   gets `AT+CSCLK=1`. The task raises DTR once the modem has been idle
+   for 2 s: READY, no call, no tone, nothing queued, no SMS pending, RI
+   high. `sendAT()` pulls DTR low and waits 50 ms before each command,
+   and sends a command once more if the first got no byte back. An RI
+   falling edge (interrupt on IO7) wakes the task at once, pulls DTR low
+   and checks for SMS; while RI stays low (a call ringing in) the modem
+   stays awake and the SMS check waits for the call. Shutdown drops DTR
+   low after the modem power is off and releases RI. `-D
+   MODEM_NO_UART_SLEEP` builds without it.
+
+The modem is still a sleep blocker for the ESP32, so this only saves on
+the modem side: expected from about 12 mA to 2-3 mA plus the wakes. The
+power log flag shows the modem on; `pwrmodem` on the debug CLI shows the
+state, the time asleep since READY, RI falls, DTR wakes and SMS reads.
+
+To check on the device (needs a SIM, and a test SMS and call from the
+user):
+1. `pwrmodem` after boot: "uart sleep on" (AT+CSCLK=1 accepted), and
+   mostly "asleep" when idle.
+2. An SMS to the deck, locked and unlocked: does RI fall (`ri falls` up),
+   does it arrive at once? If RI does not pulse for SMS with the default
+   `AT+CFGRI`, try `AT+CFGRI=1`.
+3. A call to the deck while the modem is asleep: does it ring, does
+   answering work, does audio work; the same with the deck locked.
+4. An outgoing SMS and call right after the modem fell asleep (the first
+   command after a wake).
+5. `pwrlog`: locked with the modem on, an hour before and after, ideally
+   in the same place (the signal changes the current a lot).
+
+### Next steps
+
+3. **Let the ESP32 sleep with the modem on.** With UART sleep working,
+   the modem need not block light sleep in READY: RI (IO7 is an RTC GPIO)
+   as a light sleep wake source (`gpio_wakeup_enable`, low level), DTR
+   kept high through sleep, blocker MODEM only for calls, tones, SMS
+   being sent and AT commands in flight. After an RI wake the first bytes
+   of the URC can be lost, so the task asks the modem (CMGL, CLCC)
+   instead of relying on the URC text. The modem task's 500 ms wait
+   would have to become a wait for RI or work queued. Expected: the
+   locked deck with 4G near today's sleep plus the modem's 2-3 mA.
+4. **Network settings.** LTE only (`AT+CNMP=38`) stops searching 2G/3G
+   with a weak signal, but calls then need VoLTE on the A7682E with the
+   user's operator. eDRX (`AT+CEDRX`) with a short cycle would save more
+   but delays ringing and depends on the operator. PSM (`AT+CPSMS`) makes
+   the deck unreachable for calls, so not by default. The companion
+   never activates a PDP context (only the repeater's cellular MQTT
+   does), so no data session is kept up.
+5. **"4G when locked" setting.** Always reachable / SMS only (eDRX) /
+   off (`AT+CFUN=4`) with a check every N minutes, like the Bluetooth
+   sync windows.
+
 ## WiFi while locked
 
 WiFi on is a sleep blocker (about 100 mA or more). Turning it off on lock
@@ -342,3 +421,5 @@ CPU stays awake. So for now: WiFi off when not needed.
 3. Find the rest of the 13 mA floor (4).
 4. Automatic light sleep with BLE modem sleep (2.3): the big one, needs the
    custom sdkconfig.
+5. 4G: UART sleep first (implemented), then light sleep with RI as a wake
+   source (see "4G modem while locked").

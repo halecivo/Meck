@@ -980,6 +980,9 @@ static uint32_t _atoi(const char* sp) {
     extern bool meckTxLogFlush();
     if (strcmp(cmd, "pwrlog") == 0) { meckPwrLogPrint(); return; }
     if (strcmp(cmd, "pwrchg") == 0) { board.chargerDebugPrint(); return; }   // charger + gauge, read-only
+#ifdef HAS_4G_MODEM
+    if (strcmp(cmd, "pwrmodem") == 0) { modemManager.printPowerStats(); return; }   // UART sleep, read-only
+#endif
     if (strcmp(cmd, "pwrcal") == 0) {
       // RC slow clock: the calibration in use vs fresh measurements
       // (values are the RC period in microseconds, Q13.19 fixed point)
@@ -4880,6 +4883,8 @@ void loop() {
   // SMS: poll for incoming messages from modem
   #ifdef HAS_4G_MODEM
   {
+    modemManager.setScreenLocked(ui_task.isLocked());
+
     SMSIncoming incoming;
     while (modemManager.recvSMS(incoming)) {
       // Save to store and notify UI
