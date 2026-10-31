@@ -384,6 +384,45 @@ user):
 5. `pwrlog`: locked with the modem on, an hour before and after, ideally
    in the same place (the signal changes the current a lot).
 
+### Measured (2026-10-31, partial: low cell, deck lost USB)
+
+Built: `meck_max_ui2`, `meck_max_ble_wifi` and `meck_4g_ble_wifi`, no
+errors. "UART sleep enabled" was a MESH_DEBUG line (off in these builds),
+now a plain serial line. Flashed `meck_max_ui2`, hash verified.
+
+The deck had just been run flat; the cell was at 3.60-3.66 V on the PC's
+USB port, which charges it with only about 85 mA while the modem is on.
+At that voltage the A7682E restarts by itself every 20-25 s (`*ATREADY`,
+`+CREG: 0,0`, CSQ 99, "no network service"). It did the same on the old
+firmware just before flashing, so it is the supply, not this branch. The
+firmware does not notice a modem restart: CSCLK, ATE0 and CNMI are gone
+afterwards while `_sleepEnabled` stays true. So the numbers below show the
+firmware side only, not a modem that sleeps on a network.
+
+- Init: the seven tones go over with `AT+CFTRANRX` (each `AT+FSDEL`
+  before it answers ERROR, one timed out; the per-tone result is a
+  MESH_DEBUG line). `AT+CSCLK=1` answered OK both times, then "UART sleep
+  enabled".
+- SMS: one `AT+CMGL` right after READY, no 10 s polling. The other reads
+  came from RI falls, which the modem restarts cause (8 in 4 min).
+- `pwrmodem`: "uart sleep on", asleep 196 of 244 s (80 %) and 43 of
+  54 s (79 %); dtr wakes 10 in 244 s (2.5 a minute, restarts included);
+  ri pin 1 and dtr pin 0 while awake. "TX (after wake)" never appeared,
+  but with CSCLK lost at each restart the 50 ms wake is not really tested.
+- Unlocked: `AT+CSQ` every 30-31 s (6 in a row). Locked: none. Unlock:
+  `AT+CMGL` at once and `AT+CSQ` 5 s later.
+- 4G off in settings (twice): `AT+CPOF` OK the first time (no answer the
+  second, the modem was restarting), GPIO8 output LOW, `pwrmodem` OFF,
+  XL9555 modem=0. Charging current went from 85 to 133 mA, so the modem
+  really draws nothing once off.
+- 4G on again: init to READY and "UART sleep enabled", but the modem kept
+  restarting (cell 3.65 V).
+- Not done: 10 min of `pwrmodem`, the locked test with screenshots, and
+  the battery comparison with and without `MODEM_NO_UART_SLEEP` (`pwrhiz`
+  runs). After 36 min locked on USB with 4G off the deck dropped off USB
+  (21:50) and needs the reset button; the power log should show whether
+  it slept. Charge the deck above about 3.75 V before trying again.
+
 ### Next steps
 
 3. **Let the ESP32 sleep with the modem on.** With UART sleep working,
