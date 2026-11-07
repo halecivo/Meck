@@ -183,6 +183,11 @@ struct NodePrefs {  // persisted to file
   // the setting (everything kept).
   uint8_t lock_keep;               // default LOCK_KEEP_DEFAULT
 
+  // Messages when locked: 0 = the lock screen shows a new message with the
+  // clock's next redraw, 1 = at once, at the cost of a redraw per message.
+  // Older prefs files short-read this final field and keep the default 0.
+  uint8_t lock_msg_now;            // default 0
+
   // --- Font helpers (inline, no overhead) ---
   // Returns the DisplayDriver text-size index for "small/body" text.
   // T-Deck Pro: 0 = built-in 6×8 (or 7pt with custom fonts), 1 = 9pt.

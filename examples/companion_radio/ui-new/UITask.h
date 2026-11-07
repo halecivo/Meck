@@ -147,7 +147,14 @@ class UITask : public AbstractUITask {
   unsigned long _lockPromptUntil = 0;   // lock warning shown until (0 = none)
   int _lockPromptReason = 0;            // MeckSleepBlock shown in the warning
   unsigned long _lastInputMillis = 0;  // Auto-lock idle tracking
-  unsigned long _lastLockRefresh = 0;  // Periodic lock screen clock update
+  uint32_t _lastLockMinute = 0;        // Clock minute the lock screen last redrew for
+#ifdef MECK_UI_V2
+  char _lockToast[40] = "";            // New message while locked, drawn with the clock
+  uint32_t _lockToastMinute = 0;       // The clock minute it shows in
+#endif
+#if defined(LilyGo_TDeck_Pro_Max) && !defined(MECK_40MHZ_TEST)
+  bool _lockUsb = false;               // USB power as the lock screen last knew it
+#endif
   UIScreen* sos_screen;                // SOS countdown / status / menu
   // Top-button hold for SOS (docs/sos.md)
   bool _sosBtnDown = false;            // button seen down

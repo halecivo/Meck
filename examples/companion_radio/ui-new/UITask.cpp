@@ -2446,7 +2446,9 @@ public:
 
     // ---- Unlock hint ----
 
-    return 30000;
+    // Next redraw at the next minute boundary, so a waiting unread count
+    // comes with the clock
+    return (int)(60 - now % 60) * 1000 + 300;
   }
 
   bool handleInput(char c) override {
@@ -2862,10 +2864,29 @@ void UITask::newMsg(uint8_t path_len, const char* from_name, const char* text, i
 #else
   const bool gbcPlaying = false;
 #endif
+  // Locked: no redraw for the message, it waits for the clock's next one (at
+  // most a minute), unless "Messages when locked" says at once. Tones and
+  // vibration above are not delayed. A running SOS keeps redrawing at once:
+  // the reply may be what the user waits for.
+#if defined(LilyGo_TDeck_Pro)
+  const bool lockQuiet = _locked && curr == lock_screen && !_node_prefs->lock_msg_now && !meckSos.running();
+#else
+  const bool lockQuiet = false;
+#endif
   if (!isOnRepeaterAdmin() && !isRoomMsg && !suppressNotif && !gbcPlaying) {
     char alertBuf[40];
     snprintf(alertBuf, sizeof(alertBuf), MECK_TR("New: %s", "De : %s"), from_name);
-    showAlert(alertBuf, 2000);
+    if (!lockQuiet) {
+      showAlert(alertBuf, 2000);
+    }
+#ifdef MECK_UI_V2
+    // With the app connected the message is already there, and marked read
+    // above, so the frame stays as it was and the panel is not touched
+    else if (!hasConnection()) {
+      strcpy(_lockToast, alertBuf);
+      _lockToastMinute = rtc_clock.getCurrentTime() / 60 + 1;
+    }
+#endif
   }
   // Ensure picker badges update after toaster clears
   if (isOnChannelPickerScreen()) {
@@ -2879,7 +2900,9 @@ void UITask::newMsg(uint8_t path_len, const char* from_name, const char* text, i
     if (_display->isOn()) {
     _auto_off = millis() + AUTO_OFF_MILLIS;  // extend the auto-off timer
     // Throttle refresh during room sync — batch messages instead of 648ms render per msg
-    if (isRoomMsg) {
+    if (lockQuiet) {
+      // the next clock redraw shows it
+    } else if (isRoomMsg) {
       unsigned long earliest = millis() + 3000;  // At most one refresh per 3s during sync
       if (_next_refresh < earliest) _next_refresh = earliest;
     } else {
@@ -3249,6 +3272,20 @@ void UITask::loop() {
 
 if (curr) curr->poll();
 
+#if defined(LilyGo_TDeck_Pro_Max) && !defined(MECK_40MHZ_TEST)
+  // USB plugged in or out: the lock screen says so at once, not at the next
+  // minute. Before the render below, as the deck may go to sleep right after
+  // this pass. The charger's register is read at most every 2 s, and the sleep
+  // check reads it on each pass anyway. No charger line wakes the deck, so
+  // plugging in while it sleeps shows at its next wake.
+  if (_locked) {
+    bool usb = board.isUsbPowered();
+    if (usb != _lockUsb) {
+      _lockUsb = usb;
+      _next_refresh = 0;
+    }
+  }
+#endif
 
   if (_display != NULL && _display->isOn()) {
     if (millis() >= _next_refresh && curr) {
@@ -3278,6 +3315,18 @@ if (curr) curr->poll();
 #endif
       _display->startFrame();
       int delay_millis = curr->render(*_display);
+#ifdef MECK_UI_V2
+      // Toast of a message that came in while locked: in the clock minute
+      // after the message, so it comes and goes with the clock's redraws and
+      // has none of its own. Any other redraw before that minute leaves it
+      // out. A clock set far back in between drops it.
+      bool lockToast = false;
+      if (_lockToast[0]) {
+        uint32_t minute = rtc_clock.getCurrentTime() / 60;
+        lockToast = minute == _lockToastMinute;
+        if (minute > _lockToastMinute || minute + 1 < _lockToastMinute) _lockToast[0] = 0;
+      }
+#endif
       if (_hintActive && millis() < _hintExpiry) {
         // Boot navigation hint overlay — multi-line, larger box
         _display->setTextSize(1);
@@ -3375,6 +3424,12 @@ if (curr) curr->poll();
         }
 #endif
         _next_refresh = _alert_expiry;   // will need refresh when alert is dismissed
+#ifdef MECK_UI_V2
+      } else if (lockToast) {
+        Ui2Canvas c(*_display);
+        Ui2List::toast(c, _lockToast);
+        _next_refresh = millis() + delay_millis;
+#endif
       } else {
         _next_refresh = millis() + delay_millis;
       }
@@ -3446,18 +3501,13 @@ if (curr) curr->poll();
   }
 
   // Lock screen clock refresh — keeps the displayed time current.
-  // T-Deck Pro: every 1 minute.
+  // By the clock's minute, not a period of its own: a redraw off the minute
+  // would bring a waiting message up out of step with the clock.
   // Wakes the display driver briefly to render, then auto-off handles it.
-#if defined(LilyGo_TDeck_Pro)
-  // T-Deck Pro: refresh every 1 minute
   if (_locked && _display != NULL) {
-    const unsigned long LOCK_REFRESH_INTERVAL = 1UL * 60UL * 1000UL;  // 1 minute
-#else
-  if (_locked && _display != NULL) {
-    const unsigned long LOCK_REFRESH_INTERVAL = 2UL * 60UL * 1000UL;  // 2 minutes
-#endif
-    if (millis() - _lastLockRefresh >= LOCK_REFRESH_INTERVAL) {
-      _lastLockRefresh = millis();
+    uint32_t lockMinute = rtc_clock.getCurrentTime() / 60;
+    if (lockMinute != _lastLockMinute) {
+      _lastLockMinute = lockMinute;
       if (!_display->isOn()) {
         _display->turnOn();
         _auto_off = millis() + 5000;  // Stay on just long enough to render + settle
@@ -3598,7 +3648,10 @@ void UITask::lockScreen() {
   if (_display != NULL) static_cast<GxEPDDisplay*>(_display)->requestFullRefresh();
 #endif
   _auto_off = millis() + 60000;  // 60s before display off while locked
-  _lastLockRefresh = millis();   // Start lock screen clock refresh cycle
+  _lastLockMinute = rtc_clock.getCurrentTime() / 60;   // Start lock screen clock refresh cycle
+#if defined(LilyGo_TDeck_Pro_Max) && !defined(MECK_40MHZ_TEST)
+  _lockUsb = board.isUsbPowered();
+#endif
   Serial.println("[UI] Screen locked — entering low-power mode");
 }
 
@@ -3631,6 +3684,9 @@ void UITask::lockPromptKey(char c) {
 void UITask::unlockScreen() {
   if (!_locked) return;
   _locked = false;
+#ifdef MECK_UI_V2
+  _lockToast[0] = 0;
+#endif
 #ifdef MECK_QUICK_SETTINGS
   meckLockPolicy(false);  // and come back
 #endif

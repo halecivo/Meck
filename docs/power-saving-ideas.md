@@ -264,6 +264,100 @@ partial e-ink refresh plus the wake costs some energy every minute.
 Optional setting: redraw the clock every 5 minutes, or show only the date
 and battery. Small saving (well under 1 mA).
 
+## 5b. Fewer and cheaper display refreshes
+
+From the power logs (607 minutes locked, on battery, mostly asleep): 1.25
+refreshes a minute, of which 1 is the clock. At equal LoRa traffic a minute
+with more refreshes keeps the deck awake about 0.8 s longer, about +0.5 mA in
+those minutes and about 0.1 mA over all of them. That figure is an upper
+bound, since those minutes also handle the messages.
+
+### Implemented
+
+- **A message no longer redraws the lock screen.** The unread chip changes
+  with the clock's next redraw, at most a minute later. Tones, vibration and
+  the keyboard flash are not delayed. A running SOS still redraws at once.
+  Settings > "Messages when locked": *With clock* (default) or *At once*,
+  which brings back the 2 s toast and a redraw per message; the next two
+  items apply to *With clock* only.
+- **USB power shows at once.** The lock screen redraws when USB comes or goes,
+  within 2 s while the deck is awake. No charger line wakes the deck, so
+  plugging in while it sleeps shows at its next wake (a LoRa packet or the
+  minute).
+- **The toast comes with the clock (UI v2).** It shows in the clock minute after
+  the message, where the old one lasted 2 s, with the last sender. With
+  messages every minute it stays up. The lock screen's redraw now follows the
+  clock's minute instead of a 60 s timer, which brought the toast up mid-minute. The
+  classic UI has no toast on the lock screen any more: its box would cover
+  the clock for that minute; the unread count remains.
+- **No toast with the app connected.** The message is marked read, so the
+  frame does not change and the panel stays untouched.
+- **The ESP32 sleeps while the panel draws (MAX).** A busy callback in GxEPD2
+  replaces `delay(1)` with a light sleep until BUSY changes, a LoRa packet or
+  the button, 200 ms at most, only when the deck may sleep anyway and the
+  modem is off. `pwreinksleep 0|1` on the debug CLI switches it until reset.
+  The panel takes 0.42 s for a partial refresh and 1.1 s for a full one
+  (measured), so expected about 0.4 s less awake per refresh, some 0.25 mA
+  with the clock alone.
+
+Tried on the deck, on USB, locked (2026-11-06): 1 refresh a minute at 7-10
+LoRa packets a minute, lock and unlock draw correctly, `pwreinksleep` answers.
+On USB the deck does not sleep, so that only covers the path without the
+sleep. No message was seen coming in during the run.
+
+### Measured (2026-11-06/07, on battery, locked, nothing else on)
+
+| Stretch | Minutes | Awake at 6 LoRa wakes a minute | Current at 6 wakes | Refreshes a minute |
+|---|---|---|---|---|
+| 23:09-23:25, `pwreinksleep 0` | 17 | 1.68 s | 18.5 mA | 1.24 |
+| 23:29-08:47, after a reset, sleep on | 559 | 1.24 s | 19.4 mA | 1.04 |
+| Earlier firmware, four days | 85-213 | 1.61-2.19 s | 14.5-23.8 mA | 1.02-1.34 |
+
+Values come from a straight line over LoRa wakes per minute. The log does not
+record `pwreinksleep`; the first stretch is known to be off from the user who
+ran it.
+
+- **Stable through the night.** The deck ran 9.3 h with no reset or gap and
+  kept redrawing and counting packets (5.6 rx a minute). The battery fell 76 %
+  to 64 % in 8.8 h, about 19 mA, which agrees with the gauge's average.
+- **Messages arrive while it sleeps.** The unread count on the lock screen was
+  higher at the end of each run than at the start. The timing of the tone and
+  the toast, and the case with the app connected, were not watched.
+- **Awake time fits the sleep.** With it on, the deck is awake 0.44 s a minute
+  less than with it off, and about 0.4 s less than on earlier firmware, close
+  to the 0.46 s a refresh spends on the panel. The off stretch is short and
+  had more refreshes (1.24 against 1.04), so part of the difference may come
+  from those.
+- **The current does not show the saving.** The sleep-on stretch reads 0.9 mA
+  higher. The expected 0.25 mA is well below the spread between runs, and 17
+  minutes are too short to compare; the two stretches also differ in
+  temperature (21.9 and 19.6 C).
+- **A LoRa wake costs far more than its awake time.** The fit gives about
+  0.6 mA per wake a minute (about 35 mAs per wake), while 0.07 s awake explains
+  only about 3 mAs. At 6 wakes that is 3.5 mA, much more than the display.
+  Not explained yet; the gauge's averaging may inflate the slope.
+
+Tried on the deck, on USB, locked, 8 min (2026-11-07), after the toast fix: one
+partial refresh a minute, every one at the same second of the clock. No message
+came in, so the toast itself has not been seen in step with the clock.
+
+The clock: over 3 min on USB it moved by under 1 s against the computer. It was
+5.8 min behind after three resets. A reset resumes from the time saved every
+2 min, which cost 100 s at 23:26 on 6.11. and about 91 s at 09:12 on 7.11. The
+rest is at most about 12 s/h over the night, not separated from the third reset.
+
+### To check on the device
+
+1. On battery, locked, an hour each with `pwreinksleep 1` and `0`: awake time
+   per minute (`secs` - `asleep_s`) and `avg_ma`, at similar traffic.
+2. Does the panel draw cleanly when the ESP32 sleeps through it, with no
+   stuck or half-drawn frames, for the partial redraw and for the full one on
+   locking?
+3. With a second node: a message into the sleeping locked deck, with and
+   without the app. The toast and chip appear at the next minute, the tone at
+   once, and no refresh is added with the app connected (`refresh` column).
+4. Does a packet that arrives during a redraw still get received?
+
 ## 6. GPS when locked: a fix every few minutes (experimental)
 
 With the GPS on, the locked device sleeps and the receiver keeps tracking

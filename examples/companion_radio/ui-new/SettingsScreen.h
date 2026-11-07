@@ -213,6 +213,7 @@ enum SettingsRowType : uint8_t {
   ROW_FONT_STYLE,     // Font style: Classic / Noto Sans / Montserrat
 #if defined(LilyGo_TDeck_Pro)
   ROW_AUTO_LOCK,      // Auto-lock timeout picker (None/2/5/10/15/30 min)
+  ROW_LOCK_MSG,       // New message while locked: with the clock / at once
 #endif
 #if defined(LilyGo_TDeck_Pro_Max) && !defined(MECK_40MHZ_TEST)
   ROW_LOCK_SLEEP,     // Power saving (light sleep) while locked
@@ -661,6 +662,7 @@ private:
       addRow(ROW_FONT_STYLE);
 #if defined(LilyGo_TDeck_Pro)
       addRow(ROW_AUTO_LOCK);
+      addRow(ROW_LOCK_MSG);
 #endif
 #if defined(LilyGo_TDeck_Pro_Max) && !defined(MECK_40MHZ_TEST)
       addRow(ROW_LOCK_SLEEP);
@@ -2334,6 +2336,12 @@ public:
           snprintf(tmp, sizeof(tmp), MECK_TR("Auto Lock: %s", "Verrou auto : %s"),
                    autoLockLabel(_prefs->auto_lock_minutes));
         }
+        display.print(tmp);
+        break;
+
+      case ROW_LOCK_MSG:
+        snprintf(tmp, sizeof(tmp), MECK_TR("Messages when locked: %s", "Messages verrouill\xC3\xA9 : %s"),
+                 _prefs->lock_msg_now ? MECK_TR("At once", "Aussit\xC3\xB4t") : MECK_TR("With clock", "Avec l'heure"));
         display.print(tmp);
         break;
 #endif
@@ -4858,6 +4866,11 @@ public:
 #if defined(LilyGo_TDeck_Pro)
         case ROW_AUTO_LOCK:
           startEditPicker(findAutoLockIndex(_prefs->auto_lock_minutes));
+          break;
+        case ROW_LOCK_MSG:
+          _prefs->lock_msg_now = _prefs->lock_msg_now ? 0 : 1;
+          the_mesh.savePrefs();
+          Serial.printf("Settings: Messages when locked = %s\n", _prefs->lock_msg_now ? "at once" : "with clock");
           break;
 #endif
 #if defined(LilyGo_TDeck_Pro_Max) && !defined(MECK_40MHZ_TEST)
