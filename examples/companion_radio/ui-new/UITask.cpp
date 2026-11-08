@@ -24,6 +24,9 @@
 #if defined(LilyGo_TDeck_Pro_Max)
   #include "DRV2605Haptic.h"   // haptic motor for "Buzzer (vibrate)" channels
 #endif
+#if defined(MECK_HA) && MECK_HA
+  #include "HaScreen.h"
+#endif
 #ifdef MECK_QUICK_SETTINGS
   #include "QuickSettingsScreen.h"
   extern void meckLockPolicy(bool locking);   // main.cpp: pause / resume what does not keep running
@@ -2570,6 +2573,9 @@ void UITask::begin(DisplayDriver* display, SensorManager* sensors, NodePrefs* no
 #ifdef MECK_QUICK_SETTINGS
   quick_settings = new QuickSettingsScreen();
 #endif
+#if defined(MECK_HA) && MECK_HA
+  ha_screen = new HaScreen(&rtc_clock, node_prefs);
+#endif
   audiobook_screen = nullptr;  // Created and assigned from main.cpp if audio hardware present
 #ifdef MECK_AUDIO_VARIANT
   alarm_screen = nullptr;      // Created and assigned from main.cpp if audio hardware present
@@ -3717,6 +3723,25 @@ bool UITask::sosPoll() {
 #endif
   return enter;
 }
+
+#if defined(MECK_HA) && MECK_HA
+void UITask::gotoHaScreen() {
+  ((HaScreen*)ha_screen)->onOpen();
+  if (curr != ha_screen) _screenBeforeHa = curr;
+  setCurrScreen(ha_screen);
+  keepAlive();
+  _next_refresh = 0;
+}
+
+void UITask::leaveHaScreen() {
+  UIScreen* back = _screenBeforeHa;
+  _screenBeforeHa = nullptr;
+  if (back) setCurrScreen(back);
+  else gotoHomeScreen();
+  keepAlive();
+  _next_refresh = 0;
+}
+#endif
 
 void UITask::gotoSosScreen() {
   ((SosScreen*)sos_screen)->resetMenu();

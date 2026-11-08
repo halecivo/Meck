@@ -161,6 +161,13 @@
   void meckSosLoop();
   bool meckSosCancelInput();
 
+  #if defined(MECK_HA) && MECK_HA
+  // Home Assistant link (experimental, docs/home-assistant.md)
+  #include "MeckHa.h"
+  #include "HaScreen.h"
+  void meckHaTick();
+  #endif
+
   // SD-backed persistence state
   static bool sdCardReady = false;
 
@@ -1226,6 +1233,9 @@ static uint32_t _atoi(const char* sp) {
     if      (strcmp(name, "home") == 0)     ui_task.gotoHomeScreen();
     else if (strcmp(name, "settings") == 0) ui_task.gotoSettingsScreen();
     else if (strcmp(name, "rxlog") == 0)    ui_task.gotoRxLogScreen();
+#if defined(MECK_HA) && MECK_HA
+    else if (strcmp(name, "ha") == 0)       ui_task.gotoHaScreen();
+#endif
     else if (strcmp(name, "chat") == 0)     ui_task.gotoChannelScreen();
 #ifdef MECK_UI_V2
     else if (strcmp(name, "busy") == 0) {
@@ -3263,6 +3273,9 @@ void setup() {
   ui_task.begin(disp, &sensors, the_mesh.getNodePrefs());
   MESH_DEBUG_PRINTLN("setup() - ui_task.begin() done");
 #endif
+#if defined(MECK_HA) && MECK_HA
+  meckHa.begin();
+#endif
 
   // ---------------------------------------------------------------------------
   // OTA boot validation — confirm new firmware is working after an OTA update.
@@ -5222,6 +5235,9 @@ void loop() {
   #if defined(DISPLAY_CLASS) && defined(MECK_WIFI_COMPANION)
   meckWifiConnectPoll();   // saved-network connect: Connected / Could not connect popup
   #endif
+  #if defined(MECK_HA) && MECK_HA
+  meckHaTick();            // Home Assistant: pairing web server, sensor updates
+  #endif
   #ifdef MECK_OTA_UPDATE
   if (!otaRadioPaused) {
   #endif
@@ -6492,6 +6508,19 @@ void handleKeyboardInput() {
     return;
   }
 
+#if defined(MECK_HA) && MECK_HA
+  // Home Assistant screen: it takes every key (U, P and X are shortcuts elsewhere)
+  if (ui_task.isOnHaScreen()) {
+    ui_task.injectKey(key);
+    HaScreen* ha = (HaScreen*)ui_task.getHaScreen();
+    if (ha->wantsExit()) {
+      ha->clearExit();
+      ui_task.leaveHaScreen();
+    }
+    return;
+  }
+#endif
+
 #ifdef MECK_QUICK_SETTINGS
   // Quick settings: Alt+Space opens and closes it over any screen, text
   // entry included; while it is up it takes every key
@@ -7052,6 +7081,12 @@ void handleKeyboardInput() {
       settings->clearRxLogRequest();
       ui_task.gotoRxLogScreen();
     }
+#if defined(MECK_HA) && MECK_HA
+    if (settings->isHaRequested()) {
+      settings->clearHaRequest();
+      ui_task.gotoHaScreen();
+    }
+#endif
     // Check for channel share request from the settings screen
     if (settings->isShareRequested()) {
       int contactIdx = settings->getShareContactIdx();
@@ -8663,6 +8698,60 @@ int meckSosBattPct() {
   return mv > 0 ? constrain(((int)mv - 3000) * 100 / 1200, 0, 100) : -1;
 #endif
 }
+
+#if defined(MECK_HA) && MECK_HA
+// Home Assistant (docs/home-assistant.md). The time of the last LoRa packet
+// is taken from the receive counters; plugging the charger in or out sends
+// an update soon instead of at the next 15-minute one.
+static uint32_t meckHaLastRx = 0;
+
+void meckHaTick() {
+  static unsigned long lastCheck = 0;
+  static bool first = true;
+  static uint32_t rxSeen = 0;
+  static bool lastUsb = false;
+  static uint8_t lastChg = 0;
+  unsigned long now = millis();
+  if (now - lastCheck >= 2000) {
+    lastCheck = now;
+    uint32_t rx = the_mesh.getNumRecvFlood() + the_mesh.getNumRecvDirect();
+    bool usb = board.isUsbPowered();
+    uint8_t chg = board.getChargeState();
+    if (!first) {
+      uint32_t t = rtc_clock.getCurrentTime();
+      if (rx != rxSeen && t > 1700000000) meckHaLastRx = t;
+      if (usb != lastUsb || chg != lastChg) meckHa.postSoon(10000);   // let the charger settle
+    }
+    first = false;
+    rxSeen = rx;
+    lastUsb = usb;
+    lastChg = chg;
+  }
+  // The QR code has to stay up while someone is scanning it: no auto-lock
+  if (meckHa.pairingActive() && ui_task.isOnHaScreen()) ui_task.resetIdleTimer();
+  meckHa.loop();
+}
+
+void meckHaSensors(HaSensorValues& v) {
+  v.battPct = meckSosBattPct();
+  v.battMv = board.getBattMilliVolts();
+  v.chargeState = board.getChargeState();
+  v.usb = board.isUsbPowered();
+  uint16_t tte = board.getTimeToEmpty();
+  v.timeLeftMin = (v.usb || tte == 0 || tte == 0xFFFF) ? -1 : (int)tte;
+  v.contacts = (int)the_mesh.getNumContacts();
+  v.unread = ui_task.getUnreadMsgCount();
+  v.rxPackets = the_mesh.getNumRecvFlood() + the_mesh.getNumRecvDirect();
+  v.lastRxEpoch = meckHaLastRx;
+}
+
+void meckHaDeviceName(char* out, size_t n) {
+  const char* name = the_mesh.getNodePrefs()->node_name;
+  snprintf(out, n, "%s", name[0] ? name : "T-Deck MAX");
+}
+
+void meckHaCmd(const char* arg) { meckHa.cmd(arg); }
+#endif
 
 // SOS channels (Settings > SOS) are kept by the start of the channel's
 // secret: its slot changes when an earlier channel is deleted

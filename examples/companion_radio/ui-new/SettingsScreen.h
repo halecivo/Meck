@@ -288,6 +288,9 @@ enum SettingsRowType : uint8_t {
 #if defined(LilyGo_TDeck_Pro_Max) && !defined(MECK_40MHZ_TEST)
   ROW_GPS_LOCK_INT,     // Picker: GPS when locked, stays on / a fix every N min (MAX only)
 #endif
+#if defined(MECK_HA) && MECK_HA
+  ROW_HOME_ASSISTANT,   // Folder row: opens the Home Assistant screen (HaScreen)
+#endif
 };
 
 // ---------------------------------------------------------------------------
@@ -442,6 +445,7 @@ private:
   #endif
 
   bool _rxlogRequested = false;  // set by key handler, cleared by main.cpp after opening Rx Log
+  bool _haRequested = false;     // the same for the Home Assistant screen
 
   // Channel share picker state
   #define SHARE_MAX_CONTACTS 32
@@ -621,6 +625,9 @@ private:
       addRow(ROW_PURGE_CONTACTS);
 #ifdef ESP32
       addRow(ROW_TELEM_PROMPT);
+#endif
+#if defined(MECK_HA) && MECK_HA
+      addRow(ROW_HOME_ASSISTANT);
 #endif
 #if defined(LilyGo_TDeck_Pro)
     } else if (_subScreen == SUB_SOS) {
@@ -1191,6 +1198,8 @@ public:
   // Rx Log open request -- checked and cleared by main.cpp
   bool isRxLogRequested() const { return _rxlogRequested; }
   void clearRxLogRequest() { _rxlogRequested = false; }
+  bool isHaRequested() const { return _haRequested; }
+  void clearHaRequest() { _haRequested = false; }
 
   // Channel share request -- checked and cleared by main.cpp
   bool isShareRequested() const { return _shareRequested; }
@@ -2796,6 +2805,13 @@ public:
       case ROW_PURGE_CONTACTS:
         display.print(MECK_TR("Delete all contacts", "Supprimer tous les contacts"));
         break;
+
+#if defined(MECK_HA) && MECK_HA
+      case ROW_HOME_ASSISTANT:
+        display.setColor(selected ? DisplayDriver::DARK : DisplayDriver::GREEN);
+        display.print("Home Assistant >>");
+        break;
+#endif
 
       case ROW_TELEM_PROMPT: {
         extern bool meckTelPromptEnabled();
@@ -5173,6 +5189,12 @@ public:
         case ROW_RXLOG:
           _rxlogRequested = true;
           break;
+
+#if defined(MECK_HA) && MECK_HA
+        case ROW_HOME_ASSISTANT:
+          _haRequested = true;
+          break;
+#endif
 
         case ROW_ADD_CHANNEL:
           startEditText("");
