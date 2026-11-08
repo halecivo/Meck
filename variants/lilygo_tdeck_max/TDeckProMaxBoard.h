@@ -126,7 +126,10 @@ public:
   // Identical hardware to the Pro; these read the same registers.
   // -------------------------------------------------------------------------
   uint16_t getBattMilliVolts() override;
+  // Percent of the charge usable before the low-voltage shutdown (for people);
+  // getGaugeSoc() is the gauge's own percent of the charge in the cell.
   uint8_t  getBatteryPercent();
+  uint8_t  getGaugeSoc();
   int16_t  getAvgCurrent();
   int16_t  getAvgPower();
   uint16_t getTimeToEmpty();
@@ -135,7 +138,10 @@ public:
   bool     isUsbPowered();
   // SY6970 charge state: 0 not charging, 1 pre-charge, 2 fast charge, 3 done
   uint8_t  getChargeState();
+  // getRemainingCapacity() is all the charge in the cell; getUsableCapacity()
+  // the part before the low-voltage shutdown, what getBatteryPercent() counts.
   uint16_t getRemainingCapacity();
+  uint16_t getUsableCapacity();
   uint16_t getFullChargeCapacity();
   uint16_t getDesignCapacity();
   int16_t  getBattTemperature();
@@ -204,6 +210,7 @@ private:
   // Shadow registers for XL9555 output ports (avoid I2C read-modify-write)
   uint8_t _xlPort0 = XL9555_BOOT_PORT0;
   uint8_t _xlPort1 = XL9555_BOOT_PORT1;
+  uint32_t _gpsBaud = GPS_BAUDRATE;   // what gpsPowerOn() begins Serial2 at
   bool    _xlReady = false;
   bool    _backlightOn = false;  // tracks frontlight on/off for isBacklightOn()
 

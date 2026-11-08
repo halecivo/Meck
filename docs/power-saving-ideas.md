@@ -14,7 +14,8 @@ From the power log of one night on battery (10.7 h, 99 % to 85 %):
 | Locked, asleep, GPS on with a fix | 31.7 mA | 47 min by a window on battery (branch gps-lock-sleep): blocker "can sleep", asleep 59.3 s of 60, one timer wake a minute, awake time as without GPS; the GPS costs about 15 mA. Whether the position was updated is not confirmed: the log has no fix or position field |
 | Light sleep floor | about 13 mA | between wakes |
 | Locked and awake (a blocker holds it) | about 35 mA | e.g. on USB |
-| Locked with a phone connected over BLE | about 100 mA | blocker PHONE, never sleeps; 97 mA with the relaxed interval |
+| Locked with a phone connected over BLE | 23 mA | automatic light sleep with the relaxed interval (step 2.3); about 100 mA before, awake all the time |
+| Locked with a phone, the GPS and 4G on | about 46 mA | automatic light sleep with both (2026-11-03, 6 min): asleep 51 s of 60 |
 | Locked, phone syncs "Every 10 min" | 23.4 mA | sync windows, see 2 below |
 | Before power-fixes (locked, idle) | about 82 mA | for comparison |
 
@@ -68,6 +69,65 @@ Steps, in order of effort:
    a custom sdkconfig, i.e. an ESP-IDF build of the Arduino core or
    pioarduino with `custom_sdkconfig`. Expected: the deck with a phone
    connected near the sleep floor, maybe 20-25 mA. High effort.
+
+   First part done on branch `pioarduino-s3`: the MAX envs build on
+   pioarduino (Arduino core 3.3, ESP-IDF 5.5) with `custom_sdkconfig`. Core
+   3.x ships the S3 libraries with NimBLE, so the sdkconfig switches back to
+   Bluedroid with the 4.2 and 5.0 features of core 2.x; the T-Deck Pro envs
+   stay on core 2.x. `pioarduino_fixes.py` works around problems of the
+   two-pass build. On Windows, build from PowerShell (idf_tools.py refuses
+   MSys) with a short `PLATFORMIO_CACHE_DIR` (the core libraries hit the
+   260-character path limit while unpacking). On core 3.x the radio must
+   share the display's SPIClass: a second SPIClass on the same host resets
+   the bus and the first radio transfer hangs. Tried on the device: boot,
+   display, radio init, UI, modem registration. Not yet: BLE pairing and
+   existing bonds, WiFi with BLE, audio and voice messages (legacy I2S
+   driver on IDF 5), receiving packets, the modem's `AT+CLVL` and ringtone
+   upload errors (not compared with core 2.x).
+
+   Second part on branch `ble-modem-sleep`: `custom_sdkconfig` turns on power
+   management, tickless idle and the controller's modem sleep with the main
+   crystal as its low-power clock (kept powered in light sleep). When the
+   locked deck is kept awake only by a connected phone (blocker PHONE),
+   `meckAutoSleep()` enables automatic light
+   sleep at the current CPU frequency (80 MHz, no frequency scaling: the SPI
+   and I2C set-ups assume the APB clock). The CPU then sleeps whenever every
+   task waits, and wakes on the LoRa DIO1 (ext1), the button and task timers.
+   UART data that comes in while the CPU sleeps is lost, so the modem and
+   the GPS are handled as in the lock sleep (2026-11-03; with the phone, the
+   GPS and 4G on: about 46 mA, asleep 51 s of 60, a 6 min sample on battery;
+   the quick settings estimate says 43 mA):
+   the modem task holds a PM lock (no light sleep) while the modem's UART
+   is awake, RI wakes the CPU by level (its edge ISR is off meanwhile, the
+   main loop passes RI on; the PM exit callback notes a low RI so an SMS
+   pulse is not missed), and with the GPS on the CPU stays up once a minute
+   until the next GGA, or through a whole "GPS when locked" try. A modem
+   busy for a moment does not switch the automatic sleep off. Before that
+   change the deck stayed awake with either of them on. Because
+   the controller keeps the crystal on in every light sleep once Bluetooth
+   has been enabled, the lock sleep without a link powers it down around
+   `esp_light_sleep_start()`. The power log's `auto_sleep_s` column has the
+   time in automatic light sleep.
+
+   While automatic light sleep is on, the deck also asks the phone for the
+   relaxed interval of step 1 (100-150 ms, slave latency 4, 6 s timeout),
+   and for 15-20 ms again when it ends. Each connection event wakes the
+   CPU, so the interval only pays off now that the CPU sleeps between them.
+
+   Measured on battery with an iPhone, locked, modem and GPS off:
+
+   | | Current | CPU awake | Interval |
+   |---|---|---|---|
+   | Automatic light sleep (2026-11-01, 39 min) | 31 mA | 31 % | 30 ms (iOS) |
+   | With the relaxed interval (2026-11-01/02 night, 6.75 h) | 23 mA (22-27) | 13 % | 150 ms |
+
+   The night run: 100 % to 89 % (1.6 %/h, about 60 h for the whole cell),
+   three LoRa packets received while asleep, app traffic in 7 minutes. The
+   link dropped once (02:02, reason 0x08, supervision timeout) and the
+   phone was back within the minute; the drops soon after locking seen
+   with the relaxed interval on the deck that stayed awake did not happen.
+   Still to check: the lock sleep floor without a link (13 mA before) and
+   the button while it sleeps.
 4. **NimBLE instead of Bluedroid.** Less RAM (helps WiFi + BLE too) and
    better tested with modem sleep. A large change (see the WiFi + BLE
    analysis).
@@ -263,6 +323,81 @@ The lock screen redraws on each minute boundary. A redraw is short, but a
 partial e-ink refresh plus the wake costs some energy every minute.
 Optional setting: redraw the clock every 5 minutes, or show only the date
 and battery. Small saving (well under 1 mA).
+
+## 5b. Fewer and cheaper display refreshes (tried, set aside)
+
+From the power logs (607 minutes locked, on battery, mostly asleep): 1.25
+refreshes a minute, of which 1 is the clock. At equal LoRa traffic a minute
+with more refreshes keeps the deck awake about 0.8 s longer, about +0.5 mA in
+those minutes and about 0.1 mA over all of them. That figure is an upper
+bound, since those minutes also handle the messages.
+
+Tried in November 2026 and set aside: the saving is within the noise of the
+power log, and the display is a small part of the locked draw.
+
+### What was tried
+
+Everything is kept in the tag `lock-msg-with-clock`:
+
+- **Messages redraw with the clock.** A message on the locked deck waits for
+  the clock's next redraw (at most a minute); tones and vibration do not.
+  Settings > "Messages when locked": *With clock* or *At once*.
+- **The toast in the clock minute after the message (UI v2).** It covers the
+  status lines for that minute and, with a message every minute, stays up.
+  The classic UI shows only the unread count (its toast box would cover the
+  clock).
+- **No toast with the app connected.** The message is marked read, so the frame
+  does not change and the panel is not touched.
+- **Lock redraws by the clock's minute.** They used to follow a 60 s timer from
+  the lock, which brought a waiting toast up mid-minute.
+- **USB power redraws the lock screen at once.** No charger line wakes the
+  deck, so plugging in while it sleeps shows at its next wake.
+- **The ESP32 sleeps while the panel draws (MAX).** A GxEPD2 busy callback
+  light-sleeps until BUSY changes, a LoRa packet or the button (200 ms at
+  most), only when the deck may sleep anyway and the modem is off.
+  `pwreinksleep 0|1` on the debug CLI switches it until reset. This part alone
+  is on branch `claude/display-consumption-optimization-1e00a7` for more tests,
+  not for merging.
+
+The panel takes 0.42 s for a partial refresh and 1.1 s for a full one.
+
+### Measured (2026-11-06/07, on battery, locked, nothing else on)
+
+All of the above was on. Values come from a straight line over LoRa wakes per
+minute.
+
+| Stretch | Minutes | Awake at 6 LoRa wakes a minute | Current at 6 wakes | Refreshes a minute |
+|---|---|---|---|---|
+| 23:09-23:25, `pwreinksleep 0` | 17 | 1.68 s | 18.5 mA | 1.24 |
+| 23:29-08:47, after a reset, sleep on | 559 | 1.24 s | 19.4 mA | 1.04 |
+| Earlier firmware, four days | 85-213 | 1.61-2.19 s | 14.5-23.8 mA | 1.02-1.34 |
+
+- **Stable through the night.** 9.3 h with no reset or gap, packets counted
+  throughout (5.6 a minute). The battery fell 76 % to 64 % in 8.8 h, about
+  19 mA, which agrees with the gauge's average. Messages arrived: the unread
+  count was higher at the end of each run.
+- **Awake time fits the sleep.** With it on, the deck is awake 0.44 s a minute
+  less than with it off, close to the 0.46 s a refresh spends on the panel.
+  The off stretch is short and had more refreshes, so part of that may come
+  from those.
+- **The current does not show any saving.** Expected: about 0.25 mA from the
+  sleep and about 0.1 mA from fewer refreshes, some 2 % of the draw. The
+  spread between runs is far larger, and the sleep-on stretch even read
+  0.9 mA higher (17 minutes against a night, at another temperature).
+- **A LoRa wake costs far more than its awake time.** The fit gives about
+  0.6 mA per wake a minute (about 35 mAs per wake), while 0.07 s awake explains
+  only about 3 mAs. At 6 wakes that is 3.5 mA, much more than the display.
+  Not explained yet; the gauge's averaging may inflate the slope. Worth more
+  than the display.
+- **Not seen:** the toast with a real message, the USB redraw, the app
+  connected.
+
+### The deck's clock (seen on the way)
+
+Over 3 min on USB it moved by under 1 s against the computer, yet it was
+5.8 min behind after three resets. A reset resumes from the time saved every
+2 min: 100 s were lost at one, about 91 s at another. The rest is at most
+about 12 s/h over the night.
 
 ## 6. GPS when locked: a fix every few minutes (experimental)
 
@@ -513,13 +648,16 @@ itself under load, and the 2.8 V shutdown was never reached.
   8 s apart, one wake apart while asleep) the modem is shut down, and
   `begin()` refuses to start it until the cell is above
   `MODEM_RESUME_MILLIVOLTS` (3800). Then it starts again by itself if 4G
-  is on in settings; the saved setting is never changed. The deck runs
-  on for LoRa. A low cell at boot keeps the modem off from the start.
-- **What the user sees.** An alert "Battery low: 4G off. Charge the
-  deck."; on the lock screen "Battery low, 4G off: charge now" (on USB
-  "4G off until charged") instead of the time estimate; in settings 4G
-  shows OFF with "Battery low: charge first", and turning it on is
-  refused with an alert.
+  is on in settings; the low cell never changes the saved setting. The
+  deck runs on for LoRa. A low cell at boot keeps the modem off from the
+  start.
+- **What the user sees.** With 4G on in settings, an alert "Battery low:
+  4G off. Charge the deck." and "· 4G off" after the time estimate on the
+  lock screen ("About 40 h left · 4G off"). 3650 mV is about half full, so
+  the estimate stays; with 4G off in settings the lock screen says nothing
+  about it. Settings and the quick settings tile keep switching the saved
+  setting: off stays off after charging, and on waits for it ("Starts after
+  charging", "After charging").
 - **Shutdown at 3400 mV** instead of 2800, and PWRKEY is released before
   `AT+CPOF` (the power-on pulse left it held down, which with the
   auto power-on wiring can switch the A7682E back on).
@@ -529,8 +667,8 @@ itself under load, and the 2.8 V shutdown was never reached.
 Tried on the deck (2026-11-01, on USB, `pwrmodemmv`): at 3600 mV the
 modem went off 21 s later (`AT+CPOF` OK, state OFF, XL9555 modem=0,
 DTR low), the alert showed over the lock screen, the lock screen read
-"4G off until charged", the settings row and the refusal as above. At
-3800 mV it came back by itself: READY 16 s later, "UART sleep enabled"
+"4G off until charged" and settings refused the switch (both since
+changed, see above). At 3800 mV it came back by itself: READY 16 s later, "UART sleep enabled"
 after 38 s, settings 4G ON. Not tried: the lock screen text on battery
 (a locked deck on battery sleeps and USB goes), a low cell at boot, the
 3400 mV shutdown.
@@ -563,6 +701,36 @@ and back on at unlock would break an app connected over WiFi. WiFi
 power save (`WiFi.setSleep(true)`, modem sleep with DTIM) is the default in
 Arduino and already in use, but without automatic light sleep (see 2.3) the
 CPU stays awake. So for now: WiFi off when not needed.
+
+### Implemented (branch `claude/wifi-power-consumption-4da36c`, on `ble-modem-sleep`)
+
+The automatic light sleep of 2.3 now also runs while locked with WiFi on,
+when WiFi is the only thing that keeps the deck awake, or WiFi and a
+connected phone. Not with USB power set to keep it awake, the modem or the
+GPS on, audio, or WiFi setup's access point. The station stays joined:
+WiFi modem sleep wakes the radio for beacons, and the CPU sleeps between
+them. While the deck sleeps, WiFi power save goes from Arduino's
+`WIFI_PS_MIN_MODEM` (every DTIM beacon) to `WIFI_PS_MAX_MODEM` (every
+`listen_interval` beacons, 3 by default, about 300 ms), and back on
+unlock. App frames over WiFi wait at the access point until the next
+beacon the deck listens to.
+
+The lock warning treats WiFi as it treats a phone the deck sleeps with.
+The lock screen, whenever the deck sleeps, lists what stays on rather than
+the one that chose the automatic sleep: "Power saving · app, Wi-Fi, 4G,
+GPS" (`meckSleepKeepsText()`).
+
+### Measured (2026-11-03, on battery)
+
+Locked 110 min with WiFi joined, Bluetooth, GPS and 4G off: **25.0 mA**
+mean, asleep about 54 s of every minute (blocker 6, WiFi). Once every 15
+minutes one minute sleeps only about 36 s (27-28 mA), cause unknown (DHCP or
+ARP?), worth about 0.2 mA on average. No power log has WiFi on and locked on
+battery without it, so the "about 100 mA" above is still an estimate.
+
+Not verified: LoRa reception in automatic light sleep. The log counted no
+packets during the test, but none in the three hours before it either, with
+the deck awake, so it says nothing. The same holds for the phone case.
 
 ## Suggested order
 

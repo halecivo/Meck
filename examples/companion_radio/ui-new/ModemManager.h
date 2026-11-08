@@ -66,6 +66,7 @@
   #define MODEM_UART_SLEEP 1
 #endif
 #define MODEM_IDLE_BEFORE_SLEEP_MS 2000    // late URCs (RING + CLIP, +CMTI) come in pairs
+#define MODEM_SLEEP_RETRY_MS (5UL * 60 * 1000)   // AT+CSCLK=1 again after a refusal
 #define MODEM_DTR_WAKE_MS          50      // DTR low until the modem UART listens
 
 // Notification tone auto-stop timeout (ms) -- stop playback after this
@@ -239,6 +240,15 @@ public:
   void prepareEspSleep();
   void afterEspSleep(bool gpioWake);
 
+  // Automatic light sleep (main.cpp, locked with a phone): the CPU sleeps
+  // whenever every task waits, so the task holds it up with a PM lock while
+  // the UART is awake. setAutoSleepWake(true) makes RI a level wake, with
+  // the edge ISR off meanwhile; the main loop then passes RI on each pass
+  // (pollAutoSleepRi; lowAtWake: a wake found it low).
+  bool uartSleepEnabled() const { return _sleepEnabled; }
+  void setAutoSleepWake(bool on);
+  void pollAutoSleepRi(bool lowAtWake);
+
   // Low cell (MODEM_MIN_MILLIVOLTS): below it the modem is switched off and
   // begin() refuses to start it until the cell is back above
   // MODEM_RESUME_MILLIVOLTS. The saved on/off setting is kept, so 4G comes
@@ -255,8 +265,12 @@ public:
   // Persistent enable/disable config (SD file /sms/modem.cfg)
   static bool loadEnabledConfig();
   static void saveEnabledConfig(bool enabled);
+  // The same setting without touching the SD card, for the lock screen: what
+  // the last load or save saw; false until the first one
+  static bool enabledInSettings() { return _enabledInSettings; }
 
 private:
+  static bool _enabledInSettings;
   volatile ModemState _state = ModemState::OFF;
   bool _battLow = false;
   uint8_t _battLowCount = 0;
@@ -276,6 +290,10 @@ private:
   uint32_t _asleepMs = 0;               // DTR high since READY, completed spans
   uint32_t _riCount = 0, _dtrWakes = 0;
   uint32_t _espSleeps = 0, _espRiWakes = 0;   // ESP32 light sleeps with the modem on
+  volatile bool _autoWake = false;      // RI is an automatic light sleep wake
+  bool _riWasLow = false;               // RI at the last pollAutoSleepRi()
+  void* _pmLock = nullptr;              // esp_pm_lock_handle_t: the CPU stays up
+  volatile bool _pmHeld = false;
   uint32_t _smsPollsUrc = 0, _smsPollsSafety = 0;
   char _operator[24] = {0};
 
@@ -323,6 +341,7 @@ private:
   bool sendAT(const char* cmd, const char* expect, uint32_t timeout_ms = 2000);
   bool wakeUart();                // DTR low; true if the modem was asleep
   void sleepUartIfIdle();         // DTR high once nothing is going on
+  void holdCpuAwake(bool on);     // the PM lock, with the UART awake
   static void riIsr();            // RI falling edge
   bool waitResponse(const char* expect, uint32_t timeout_ms, char* buf = nullptr, size_t bufLen = 0);
   void pollCSQ();

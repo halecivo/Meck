@@ -49,7 +49,18 @@
 
 #if defined(LilyGo_TDeck_Pro_Max) && !defined(MECK_40MHZ_TEST)
 // Power saving when locked: the reason the device stays awake (main.cpp)
-extern int meckLockSleepBlocker();
+extern int meckSleepBlockerShown();
+extern bool meckBlockerSleeps();
+extern void meckSleepKeepsText(char* buf, size_t len);
+
+// The device sleeps while locked: "Power saving", with what stays on
+// ("Power saving · app, Wi-Fi, GPS")
+void meckSleepStatusText(char* buf, size_t len) {
+  char keeps[32];
+  meckSleepKeepsText(keeps, sizeof(keeps));
+  if (keeps[0]) snprintf(buf, len, "%s \xC2\xB7 %s", MECK_TR("Power saving", "\xC3\x89" "conomie"), keeps);
+  else snprintf(buf, len, "%s", MECK_TR("Power saving", "\xC3\x89" "conomie d'\xC3\xA9nergie"));
+}
 
 const char* meckSleepBlockText(int code) {
   switch (code) {
@@ -163,6 +174,9 @@ static bool meckHapticReady() {
 static void meckHapticBuzz() {
   if (meckHapticReady()) s_haptic.buzz(14);
 }
+
+// The same buzz a message gets, for the tone picker's preview key
+void meckNotifVibrate() { meckHapticBuzz(); }
 
 #ifdef MECK_UI_SCREENDUMP
 // Debug CLI "sos vib e <effect>" / "sos vib rtp <ms>": compare vibrations
@@ -2328,33 +2342,39 @@ public:
 #endif
 
 #if defined(LilyGo_TDeck_Pro_Max) && !defined(MECK_40MHZ_TEST)
-    // Power saving: either "Power saving" or what keeps the device awake,
-    // then the gauge's battery estimate (time to empty at the average draw)
+    // Power saving: either "Power saving" with what stays on or what keeps
+    // the device awake, then the gauge's battery estimate (time to empty at
+    // the average draw)
     {
-      int reason = meckLockSleepBlocker();
-      const char* status = reason == MECK_SLEEP_OK ? MECK_TR("Power saving", "\xC3\x89" "conomie d'\xC3\xA9nergie")
-                                                   : meckSleepBlockText(reason);
-      char line[48];
-      if (reason == MECK_SLEEP_OK || reason == MECK_SLEEP_OFF || reason == MECK_SLEEP_USB)
-        snprintf(line, sizeof(line), "%s", status);
+      int reason = meckSleepBlockerShown();
+      bool sleeps = reason == MECK_SLEEP_OK || meckBlockerSleeps();
+      char line[64];
+      if (sleeps)
+        meckSleepStatusText(line, sizeof(line));
+      else if (reason == MECK_SLEEP_OFF || reason == MECK_SLEEP_USB)
+        snprintf(line, sizeof(line), "%s", meckSleepBlockText(reason));
       else
-        snprintf(line, sizeof(line), MECK_TR("Awake: %s", "\xC3\x89veill\xC3\xA9 : %s"), status);
-      Ui2Icon ic = reason == MECK_SLEEP_OK ? UI2_IC_MOON : reason == MECK_SLEEP_USB ? UI2_IC_BOLT : UI2_IC_WARN;
+        snprintf(line, sizeof(line), MECK_TR("Awake: %s", "\xC3\x89veill\xC3\xA9 : %s"), meckSleepBlockText(reason));
+      Ui2Icon ic = sleeps ? UI2_IC_MOON
+                 : reason == MECK_SLEEP_USB ? UI2_IC_BOLT : UI2_IC_WARN;
+      const int16_t maxW = SCREEN_W - 2 * PAD - 16;
       int16_t tw = Ui2Canvas::textWidth(line, UI2_F_SMALL);
+      if (tw > maxW) tw = maxW;
       int16_t lx = (SCREEN_W - tw - 16) / 2;
       c.icon(lx, 262, ic, 12);
-      c.text(lx + 16, 273, line, UI2_F_SMALL);
+      c.textFit(lx + 16, 273, maxW, line, UI2_F_SMALL);
 
+      char est[sizeof(_snapEst) + 16];
+      snprintf(est, sizeof(est), "%s", _snapEst);
   #ifdef HAS_4G_MODEM
-      // 4G switched off for a low cell: say so instead of the estimate
-      if (modemManager.isBatteryLow())
-        c.textFit(PAD, 290, SCREEN_W - 2 * PAD,
-                  usb ? MECK_TR("4G off until charged", "4G coup\xC3\xA9 jusqu'\xC3\xA0 la charge")
-                      : MECK_TR("Battery low, 4G off: charge now", "Batterie faible, 4G coup\xC3\xA9 : chargez"),
-                  UI2_F_META, true, UI2_CENTER);
-      else
+      // A low cell stops 4G about half way down, with many hours left for LoRa:
+      // the estimate stays, and only someone who has 4G on needs to hear of it
+      if (modemManager.isBatteryLow() && ModemManager::enabledInSettings()) {
+        if (est[0]) strlcat(est, " \xC2\xB7 ", sizeof(est));
+        strlcat(est, MECK_TR("4G off", "4G coup\xC3\xA9"), sizeof(est));
+      }
   #endif
-      if (_snapEst[0]) c.textFit(PAD, 290, SCREEN_W - 2 * PAD, _snapEst, UI2_F_META, true, UI2_CENTER);
+      if (est[0]) c.textFit(PAD, 290, SCREEN_W - 2 * PAD, est, UI2_F_META, true, UI2_CENTER);
     }
 #endif
     // Next redraw at the next minute boundary, not on a fixed period: a
@@ -2733,24 +2753,40 @@ void UITask::newMsg(uint8_t path_len, const char* from_name, const char* text, i
     meckBleWindowOnMessage();
   }
 #endif
+  // A room server sends its backlog as DMs when you sync: no tone or
+  // vibration for those, like the keyboard flash below.
+  bool isRoomMsg = false;
+  if (channel_idx == 0xFF) {
+    uint32_t numContacts = the_mesh.getNumContacts();
+    ContactInfo senderContact;
+    for (uint32_t ci = 0; ci < numContacts; ci++) {
+      if (the_mesh.getContactByIdx(ci, senderContact) && strcmp(senderContact.name, from_name) == 0) {
+        if (senderContact.type == ADV_TYPE_ROOM) isRoomMsg = true;
+        break;
+      }
+    }
+  }
+  const bool alert = !suppressNotif && !isRoomMsg;
+
   // Set the flag for notify() which is called immediately after newMsg().
   // If a custom notification tone is assigned and notifications are active,
   // request MP3 playback and suppress the RTTTL buzzer so they don't overlap.
+  bool vibrateOnly = false;
 #if defined(LilyGo_TDeck_Pro_Max)
-  // Channel set to "Buzzer (vibrate)": pulse the motor instead of a tone.
-  if (!suppressNotif && notifSounds.isVibrateForChannel(channel_idx)) {
+  // Channel (or DM) set to vibrate: pulse the motor, with or without a tone.
+  if (alert && notifSounds.isVibrateForChannel(channel_idx)) {
     if (vibrationAllowed()) meckHapticBuzz();
-    s_lastMsgSuppressed = true;  // suppress the default RTTTL buzzer
-  } else
+    vibrateOnly = !notifSounds.hasSoundForChannel(channel_idx);
+  }
   // Tones switched off (quick settings): no tone. The MAX has no buzzer
   // and no other vibration, so nothing is lost by suppressing notify().
-  if (!suppressNotif && !tonesAllowed()) {
+  if (alert && !tonesAllowed()) {
     s_lastMsgSuppressed = true;
   } else
 #endif
   {
   #ifdef MECK_AUDIO_VARIANT
-  if (!suppressNotif) {
+  if (alert) {
   #ifdef MECK_40MHZ_TEST
     const char* customSound = NULL;  // MP3 tones gated -- default buzzer path runs
   #else
@@ -2768,7 +2804,7 @@ void UITask::newMsg(uint8_t path_len, const char* from_name, const char* text, i
     s_lastMsgSuppressed = suppressNotif;
   }
   #elif defined(HAS_4G_MODEM)
-  if (!suppressNotif) {
+  if (alert) {
     const char* customSound = notifSounds.getSoundForChannel(channel_idx);
     if (customSound && customSound[0] != '\0') {
       int8_t toneIdx = ModemManager::findToneByName(customSound);
@@ -2786,24 +2822,14 @@ void UITask::newMsg(uint8_t path_len, const char* from_name, const char* text, i
   s_lastMsgSuppressed = suppressNotif;
   #endif
   }
+  if (vibrateOnly) s_lastMsgSuppressed = true;  // the motor replaces the default buzzer
 
   // Add to channel history screen with channel index, path data, and SNR
   // For DMs (channel_idx == 0xFF):
   //   - Regular DMs: prefix text with sender name ("NodeName: hello")
   //   - Room server messages: text already contains "OriginalSender: message",
   //     don't double-prefix. Tag with room server name for conversation filtering.
-  bool isRoomMsg = false;
   if (channel_idx == 0xFF) {
-    // Check if sender is a room server
-    uint32_t numContacts = the_mesh.getNumContacts();
-    ContactInfo senderContact;
-    for (uint32_t ci = 0; ci < numContacts; ci++) {
-      if (the_mesh.getContactByIdx(ci, senderContact) && strcmp(senderContact.name, from_name) == 0) {
-        if (senderContact.type == ADV_TYPE_ROOM) isRoomMsg = true;
-        break;
-      }
-    }
-
     if (isRoomMsg) {
       // Room server: text already has "Poster: message" format — store as-is
       // Tag with room server name for conversation filtering
@@ -3605,10 +3631,11 @@ void UITask::lockScreen() {
 void UITask::requestLock() {
 #if defined(LilyGo_TDeck_Pro_Max) && defined(MECK_UI_V2) && !defined(MECK_40MHZ_TEST)
   if (_locked || _lockPromptUntil) return;
-  int reason = meckLockSleepBlocker();
+  int reason = meckSleepBlockerShown();
   // Warn only about things the user may have forgotten; "power saving off"
-  // is their choice, USB power and recent audio are fine.
-  if (reason == MECK_SLEEP_PHONE || reason == MECK_SLEEP_MODEM || reason == MECK_SLEEP_WIFI) {
+  // is their choice, USB power and recent audio are fine, and so is a phone
+  // or WiFi the device can sleep with.
+  if (((reason == MECK_SLEEP_PHONE || reason == MECK_SLEEP_WIFI) && !meckBlockerSleeps()) || reason == MECK_SLEEP_MODEM) {
     _lockPromptReason = reason;
     _lockPromptUntil = millis() + 6000;   // then it locks anyway
     _next_refresh = 0;

@@ -16,21 +16,23 @@ import datetime
 HEADER = ("utc,local_date,local_time,secs,asleep_s,wake_lora,wake_btn,wake_timer,"
           "pct,mv,avg_ma,temp_c,usb,charge,locked,blocker,saving,gps,modem,wifi,"
           "phone,ble,audio,light,rx,tx,refresh,full_refresh,clock_jump_s,utc_offset,rc_ppm,fix,"
-          "ble_win,sync_win,sync_link,sync_s,link_ms,app_rx,ble_drop")
+          "ble_win,sync_win,sync_link,sync_s,link_ms,app_rx,ble_drop,auto_sleep_s")
 FIELDS = HEADER.split(",")
 # The first firmware with the log (6eb18730) had no rc_ppm column, the next ones no fix column,
 # then none of the Bluetooth sync window columns (ble_win .. link_ms), then
-# no app_rx / ble_drop
+# no app_rx / ble_drop, then no auto_sleep_s (time in automatic light sleep
+# with a phone connected; it adds to asleep_s, the lock sleep)
 SYNC_FIELDS = ["ble_win", "sync_win", "sync_link", "sync_s", "link_ms"]
 APP_FIELDS = ["app_rx", "ble_drop"]
-HEADER_V4 = HEADER.rsplit(",", len(APP_FIELDS))[0]
+HEADER_V5 = HEADER.rsplit(",", 1)[0]
+HEADER_V4 = HEADER_V5.rsplit(",", len(APP_FIELDS))[0]
 HEADER_V3 = HEADER_V4.rsplit(",", len(SYNC_FIELDS))[0]
 HEADER_V2 = HEADER_V3.rsplit(",", 1)[0]
 HEADER_V1 = HEADER_V2.rsplit(",", 1)[0]
 # In column order, the last ones; 0 when the column is missing
 OPTIONAL = {"rc_ppm": 0, "fix": 0, "ble_win": 0, "sync_win": 0, "sync_link": 0, "sync_s": 0.0, "link_ms": 0.0,
-            "app_rx": 0, "ble_drop": 0}
-FLOAT_FIELDS = {"asleep_s", "temp_c", "sync_s", "link_ms"}
+            "app_rx": 0, "ble_drop": 0, "auto_sleep_s": 0.0}
+FLOAT_FIELDS = {"asleep_s", "temp_c", "sync_s", "link_ms", "auto_sleep_s"}
 TEXT_FIELDS = {"local_date", "local_time"}
 
 # 0/1 columns, in the order the viewer shows them
@@ -66,8 +68,8 @@ def parse_line(line):
         warnings.append("blocker=%d unknown" % rec["blocker"])
     if not 0 <= rec["pct"] <= 100:
         warnings.append("pct=%d out of range" % rec["pct"])
-    if rec["asleep_s"] > rec["secs"] + 1:
-        warnings.append("asleep %.1f s > interval %d s" % (rec["asleep_s"], rec["secs"]))
+    if rec["asleep_s"] + rec["auto_sleep_s"] > rec["secs"] + 1:
+        warnings.append("asleep %.1f s > interval %d s" % (rec["asleep_s"] + rec["auto_sleep_s"], rec["secs"]))
     date, hm = local_date_time(rec["utc"], rec["utc_offset"])
     if (date, hm) != (rec["local_date"], rec["local_time"]):
         warnings.append("local time %s %s, expected %s %s" % (rec["local_date"], rec["local_time"], date, hm))
@@ -95,7 +97,7 @@ def parse_fw(line):
 def classify(line):
     """'header', 'fw', 'record', 'bad' (looks like a record but does not parse) or 'noise'."""
     s = line.strip()
-    if s in (HEADER, HEADER_V4, HEADER_V3, HEADER_V2, HEADER_V1):
+    if s in (HEADER, HEADER_V5, HEADER_V4, HEADER_V3, HEADER_V2, HEADER_V1):
         return "header"
     if s.startswith("#fw,"):
         return "fw" if parse_fw(s) else "noise"
@@ -255,7 +257,8 @@ def build_timeline(recs, capacity=DESIGN_CAPACITY_MAH, now=None, anchors=()):
         r["t"] = r["utc_fixed"]
         r["ma"] = -r["avg_ma"]          # consumption, positive while discharging
         r["drain_pct_h"] = round(r["ma"] / capacity * 100, 2)
-        r["awake"] = round(max(0.0, 1 - r["asleep_s"] / r["secs"]) if r["secs"] else 1.0, 3)
+        slept = r["asleep_s"] + r["auto_sleep_s"]
+        r["awake"] = round(max(0.0, 1 - slept / r["secs"]) if r["secs"] else 1.0, 3)
     mark_gaps(timeline)
     gauge_slope(timeline)
     return timeline, unknown
@@ -306,8 +309,13 @@ def gauge_slope(timeline, window=7200):
             r["gauge_pct_h"] = round(-sxy / sxx * 3600, 2)
 
 
+def sync_minutes(r):
+    """Minutes between Bluetooth sync windows while locked, 0 = stays connected or off."""
+    return r.get("ble_win", 0) if r["locked"] and r["ble"] else 0
+
+
 def state_key(r):
-    return (tuple(r[f] for f in FLAGS), r["charge"])
+    return (tuple(r[f] for f in FLAGS), r["charge"], sync_minutes(r))
 
 
 def run_key(r):
@@ -318,6 +326,8 @@ def state_label(r):
     on = [f for f in FLAGS if r[f]]
     if r["usb"] and r["charge"]:
         on[on.index("usb")] = "usb (%s)" % CHARGE[r["charge"]]
+    if sync_minutes(r):
+        on.append("sync every %d min" % sync_minutes(r))
     return ", ".join(on) if on else "nothing"
 
 
@@ -334,7 +344,12 @@ def segments(timeline, capacity=DESIGN_CAPACITY_MAH):
         rs = s["recs"]
         dur = sum(r["secs"] for r in rs)
         ma = sum(r["ma"] * r["secs"] for r in rs) / dur if dur else 0
+        # the gauge's average still carries the previous state for a minute
+        start = rs[0]["t"] - rs[0]["secs"]
+        steady = [r for r in rs if r["t"] - r["secs"] >= start + SETTLE_S]
         out.append({
+            "settled_secs": sum(r["secs"] for r in steady),
+            "settled_mas": round(sum(r["ma"] * r["secs"] for r in steady), 1),
             "t0": rs[0]["t"] - rs[0]["secs"], "t1": rs[-1]["t"], "secs": dur, "n": len(rs),
             "state": s["state"], "fw": s["fw"], "ma": round(ma, 1),
             "pct_h": round(ma / capacity * 100, 2),
@@ -365,6 +380,82 @@ def by_state(segs, capacity=DESIGN_CAPACITY_MAH):
     return out
 
 
+# Scenario means by firmware. The gauge's average current lags a state
+# change by about a minute, so each run's first SETTLE_S are left out. On the
+# deck's own logs (2026-11-03) a mean over 10 min was within 12 % of the
+# long-run mean in 9 cases of 10, over 30 min within 10 %, over 60 min 8 %
+# (packets, temperature). Below SHORT_S of settled time a value is not used.
+SETTLE_S = 120
+SHORT_S = 600
+SETTLED_S = 1800
+NOISE_SETTLED, NOISE_SHORT, NOISE_MA = 0.10, 0.15, 1.0
+
+
+def quality(settled_secs):
+    return "settled" if settled_secs >= SETTLED_S else "short" if settled_secs >= SHORT_S else "unsettled"
+
+
+def firmware_order(firmware):
+    """Firmware ids oldest first: unnamed (-1), then by commit time, then first build."""
+    return [-1] + [f["id"] for f in sorted(firmware, key=lambda f: (f["git_time"], f["build_time"], f["id"]))]
+
+
+def scenarios(segs, firmware, capacity=DESIGN_CAPACITY_MAH):
+    """Each state's mean current per firmware, the newest usable value and its change.
+
+    Per firmware: time, settled time (see SETTLE_S), the settled mean and its
+    quality. "latest" is the newest firmware with a usable (short or settled)
+    value, "prev" the next older usable one: not every state happens on every
+    firmware. On USB the gauge sees the battery current, not consumption, so
+    those states get no verdict.
+    """
+    rank = {fw: k for k, fw in enumerate(firmware_order(firmware))}
+    acc = {}
+    for s in segs:
+        a = acc.setdefault(s["state"], {"state": s["state"], "secs": 0, "per": {}})
+        a["secs"] += s["secs"]
+        p = a["per"].setdefault(s["fw"], {"fw": s["fw"], "secs": 0, "settled_secs": 0, "mas": 0.0,
+                                           "all_mas": 0.0, "runs": 0})
+        p["secs"] += s["secs"]
+        p["settled_secs"] += s["settled_secs"]
+        p["mas"] += s["settled_mas"]
+        p["all_mas"] += s["ma"] * s["secs"]
+        p["runs"] += 1
+    out = []
+    for a in acc.values():
+        usb = a["state"].startswith("usb") or ", usb" in a["state"]
+        per = []
+        for p in sorted(a["per"].values(), key=lambda p: rank.get(p["fw"], 0)):
+            ss = p["settled_secs"]
+            # too short to settle: the plain mean, shown but never compared
+            ma = p.pop("mas") / ss if ss else (p["all_mas"] / p["secs"] if p["secs"] else None)
+            p.pop("all_mas")
+            p.update(ma=None if ma is None else round(ma, 1), quality=quality(ss),
+                     pct_h=None if ma is None else round(ma / capacity * 100, 2))
+            per.append(p)
+        usable = [p for p in per if p["quality"] != "unsettled" and p["ma"] is not None]
+        latest = usable[-1] if usable else None
+        prev = usable[-2] if len(usable) > 1 else None
+        sc = {"state": a["state"], "secs": a["secs"], "usb": usb, "per": per,
+              "latest": latest["fw"] if latest else None, "prev": prev["fw"] if prev else None,
+              # the newest firmware with this state measured it, but not long enough
+              "newest_unsettled": per[-1]["fw"] if per and per[-1]["quality"] == "unsettled" else None,
+              "delta_ma": None, "delta_rel": None, "verdict": None}
+        if latest and prev:
+            d = latest["ma"] - prev["ma"]
+            sc["delta_ma"] = round(d, 1)
+            sc["delta_rel"] = round(d / abs(prev["ma"]), 3) if prev["ma"] else None
+            if not usb:
+                band = NOISE_SHORT if "short" in (latest["quality"], prev["quality"]) else NOISE_SETTLED
+                if abs(d) <= max(NOISE_MA, band * abs(prev["ma"])):
+                    sc["verdict"] = "same"
+                else:
+                    sc["verdict"] = "better" if d < 0 else "worse"
+        out.append(sc)
+    out.sort(key=lambda s: (s["usb"], -s["secs"]))
+    return out
+
+
 def by_firmware(timeline, firmware, capacity=DESIGN_CAPACITY_MAH):
     """Per firmware (and -1 for unnamed): time logged and current on battery."""
     acc = {}
@@ -388,7 +479,8 @@ def by_firmware(timeline, firmware, capacity=DESIGN_CAPACITY_MAH):
         info = firmware[a["fw"]] if a["fw"] >= 0 else {}
         a.update({k: info.get(k) for k in ("hash", "dirty", "git_time", "build_time", "version")})
         out.append(a)
-    out.sort(key=lambda a: a["t1"], reverse=True)
+    rank = {fw: k for k, fw in enumerate(firmware_order(firmware))}
+    out.sort(key=lambda a: rank.get(a["fw"], 0), reverse=True)
     return out
 
 

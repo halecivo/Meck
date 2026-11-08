@@ -11,8 +11,10 @@
 
 #if defined(LilyGo_TDeck_Pro_Max) && !defined(MECK_40MHZ_TEST)
 // Power saving when locked (main.cpp / UITask.cpp); codes are MeckSleepBlock
-extern int meckLockSleepBlocker();
+extern int meckSleepBlockerShown();
 extern const char* meckSleepBlockText(int code);
+extern bool meckBlockerSleeps();
+extern void meckSleepStatusText(char* buf, size_t len);
 #endif
 #ifdef MECK_UI_V2
   #include "ui2/Ui2Chrome.h"
@@ -245,6 +247,7 @@ enum SettingsRowType : uint8_t {
   ROW_CHANNELS_SUBMENU,  // Folder row → enters Channels sub-screen
   ROW_CH_HEADER,      // "--- Channels ---" separator
   ROW_CHANNEL,        // A channel entry (dynamic, index stored separately)
+  ROW_DM_NOTIFY,      // Notification settings for direct messages (the DM slot)
   ROW_ADD_CHANNEL,    // "+ Add Channel (# = public)"
   #ifdef HAS_SDCARD
   ROW_EXPORT_IMPORT_SUBMENU, // Folder row: "Export/Import >>"
@@ -577,6 +580,7 @@ private:
           addRow(ROW_CHANNEL, i);
         }
       }
+      addRow(ROW_DM_NOTIFY);
       addRow(ROW_ADD_CHANNEL);
     } else if (_subScreen == SUB_CANNED) {
       // --- Canned Messages sub-screen: ten editable slots ---
@@ -2149,6 +2153,19 @@ public:
   // Rendering
   // ---------------------------------------------------------------------------
 
+  // What a message on this channel (0xFF = DMs) does besides the default:
+  // "-" nothing, "vib", "Bell-01" or "Bell-01+vib". Short enough for a hint.
+  static void toneStateLabel(uint8_t ch, char* out, size_t len) {
+    const char* tone = notifSounds.getSoundForChannel(ch);
+    const bool vib = notifSounds.isVibrateForChannel(ch);
+    if (!tone[0]) { snprintf(out, len, "%s", vib ? "vib" : "-"); return; }
+    char name[12];
+    snprintf(name, sizeof(name), "%.9s", tone);
+    char* dot = strrchr(name, '.');
+    if (dot) *dot = '\0';
+    snprintf(out, len, "%s%s", name, vib ? "+vib" : "");
+  }
+
   // Draw the text of settings row i at (0, y): label, value and, on some
   // rows, a right-aligned hint. Used by the classic layout and, with a
   // text-capturing display, by the UI v2 layout.
@@ -2347,9 +2364,11 @@ public:
         // Sub-line: what keeps the device awake right now, or how the phone
         // behaves (BLE pauses while asleep and reconnects after unlock).
         char hint[48];
-        int why = meckLockSleepBlocker();
+        int why = meckSleepBlockerShown();
         if (!_prefs->lock_sleep) {
           snprintf(hint, sizeof(hint), "%s", MECK_TR("Phone stays reachable", "T\xC3\xA9l\xC3\xA9phone joignable"));
+        } else if (meckBlockerSleeps()) {
+          meckSleepStatusText(hint, sizeof(hint));
         } else if (why != 0 /* MECK_SLEEP_OK */) {
           snprintf(hint, sizeof(hint), MECK_TR("Awake now: %s", "\xC3\x89veill\xC3\xA9 : %s"), meckSleepBlockText(why));
     #ifdef MECK_BLE_LOCK_WINDOWS
@@ -2423,13 +2442,12 @@ public:
 
       #ifdef HAS_4G_MODEM
       case ROW_MODEM_TOGGLE: {
-        bool battLow = modemManager.isBatteryLow();
         snprintf(tmp, sizeof(tmp), MECK_TR("4G Modem: %s", "Modem 4G : %s"),
-                 (_modemEnabled && !battLow) ? MECK_TR("ON", "OUI") : MECK_TR("OFF", "NON"));
+                 _modemEnabled ? MECK_TR("ON", "OUI") : MECK_TR("OFF", "NON"));
         display.print(tmp);
-        if (battLow) {
-          // Switched off for a low cell; the saved setting brings it back
-          const char* hint = MECK_TR("Battery low: charge first", "Batterie faible : chargez");
+        if (_modemEnabled && modemManager.isBatteryLow()) {
+          // Held off for a low cell; the saved setting brings it back
+          const char* hint = MECK_TR("Starts after charging", "D\xC3\xA9marre apr\xC3\xA8s la charge");
           display.setCursor(display.width() - display.getTextWidth(hint) - 2, y);
           display.print(hint);
         }
@@ -2583,12 +2601,14 @@ public:
               uint8_t nPref = _prefs->channel_notif[chIdx];
               const char* nTag = (nPref == NOTIF_NONE) ? MECK_TR("Off", "Non") :
                                  (nPref == NOTIF_MENTIONS) ? "@" : MECK_TR("All", "Tous");
-              char hintBuf[40];
+              char hintBuf[48];
             #if defined(MECK_AUDIO_VARIANT) || defined(HAS_4G_MODEM)
+              char toneTag[20];
+              toneStateLabel(chIdx, toneTag, sizeof(toneTag));
               if (chIdx > 0) {
-                snprintf(hintBuf, sizeof(hintBuf), MECK_TR("N:%s T:Tone X:Del", "N:%s T:Son X:Suppr"), nTag);
+                snprintf(hintBuf, sizeof(hintBuf), MECK_TR("N:%s T:%s X:Del", "N:%s T:%s X:Suppr"), nTag, toneTag);
               } else {
-                snprintf(hintBuf, sizeof(hintBuf), MECK_TR("N:%s T:Tone Ent:Region", "N:%s T:Son Ent:R\xC3\xA9gion"), nTag);
+                snprintf(hintBuf, sizeof(hintBuf), MECK_TR("N:%s T:%s Ent:Region", "N:%s T:%s Ent:R\xC3\xA9gion"), nTag, toneTag);
               }
             #else
               if (chIdx > 0) {
@@ -2625,6 +2645,39 @@ public:
           snprintf(tmp, sizeof(tmp), MECK_TR(" (empty)", " (vide)"));
         }
         if (!rowDrawn) display.print(tmp);
+        break;
+      }
+
+      case ROW_DM_NOTIFY: {
+        uint8_t nPref = _prefs->channel_notif[MAX_GROUP_CHANNELS];
+        const char* nTag = (nPref == NOTIF_NONE) ? MECK_TR("Off", "Non") :
+                           (nPref == NOTIF_MENTIONS) ? "@" : MECK_TR("All", "Tous");
+        if (selected) {
+        #if defined(MECK_AUDIO_VARIANT) || defined(HAS_4G_MODEM)
+          char toneTag[20];
+          toneStateLabel(0xFF, toneTag, sizeof(toneTag));
+          snprintf(tmp, sizeof(tmp), MECK_TR(" Direct msgs   N:%s T:%s", " Messages priv\xC3\xA9s   N:%s T:%s"), nTag, toneTag);
+        #else
+          snprintf(tmp, sizeof(tmp), MECK_TR(" Direct msgs   N:%s", " Messages priv\xC3\xA9s   N:%s"), nTag);
+        #endif
+        } else {
+          // What a DM does now: nothing, or a tone and/or the motor
+          const char* tone = notifSounds.getSoundForChannel(0xFF);
+          char what[24];
+          if (nPref == NOTIF_NONE) {
+            snprintf(what, sizeof(what), "%s", MECK_TR("muted", "muet"));
+          } else if (tone[0] && notifSounds.isVibrateForChannel(0xFF)) {
+            snprintf(what, sizeof(what), "%s", MECK_TR("tone + vibrate", "son + vibreur"));
+          } else if (tone[0]) {
+            snprintf(what, sizeof(what), "%s", MECK_TR("tone", "son"));
+          } else if (notifSounds.isVibrateForChannel(0xFF)) {
+            snprintf(what, sizeof(what), "%s", MECK_TR("vibrate", "vibreur"));
+          } else {
+            snprintf(what, sizeof(what), "%s", MECK_TR("default", "d\xC3\xA9" "faut"));
+          }
+          snprintf(tmp, sizeof(tmp), MECK_TR(" Direct messages: %s", " Messages priv\xC3\xA9s : %s"), what);
+        }
+        display.print(tmp);
         break;
       }
 
@@ -3050,12 +3103,27 @@ public:
         r.selected = (i == _notifSoundSelected);
         Ui2List::drawRow(c, BODY_Y + (i - start) * ROW_H, r);
       }
+  #if defined(LilyGo_TDeck_Pro_Max)
+      char vibLabel[16];
+      snprintf(vibLabel, sizeof(vibLabel), MECK_TR("Vib %s", "Vib %s"),
+               notifSounds.isVibrateForChannel(_notifSoundChannel) ? MECK_TR("on", "oui") : MECK_TR("off", "non"));
       const Ui2Key keys[] = {
         ui2KeyIcon(UI2_IC_ENTER, MECK_TR("Pick", "Choisir")),
         ui2Key("W/S", MECK_TR("Move", "D\xC3\xA9placer"), true),
+        ui2Key("P", MECK_TR("Play", "Test")),
+        ui2Key("V", vibLabel),
         ui2Key("Q", MECK_TR("Back", "Retour")),
       };
-      Ui2Chrome::footer(c, keys, 3);
+      Ui2Chrome::footer(c, keys, 5);
+  #else
+      const Ui2Key keys[] = {
+        ui2KeyIcon(UI2_IC_ENTER, MECK_TR("Pick", "Choisir")),
+        ui2Key("W/S", MECK_TR("Move", "D\xC3\xA9placer"), true),
+        ui2Key("P", MECK_TR("Play", "Test")),
+        ui2Key("Q", MECK_TR("Back", "Retour")),
+      };
+      Ui2Chrome::footer(c, keys, 4);
+  #endif
       return 700;
     }
   #endif
@@ -3580,7 +3648,16 @@ public:
       display.setColor(DisplayDriver::YELLOW);
       int fy = by + bh - 11;
       display.setCursor(bx + 4, fy);
-      display.print(MECK_TR("Enter:Pick  Q:Back", "Entr\xC3\xA9" "e:Choisir  Q:Retour"));
+#if defined(LilyGo_TDeck_Pro_Max)
+      {
+        char foot[40];
+        snprintf(foot, sizeof(foot), MECK_TR("Ent:Pick P:Play V:Vib %s Q:Back", "Ent:Choisir P:Test V:Vib %s Q:Retour"),
+                 notifSounds.isVibrateForChannel(_notifSoundChannel) ? MECK_TR("ON", "OUI") : MECK_TR("OFF", "NON"));
+        display.print(foot);
+      }
+#else
+      display.print(MECK_TR("Enter:Pick  P:Play  Q:Back", "Entr\xC3\xA9" "e:Choisir  P:Test  Q:Retour"));
+#endif
 
       // Scroll indicator
       if (totalItems > maxVisible) {
@@ -4101,8 +4178,45 @@ public:
         return true;
       }
 #endif
+      // P: try out the highlighted item: its tone, plus the motor where a
+      // message would use it (the vibrate row, or a tone with V on)
+      if (c == 'p' || c == 'P') {
+        bool buzz = false;
+        const int fileIdx = _notifSoundSelected - kFileBase;
+        if (fileIdx >= 0 && fileIdx < (int)files.size()) {
+        #ifdef MECK_AUDIO_VARIANT
+          char path[48];
+          snprintf(path, sizeof(path), "/alarms/%s", files[fileIdx].c_str());
+          notifSounds.requestPlay(path);
+        #elif defined(HAS_4G_MODEM)
+          int8_t toneIdx = ModemManager::findToneByName(files[fileIdx].c_str());
+          if (toneIdx >= 0) modemManager.requestNotifTone(toneIdx);
+        #endif
+        #if defined(LilyGo_TDeck_Pro_Max)
+          buzz = notifSounds.isVibrateForChannel(_notifSoundChannel);
+        #endif
+        }
+      #if defined(LilyGo_TDeck_Pro_Max)
+        if (_notifSoundSelected == 1) buzz = true;
+        if (buzz) {
+          extern void meckNotifVibrate();
+          meckNotifVibrate();
+        }
+      #endif
+        (void)buzz;
+        return true;
+      }
+#if defined(LilyGo_TDeck_Pro_Max)
+      // V: vibrate as well as the chosen tone (or on its own, with no tone)
+      if (c == 'v' || c == 'V') {
+        notifSounds.setVibrateEnabled(_notifSoundChannel,
+                                      !notifSounds.isVibrateForChannel(_notifSoundChannel));
+        return true;
+      }
+#endif
       if (c == '\r' || c == 13) {
-        // Select: 0 = clear (default silent), [MAX: 1 = vibrate], rest = file
+        // Select: 0 = clear (default silent), [MAX: 1 = vibrate], rest = file.
+        // A file keeps the vibrate setting; the other two rows replace it.
         if (_notifSoundSelected == 0) {
           notifSounds.clearSoundForChannel(_notifSoundChannel);
 #if defined(LilyGo_TDeck_Pro_Max)
@@ -4974,11 +5088,8 @@ public:
         #endif
         #ifdef HAS_4G_MODEM
         case ROW_MODEM_TOGGLE:
-          if (modemManager.isBatteryLow()) {
-            extern void meckShowAlert(const char* text, int duration_millis);
-            meckShowAlert(MECK_TR("Battery low: charge the\ndeck to use 4G", "Batterie faible : chargez\npour utiliser la 4G"), 4000);
-            break;
-          }
+          // A low cell does not lock the setting: begin() holds the modem off
+          // until charged, and off then stays off after charging
           _modemEnabled = !_modemEnabled;
           ModemManager::saveEnabledConfig(_modemEnabled);
           if (_modemEnabled) {
@@ -5236,8 +5347,8 @@ public:
 
     // N: cycle notification preference (All -> Mentions -> None -> All)
     if (c == 'n' || c == 'N') {
-      if (_rows[_cursor].type == ROW_CHANNEL) {
-        uint8_t chIdx = _rows[_cursor].param;
+      if (_rows[_cursor].type == ROW_CHANNEL || _rows[_cursor].type == ROW_DM_NOTIFY) {
+        uint8_t chIdx = (_rows[_cursor].type == ROW_DM_NOTIFY) ? MAX_GROUP_CHANNELS : _rows[_cursor].param;
         uint8_t cur = _prefs->channel_notif[chIdx];
         _prefs->channel_notif[chIdx] = (cur + 1) % 3;
         the_mesh.savePrefs();
@@ -5301,8 +5412,8 @@ public:
     // T: open notification tone picker
     #if defined(MECK_AUDIO_VARIANT) || defined(HAS_4G_MODEM)
     if (c == 't' || c == 'T') {
-      if (_rows[_cursor].type == ROW_CHANNEL) {
-        _notifSoundChannel = _rows[_cursor].param;
+      if (_rows[_cursor].type == ROW_CHANNEL || _rows[_cursor].type == ROW_DM_NOTIFY) {
+        _notifSoundChannel = (_rows[_cursor].type == ROW_DM_NOTIFY) ? 0xFF : _rows[_cursor].param;
         notifSounds.scanSoundFiles();
         _notifSoundSelected = 0;  // 0 = "Default (silent)"
         _notifSoundScroll = 0;
@@ -5311,14 +5422,15 @@ public:
 #else
         const int kFileBase = 1;   // 0=Default, 1+=files
 #endif
-        // Pre-select current assignment
+        // Pre-select current assignment: the tone if there is one, else the
+        // vibrate-only row
+        const char* current = notifSounds.getSoundForChannel(_notifSoundChannel);
 #if defined(LilyGo_TDeck_Pro_Max)
-        if (notifSounds.isVibrateForChannel(_notifSoundChannel)) {
+        if ((!current || !current[0]) && notifSounds.isVibrateForChannel(_notifSoundChannel)) {
           _notifSoundSelected = 1;  // 1 = "Buzzer (vibrate)"
         } else
 #endif
         {
-          const char* current = notifSounds.getSoundForChannel(_notifSoundChannel);
           if (current && current[0] != '\0') {
             const auto& files = notifSounds.getSoundFiles();
             for (int i = 0; i < (int)files.size(); i++) {

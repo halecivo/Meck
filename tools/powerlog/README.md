@@ -54,7 +54,8 @@ opens the deck through its USB interface path instead.
   locked deck awake, GPS, modem, WiFi, phone, Bluetooth, audio, backlight), and per-minute counts
   of LoRa packets, display refreshes and wakes.
 - Tiles for the visible range: mean current on battery, %/h, how long a full battery would last.
-- Tables: time and mean current per combination of what was on, and every run of one state.
+- Tables: firmware versions, consumption per scenario and firmware (below), and every run of
+  one state (filter by firmware).
 
 ## Firmware versions
 
@@ -63,18 +64,36 @@ opens the deck through its USB interface path instead.
 writes `#fw,<hash>,<commit utc>,<build utc>,<version>` once per boot in each daily file, before
 that boot's first records, and `pwrlog` prints it before the RAM records. The viewer gives every
 record the firmware of the last `#fw` line before it; a new boot without one is older firmware
-("not named"). It shows a Firmware lane, a table of versions (commit and build date, time logged,
-mean current on battery), and the state and run tables can be limited to one version.
+("not named"). Builds of one commit count as one firmware. It shows a Firmware lane, a table of
+versions (commit and build date, time logged, mean current on battery), and the run table can be
+limited to one version.
+
+## Consumption by scenario and firmware
+
+A scenario is one combination of what was on (locked, GPS, phone, modem, the "Phone when locked"
+sync interval, ...). For each scenario and firmware the viewer shows the mean current, oldest
+firmware to newest by commit time, as a small chart, and the newest value against the previous one.
+
+- The gauge's average current lags a state change by about a minute, so the first 2 minutes of
+  every run are left out (`SETTLE_S` in `pwrlog_format.py`).
+- On the deck's own logs a mean over 10 minutes was within 12 % of the long-run mean in 9 cases of
+  10, over 30 minutes within 10 %. So under 10 settled minutes a value is "too short to use" (grey,
+  never compared), under 30 minutes "short" (hollow point), from 30 minutes "settled".
+- "Latest" is the newest firmware with a usable value for that scenario, compared with the next
+  older firmware that has one, because not every scenario happens on every firmware. A change
+  within 10 % (15 % when a value is short, at least 1 mA) counts as the same.
+- On USB the gauge sees the battery current (charging, or 0 when full), not what the deck draws;
+  those scenarios are listed apart and get no verdict.
 
 ## Log format
 
-`utc,local_date,local_time,secs,asleep_s,wake_lora,wake_btn,wake_timer,pct,mv,avg_ma,temp_c,usb,charge,locked,blocker,saving,gps,modem,wifi,phone,ble,audio,light,rx,tx,refresh,full_refresh,clock_jump_s,utc_offset,rc_ppm,fix,ble_win,sync_win,sync_link,sync_s,link_ms,app_rx,ble_drop`
+`utc,local_date,local_time,secs,asleep_s,wake_lora,wake_btn,wake_timer,pct,mv,avg_ma,temp_c,usb,charge,locked,blocker,saving,gps,modem,wifi,phone,ble,audio,light,rx,tx,refresh,full_refresh,clock_jump_s,utc_offset,rc_ppm,fix,ble_win,sync_win,sync_link,sync_s,link_ms,app_rx,ble_drop,auto_sleep_s`
 
 `avg_ma` is negative while discharging; `charge` 0 off / 1 pre / 2 fast / 3 done; `blocker` is
 `MeckSleepBlock` (`ui-new/UITask.h`). `fix` is 1 when the GPS was powered and had a fix at the end
 of the minute (the "GPS fix" lane). The first firmware with the log had no `rc_ppm` column and the
 next ones no `fix` column (read as 0, so older records look like "no fix"), then none of the
-Bluetooth sync window columns, then no `app_rx` / `ble_drop` (read as 0); all forms are read. `ble_win` is the "Phone when
+Bluetooth sync window columns, then no `app_rx` / `ble_drop`, then no `auto_sleep_s` (read as 0); all forms are read. `ble_win` is the "Phone when
 locked" setting (minutes between sync windows, 0 = stay connected); `sync_win` the windows
 opened in the minute and `sync_link` how many of them the app reconnected in; `sync_s` the time
 spent in windows; `link_ms` the BLE connection interval the phone accepted (0 = no link). With "Stay connected"
@@ -82,4 +101,6 @@ windows also open once the link is lost while locked (`sync_win` counts them too
 the frames the app sent over Bluetooth in the minute: a window with `sync_link` but no `app_rx`
 means iOS reconnected without the app talking. `ble_drop` is why a link ended in the minute
 (HCI reason, 0 = none): 8 supervision timeout, 19 closed by the phone, 22 closed by the deck
-(a window ending), 34/62 link failures. Tests: `py -3 -m unittest discover -s tools/powerlog`.
+(a window ending), 34/62 link failures. `auto_sleep_s` is the time in automatic light sleep,
+which keeps a connected phone's link while locked (pioarduino builds); it adds to `asleep_s`, the
+lock sleep, in the awake share. Tests: `py -3 -m unittest discover -s tools/powerlog`.

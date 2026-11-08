@@ -57,7 +57,7 @@ starting); the screen then redraws every second instead of every 5 s.
 | Bluetooth | companion Bluetooth on / off | Off · PIN 123456 · App connected | — |
 | WiFi | companion WiFi on (joins the saved network) / off | Off · Joining… · SSID · App connected · No network | Settings › WiFi |
 | GPS | GPS on / off, saved, no toast | Off · Searching… · Fix, 8 sat. | Map |
-| 4G | modem on / off, saved as Settings › 4G Modem does | Off · Starting… · Searching… · Operator 3/5 · Error · Call | Settings › 4G Modem |
+| 4G | modem on / off, saved as Settings › 4G Modem does | Off · Starting… · Searching… · Operator 3/5 · Error · Call · After charging (on, but the cell is too low for now) | Settings › 4G Modem |
 | Tones | `buzzer_quiet` | On · Off | Settings › Channels (per-channel sounds) |
 | Vibration | `notif_vibrate` | On · Off | Settings › Channels |
 | Light | frontlight at Backlight Brightness / off (as the heart pad) | 60 % · Off | Settings › Backlight Brightness |
@@ -83,7 +83,7 @@ restart while locked brings everything back as it was set.
 | Tile | On (keeps) | Off (pauses) | Default |
 |---|---|---|---|
 | Bluetooth | "Stay connected" (`ble_lock_window` 0) | sync windows every few minutes (the last interval used, 5 min at first) | on |
-| WiFi | keeps running, the deck stays awake | off on lock (companion WiFi only) | on |
+| WiFi | stays joined while the deck sleeps automatically (about +8 mA); WiFi setup's access point keeps it awake | off on lock (companion WiFi only) | on |
 | GPS | keeps running while the deck sleeps: on (about +15 mA), or a fix every few minutes with Experimental › GPS when locked | off on lock, unless an SOS runs | on |
 | 4G | calls and SMS arrive; idle, the modem sleeps and so does the deck (UART sleep, about 22 mA), a call or SMS wakes it | off on lock, unless in a call; starting again takes seconds | on |
 | Tones | as the Now switch | silent while locked | on |
@@ -97,8 +97,15 @@ Settings › Phone when locked (M opens it).
 
 The bottom line (both views) says what a lock would do now, with the
 battery measurements of `docs/power-saving-ideas.md`: "Locked: sleeps,
-~17 mA", "Locked: sleeps, GPS on, ~32 mA", "Locked: sleeps, 4G on, ~22 mA",
-"Locked: awake for WiFi" or "Locked: never sleeps, ~35 mA".
+~17 mA, 82h", "Locked: ~23 mA, 60h (app)", "Locked: ~31 mA, 45h (app,
+WiFi)", "Locked: ~38 mA, 36h (app, GPS)", "Locked: awake for USB" or
+"Locked: never sleeps, ~35 mA, 40h". The hours are the charge left before
+the low-voltage shutdown (the gauge's remaining capacity less the 5 %
+reserve) divided by that current, not a timed run. Asleep, the estimate is
+17 mA plus what each one was measured to add on its own: a phone connected over Bluetooth
+6 mA (automatic light sleep; an app on WiFi adds nothing to WiFi's share),
+WiFi 8 mA, the GPS 15 mA ("GPS when locked" about 3 mA), 4G 5 mA;
+combinations are only added up.
 
 Implementation: `NodePrefs::lock_keep` (`LOCK_KEEP_*` bits, appended at the
 end of the prefs file), `meckLockPolicy()` in `main.cpp` (called from
