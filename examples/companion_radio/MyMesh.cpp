@@ -4025,6 +4025,12 @@ void MyMesh::checkCLIRescueCmd() {
       // Debug: SOS state, dry run, simulated hold / fix (docs/sos.md)
       extern void meckSosCmd(const char* arg);
       meckSosCmd(cli_command[3] ? &cli_command[4] : "");
+#if defined(MECK_HA) && MECK_HA
+    } else if (strcmp(cli_command, "ha") == 0 || memcmp(cli_command, "ha ", 3) == 0) {
+      // Debug: Home Assistant link (docs/home-assistant.md); secrets are masked
+      extern void meckHaCmd(const char* arg);
+      meckHaCmd(cli_command[2] ? &cli_command[3] : "");
+#endif
     } else if (memcmp(cli_command, "uigo ", 5) == 0) {
       // Debug: open a screen directly, e.g. "uigo rxlog", "uigo pathed 3"
       extern void meckDebugGoto(const char* arg);
