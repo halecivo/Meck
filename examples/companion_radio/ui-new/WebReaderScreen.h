@@ -12,10 +12,9 @@
 //
 // Network backends:
 //   - WiFi (default): Uses ESP32 WiFi STA mode. Credentials saved to SD.
-//   - 4G/PPP (future): When PPP is established via A7682E modem, the same
-//     HTTPClient code works transparently over cellular. To enable this,
-//     establish PPP before calling fetchPage() and the ESP networking
-//     stack will route through the modem automatically.
+//   - 4G (MODEM_DATA): with no WiFi and mobile data allowed in settings,
+//     tryMobileData() brings up PPP over the A7682E and the same HTTPClient
+//     code runs over it; WiFi has the higher route priority when both are up.
 //
 // Modes:
 //   WIFI_SETUP   - Connect to a WiFi network (scan + password entry)
@@ -1412,10 +1411,50 @@ private:
   // Works for WiFi and will also detect PPP (4G modem) connections.
   bool isNetworkAvailable() {
     if (WiFi.status() == WL_CONNECTED) return true;
-#ifdef HAS_4G_MODEM
-    // When PPP is active via the A7682E modem, the ESP32 gets an IP on the
-    // ppp netif. Check if we have a non-zero IP on any interface.
-    // TODO: implement PPP status check when modem PPP driver is added
+#ifdef MODEM_DATA
+    if (modemManager.isDataUp()) return true;
+#endif
+    return false;
+  }
+
+  // No WiFi: bring up mobile data if the settings allow it. Blocks with a
+  // status screen until it is up or has failed.
+  bool tryMobileData() {
+#ifdef MODEM_DATA
+    if (modemManager.isDataUp()) {
+      modemManager.requestData();   // keeps it from the idle timeout
+      modemManager.restoreDataDns();
+      return true;
+    }
+    if (!ModemManager::dataAllowed() || !modemManager.isReady()) return false;
+    Serial.println("WebReader: trying mobile data");
+    if (_display) {
+      _display->startFrame();
+      _display->setColor(DisplayDriver::GREEN);
+      _display->setTextSize(1);
+      _display->setCursor(0, 0);
+      _display->print(MECK_TR("Web Reader", "Navigateur"));
+      _display->drawRect(0, 11, _display->width(), 1);
+      _display->setColor(DisplayDriver::LIGHT);
+      _display->setTextSize(_prefs->smallTextSize());
+      _display->setCursor(0, 18);
+      _display->print(MECK_TR("Connecting mobile data...", "Connexion donn\xC3\xA9" "es mobiles..."));
+      _display->endFrame();
+    }
+    modemManager.requestData();
+    unsigned long start = millis();
+    while (millis() - start < 60000) {   // attach, CMUX, dial, PPP
+      if (modemManager.isDataUp()) {
+        _wifiState = WIFI_CONNECTED;
+        Serial.println("WebReader: mobile data up");
+        return true;
+      }
+      // FAILED stays until the next request, so only after it left OFF
+      if (modemManager.dataFailed() && millis() - start > 1000) break;
+      delay(200);
+    }
+    Serial.println("WebReader: mobile data failed");
+    modemManager.releaseData();
 #endif
     return false;
   }
@@ -1982,6 +2021,14 @@ private:
       ModemPauseGuard()  { modemManager.pausePolling(); Serial.println("WebReader: modem paused"); }
       ~ModemPauseGuard() { modemManager.resumePolling(); Serial.println("WebReader: modem resumed"); }
     } _modemGuard;
+#endif
+
+#ifdef MODEM_DATA
+    // Over 4G: each page keeps the link from the idle timeout
+    if (!isWiFiConnected() && modemManager.isDataUp()) {
+      modemManager.requestData();
+      modemManager.restoreDataDns();
+    }
 #endif
 
     if (!allocateBuffers()) {
@@ -3736,10 +3783,10 @@ private:
           _urlEditing = false;
           if (!isNetworkAvailable()) {
             _mode = WIFI_SETUP;
-            if (!loadAndAutoConnect()) {
-              startWifiScan();
-            } else {
+            if (loadAndAutoConnect() || tryMobileData()) {
               fetchWithSelfRef(_urlBuffer);
+            } else {
+              startWifiScan();
             }
           } else {
             fetchWithSelfRef(_urlBuffer);
@@ -3794,10 +3841,10 @@ private:
           _urlLen = strlen(_urlBuffer);
           if (!isNetworkAvailable()) {
             _mode = WIFI_SETUP;
-            if (!loadAndAutoConnect()) {
-              startWifiScan();
-            } else {
+            if (loadAndAutoConnect() || tryMobileData()) {
               fetchWithSelfRef(_urlBuffer);
+            } else {
+              startWifiScan();
             }
           } else {
             fetchWithSelfRef(_urlBuffer);
@@ -3874,10 +3921,10 @@ private:
         _urlLen = strlen(_urlBuffer);
         if (!isNetworkAvailable()) {
           _mode = WIFI_SETUP;
-          if (!loadAndAutoConnect()) {
-            startWifiScan();
-          } else {
+          if (loadAndAutoConnect() || tryMobileData()) {
             fetchWithSelfRef(_urlBuffer);
+          } else {
+            startWifiScan();
           }
         } else {
           fetchWithSelfRef(_urlBuffer);
@@ -4902,7 +4949,7 @@ private:
       if (_ircSetupField == 4) {
         // Connect button
         saveIRCConfig();
-        if (!isNetworkAvailable()) {
+        if (!isNetworkAvailable() && !tryMobileData()) {
           addIRCMessage("*", MECK_TR("No network! Connect WiFi first.", "Pas de r\xC3\xA9seau ! Connectez le WiFi."), true);
           _mode = WIFI_SETUP;
           startWifiScan();
@@ -5274,7 +5321,7 @@ public:
       _display->print(MECK_TR("Connecting to WiFi...", "Connexion au WiFi..."));
       _display->endFrame();
     }
-    if (loadAndAutoConnect()) {
+    if (loadAndAutoConnect() || tryMobileData()) {
       Serial.printf("WebReader enter: auto-connect OK\n");
       showConnectedAndGoHome();
       return;
@@ -5314,6 +5361,11 @@ public:
 
     // Free PSRAM buffers (text, links — will be re-allocated on next fetch)
     freeBuffers();
+
+#ifdef MODEM_DATA
+    // Nothing else uses mobile data: let the modem sleep again
+    modemManager.releaseData();
+#endif
 
     // Free IRC message ring buffer
     if (_ircMessages) { free(_ircMessages); _ircMessages = nullptr; }

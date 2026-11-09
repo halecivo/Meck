@@ -234,6 +234,9 @@ enum SettingsRowType : uint8_t {
   #endif
   #ifdef HAS_4G_MODEM
   ROW_MODEM_TOGGLE,   // 4G modem enable/disable toggle (4G builds only)
+  #ifdef MODEM_DATA
+  ROW_MODEM_DATA,     // Mobile data allowed (web reader over 4G when no WiFi)
+  #endif
   // ROW_RINGTONE,       // Incoming call ringtone toggle (4G builds only)
   #endif
   ROW_CONTACT_HEADER,  // "--- Contacts ---" separator
@@ -688,6 +691,9 @@ private:
       #endif
       #ifdef HAS_4G_MODEM
       addRow(ROW_MODEM_TOGGLE);
+      #ifdef MODEM_DATA
+      if (_modemEnabled) addRow(ROW_MODEM_DATA);
+      #endif
       #endif
 
       // Folder rows for sub-screens
@@ -2462,6 +2468,20 @@ public:
         }
         break;
       }
+
+      #ifdef MODEM_DATA
+      case ROW_MODEM_DATA: {
+        snprintf(tmp, sizeof(tmp), MECK_TR("Mobile data: %s", "Donn\xC3\xA9" "es mobiles : %s"),
+                 ModemManager::dataAllowed() ? MECK_TR("ON", "OUI") : MECK_TR("OFF", "NON"));
+        display.print(tmp);
+        if (ModemManager::dataAllowed() && modemManager.getDataState() != DataState::OFF) {
+          const char* st = ModemManager::dataStateToString(modemManager.getDataState());
+          display.setCursor(display.width() - display.getTextWidth(st) - 2, y);
+          display.print(st);
+        }
+        break;
+      }
+      #endif
 
       //case ROW_RINGTONE:
       //  snprintf(tmp, sizeof(tmp), "Incoming Call Ring: %s",
@@ -5115,7 +5135,16 @@ public:
             modemManager.shutdown();
             Serial.println("Settings: 4G modem DISABLED (shutdown)");
           }
+          rebuildRows();
           break;
+        #ifdef MODEM_DATA
+        case ROW_MODEM_DATA:
+          // Only allows it: the web reader brings the link up when it needs
+          // one and WiFi is not there
+          ModemManager::saveDataConfig(!ModemManager::dataAllowed());
+          Serial.printf("Settings: mobile data %s\n", ModemManager::dataAllowed() ? "ALLOWED" : "OFF");
+          break;
+        #endif
        // case ROW_RINGTONE:
        //   _prefs->ringtone_enabled = _prefs->ringtone_enabled ? 0 : 1;
        //   modemManager.setRingtoneEnabled(_prefs->ringtone_enabled);

@@ -1013,6 +1013,15 @@ static uint32_t _atoi(const char* sp) {
     if (strcmp(cmd, "pwrchg") == 0) { board.chargerDebugPrint(); return; }   // charger + gauge, read-only
 #ifdef HAS_4G_MODEM
     if (strcmp(cmd, "pwrmodem") == 0) { modemManager.printPowerStats(); return; }   // UART sleep, read-only
+    // Mobile data: "data" is read-only; "data on" opens a real packet
+    // session on the SIM (costs data), so only when the user asks for it
+    if (strcmp(cmd, "data") == 0) { modemManager.printDataStats(); return; }
+    if (strcmp(cmd, "data on") == 0) {
+      if (!ModemManager::dataAllowed()) Serial.println("data: not allowed in settings");
+      modemManager.requestData();
+      return;
+    }
+    if (strcmp(cmd, "data off") == 0) { modemManager.releaseData(); return; }
     if (strncmp(cmd, "pwrmodemmv ", 11) == 0) {
       // Test the low-battery 4G cut-off without draining the cell
       modemManager.setTestMilliVolts((uint16_t)atoi(cmd + 11));
@@ -3420,6 +3429,7 @@ void setup() {
 #else
       bool modemEnabled = ModemManager::loadEnabledConfig();
 #endif
+      ModemManager::loadDataConfig();
 #ifdef MODEM_MIN_MILLIVOLTS
       // A low cell keeps 4G off from the start (it comes on after charging)
       modemManager.checkBattery(board.getBattMilliVolts(), true);
