@@ -61,7 +61,7 @@ starting); the screen then redraws every second instead of every 5 s.
 | Tones | `buzzer_quiet` | On · Off | Settings › Channels (per-channel sounds) |
 | Vibration | `notif_vibrate` | On · Off | Settings › Channels |
 | Light | frontlight at Backlight Brightness / off (as the heart pad) | 60 % · Off | Settings › Backlight Brightness |
-| Keys light | keyboard backlight (as both Shifts) | 50 % · Off | Settings › Keyboard LED |
+| Mobile data | allows 4G data for the web reader (`/sms/data.cfg`, docs/mobile-data.md); hatched in builds without it | Off · When no WiFi · Connecting… · Connected · Failed · 4G is off | Settings › Mobile data |
 
 Tones and vibration are master switches above the per-channel choices in
 Settings › Channels:

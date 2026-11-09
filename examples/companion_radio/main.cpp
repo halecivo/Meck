@@ -2021,7 +2021,9 @@ static void meckQsOpenMore(int item) {
     case QS_TONES: case QS_VIBRATE:
     case QS_L_TONES: case QS_L_VIBRATE: row = ROW_CHANNELS_SUBMENU; break;   // per-channel sounds
     case QS_LIGHT:                      row = ROW_BACKLIGHT_BRIGHTNESS; break;
-    case QS_KEYS:                       row = ROW_KB_BACKLIGHT; break;
+  #ifdef MODEM_DATA
+    case QS_DATA:                       row = ROW_MODEM_DATA; break;
+  #endif
     case QS_L_WIFI: case QS_L_GPS: case QS_L_MODEM:
     case QS_L_SAVING: case QS_L_USB:    row = ROW_LOCK_SLEEP; break;
   #ifdef MECK_BLE_LOCK_WINDOWS
@@ -2040,7 +2042,10 @@ static void meckQsOpenMore(int item) {
   ui_task.leaveQuickSettings();
   ui_task.gotoSettingsScreen();
   SettingsScreen* ss = (SettingsScreen*)ui_task.getSettingsScreen();
-  if (!ss->selectRowType((SettingsRowType)row)) ss->selectRowType(ROW_LOCK_SLEEP);   // a row shown only sometimes
+  if (!ss->selectRowType((SettingsRowType)row)) {
+    // A row shown only sometimes (Mobile data: with the modem on)
+    if (item != QS_DATA || !ss->selectRowType(ROW_MODEM_TOGGLE)) ss->selectRowType(ROW_LOCK_SLEEP);
+  }
 }
 
 // After a key or touch on the quick settings: close, or open a tile's page
@@ -4043,10 +4048,24 @@ void meckQsState(QsItem item, QsTileState& st) {
       if (st.on) snprintf(st.line, sizeof(st.line), "%d %%", (int)p->backlight_brightness_pct);
       else line(off);
       break;
-    case QS_KEYS:
-      st.on = keyboardBacklightIsOn();
-      if (st.on) snprintf(st.line, sizeof(st.line), "%d %%", (int)p->kb_backlight_pct);
-      else line(off);
+    case QS_DATA:
+      // The switch only allows it; the web reader brings the link up when it
+      // needs one and WiFi is not there. (Keys light left this grid: both
+      // Shifts switch it.)
+#ifdef MODEM_DATA
+      st.on = ModemManager::dataAllowed();
+      if (!st.on) { line(off); break; }
+      if (modemManager.getState() == ModemState::OFF) { line(MECK_TR("4G is off", "4G d\xC3\xA9sactiv\xC3\xA9")); break; }
+      switch (modemManager.getDataState()) {
+        case DataState::STARTING:
+        case DataState::STOPPING: st.pending = true; line(MECK_TR("Connecting\xE2\x80\xA6", "Connexion\xE2\x80\xA6")); break;
+        case DataState::UP:       line(MECK_TR("Connected", "Connect\xC3\xA9")); break;
+        case DataState::FAILED:   line(MECK_TR("Failed", "\xC3\x89" "chec")); break;
+        default:                  line(MECK_TR("When no WiFi", "Sans WiFi")); break;
+      }
+#else
+      st.available = false;
+#endif
       break;
 
     case QS_L_BLE:
@@ -4107,7 +4126,9 @@ void meckQsSwitch(QsItem item) {
     case QS_TONES:    ui_task.setTonesOn(p->buzzer_quiet); break;
     case QS_VIBRATE:  p->notif_vibrate = !p->notif_vibrate; the_mesh.savePrefs(); break;
     case QS_LIGHT:    meckFrontlightToggle(); break;
-    case QS_KEYS:     toggleKeyboardBacklight(); break;
+#ifdef MODEM_DATA
+    case QS_DATA:     ModemManager::saveDataConfig(!ModemManager::dataAllowed()); break;
+#endif
     case QS_L_BLE: {
 #ifdef MECK_BLE_LOCK_WINDOWS
       // Off: sync windows at the last interval used (5 min at first)

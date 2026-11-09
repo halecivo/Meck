@@ -8,8 +8,10 @@ Status: **untested on a device**, branch `feature/data-4g`.
 
 ## Using it
 
-- Settings → **Mobile data: ON** (shown while the 4G modem is on). Off by
-  default: data costs money. The setting is stored in `/sms/data.cfg`.
+- Settings → **Mobile data: ON** (shown while the 4G modem is on), or the
+  **Mobile data** tile in quick settings (it took the keys light's place;
+  both Shifts still switch that). Off by default: data costs money. The
+  setting is stored in `/sms/data.cfg`.
 - The setting only *allows* data. Nothing connects until the web reader
   needs a network: it tries saved WiFi first, then mobile data, then offers
   a WiFi scan.
