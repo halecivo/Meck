@@ -9,9 +9,12 @@
 // a token, registers itself as a mobile_app device and its sensors.
 //
 // After that only the webhook is used: every 15 minutes, and when the
-// charger is plugged in or out, the sensor states go to HA over WiFi. At
+// charger is plugged in or out, the sensor states go to HA over WiFi, or
+// with no WiFi over mobile data when HA may use it (MeckNet.h; the same
+// interval, the link is brought up for the update and let go after it). At
 // home the internal address is tried first, elsewhere Nabu Casa's cloudhook
-// or the external https address.
+// or the external https address; over 4G only the addresses from outside.
+// Pairing needs WiFi: the phone opens the deck's page on the home network.
 //
 //   OFF --pair--> SCAN --page opened, login--> LOGIN --code back--> WORKING --> DONE
 //    ^             |  no WiFi: NO_WIFI           |                     |
@@ -36,6 +39,7 @@ public:
   static constexpr uint32_t PAIR_WINDOW_MS   = 5UL * 60 * 1000;   // the page and the login
   static constexpr uint32_t POST_INTERVAL_MS = 15UL * 60 * 1000;
   static constexpr uint32_t RETRY_MS         = 2UL * 60 * 1000;   // after a failed update
+  static constexpr uint32_t NET_WAIT_MS      = 90UL * 1000;       // mobile data coming up
   static constexpr int QR_MAX = 37;                                // version 5
 
   void begin();                 // setup(): read NVS
@@ -108,6 +112,9 @@ private:
   int8_t _goodIdx = -1;         // the address that worked, until the network changes
   char _goodSsid[33] = "";
   bool _forceAway = false;      // debug "ha post away"
+  bool _netWait = false;        // an update waits for mobile data to come up
+  uint32_t _netWaitSince = 0;
+  bool _netNoAddrLogged = false;   // said once: no address to use over 4G
   void* _pmLock = nullptr;
   bool _pairAwake = false;
 
@@ -122,6 +129,7 @@ private:
   void mdnsStop();
   void makeQr();
   void workStep();
+  void updateDue();
   void post();
   bool registerSensor(int id, const HaSensorValues& v);
   int webhook(const char* body, char* resp, size_t respLen);

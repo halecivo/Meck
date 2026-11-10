@@ -7,7 +7,8 @@
 // block the mesh radio loop.  Communicates with main loop via lock-free queues.
 //
 // Supports: SMS send/receive, voice call dial/answer/hangup/DTMF,
-//           notification tone playback via AT+CCMXPLAY
+//           notification tone playback via AT+CCMXPLAY,
+//           mobile data (MODEM_DATA): PPP over a CMUX channel, see ModemMux.h
 //
 // Guard: HAS_4G_MODEM (defined only for the 4G build environment)
 // =============================================================================
@@ -25,6 +26,7 @@
 #include "variant.h"
 #include "ApnDatabase.h"
 #include "ModemBundledSounds.h"
+#include "MeckDataUse.h"
 
 // ---------------------------------------------------------------------------
 // Modem pins (from variant.h, always defined for reference)
@@ -69,6 +71,21 @@
 #define MODEM_SLEEP_RETRY_MS (5UL * 60 * 1000)   // AT+CSCLK=1 again after a refusal
 #define MODEM_DTR_WAKE_MS          50      // DTR low until the modem UART listens
 
+// Mobile data: the ESP32 gets an IP interface over the modem (PPP inside a
+// CMUX channel, so SMS and calls keep working). Brought up on demand (web
+// reader, IRC, Home Assistant) when the setting and that app's own 4G switch
+// allow it, dropped when no app holds it any more or after MODEM_DATA_IDLE_MS
+// without traffic: while it is up the modem cannot use UART sleep. MAX only:
+// the Pro 4G build is untested.
+#if defined(LilyGo_TDeck_Pro_Max) && defined(CONFIG_LWIP_PPP_SUPPORT) && !defined(MODEM_NO_DATA)
+  #define MODEM_DATA 1
+#endif
+#define MODEM_DATA_IDLE_MS         (5UL * 60 * 1000)
+#define MODEM_DATA_IDLE_LOCKED_MS  (60UL * 1000)
+#define MODEM_DATA_CONNECT_MS      45000   // ATD*99# to an IP address
+#define MODEM_DATA_RETRY_MS        30000   // after a failed attempt
+#define MODEM_RX_BUFFER            4096    // UART driver ring: ~350 ms at 115200
+
 // Notification tone auto-stop timeout (ms) -- stop playback after this
 // even if no +AUDIOSTATE URC received, to avoid stuck audio
 #define NOTIF_TONE_TIMEOUT_MS  4000
@@ -88,6 +105,15 @@ enum class ModemState {
   DIALING,        // ATD sent, waiting for connect/carrier
   RINGING_IN,     // Incoming call detected (RING URC)
   IN_CALL         // Voice call active
+};
+
+// Mobile data link, separate from ModemState: calls and SMS go on beside it
+enum class DataState : uint8_t {
+  OFF,        // plain AT on the UART
+  STARTING,   // CMUX, ATD*99#, PPP negotiation
+  UP,         // the PPP interface has an IP address
+  STOPPING,
+  FAILED      // the last attempt failed; retried after MODEM_DATA_RETRY_MS
 };
 
 // ---------------------------------------------------------------------------
@@ -262,6 +288,41 @@ public:
 
   static const char* stateToString(ModemState s);
 
+  // --- Mobile data (MODEM_DATA; stubs otherwise) ---
+  // requestData(app): this app wants the link; it comes up if the setting
+  // and the app's own 4G switch allow it (main loop, returns at once; poll
+  // isDataUp()). Calling it again, or traffic, keeps it from the idle
+  // timeout. releaseData(app): this app is done; the link goes down when no
+  // app holds it any more. The idle timeout lets go of every holder.
+  void requestData(uint8_t app = DATA_APP_OTHER);
+  void releaseData(uint8_t app);
+  void releaseAllData();
+  uint8_t dataHolders() const { return _dataHolders; }
+  bool isDataUp() const { return _dataState == DataState::UP; }
+  DataState getDataState() const { return _dataState; }
+  bool dataFailed() const { return _dataState == DataState::FAILED; }
+  static const char* dataStateToString(DataState s);
+  // After WiFi has been on, lwIP may still hold its DNS server: put the
+  // one the carrier gave back while data is the only link
+  void restoreDataDns();
+  void printDataStats();      // debug CLI "data"
+  // Setting (SD file /sms/data.cfg), off by default: data costs money.
+  // Each app also has its own 4G switch, on unless turned off.
+  static bool loadDataConfig();
+  static void saveDataConfig(bool allowed);
+  static bool dataAllowed() { return _dataAllowed; }
+  static bool dataAppAllowed(uint8_t app) {
+    return app == DATA_APP_OTHER || (app < DATA_APP_COUNT && (_dataAppMask & dataAppBit(app)));
+  }
+  static void setDataAppAllowed(uint8_t app, bool allowed);
+  // Usage over 4G: an app tags the traffic of the request it is making
+  // (main loop, see MeckNetUse); the rest goes by dataUseOwner()
+  void setDataTag(uint8_t app) { _dataTag = app; }
+  uint8_t dataTag() const { return _dataTag; }
+  uint32_t dataUsage24h(uint8_t app);   // bytes over 4G in the last 24 hours, since boot
+  // PPP glue (ModemManager.cpp), not for callers
+  void noteDataTraffic(size_t len);
+
   // Persistent enable/disable config (SD file /sms/modem.cfg)
   static bool loadEnabledConfig();
   static void saveEnabledConfig(bool enabled);
@@ -271,6 +332,27 @@ public:
 
 private:
   static bool _enabledInSettings;
+  static bool _dataAllowed;
+  static uint8_t _dataAppMask;
+
+  // Mobile data
+  volatile DataState _dataState = DataState::OFF;
+  volatile uint8_t _dataHolders = 0;         // dataAppBit() of the apps that want the link
+  volatile uint8_t _dataTag = DATA_APP_NONE;
+  DataUsage _dataUse = {};
+  volatile unsigned long _dataLastUse = 0;   // requestData() or real traffic
+  unsigned long _dataStateSince = 0;
+  bool _dataSleepWasOn = false;              // UART sleep to restore afterwards
+  uint32_t _dataSessions = 0, _dataFailures = 0;
+  bool dataBusy() const {
+    return _dataState == DataState::STARTING || _dataState == DataState::UP ||
+           _dataState == DataState::STOPPING;
+  }
+  bool startData();
+  bool stopData(bool failed);   // false: the modem did not come back, power cycle it
+  bool dataTick();              // ditto
+  bool dialData();
+  void stopDataForShutdown();   // main loop, the task is about to be deleted
   volatile ModemState _state = ModemState::OFF;
   bool _battLow = false;
   uint8_t _battLowCount = 0;

@@ -2,6 +2,7 @@
 #if defined(MECK_HA) && MECK_HA
 
 #include "MeckHa.h"
+#include "MeckNet.h"
 #include <Arduino.h>
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
@@ -133,14 +134,24 @@ void MeckHa::save() {
 }
 
 void MeckHa::forget() {
-  if (_refresh[0] && _url[0] && WiFi.status() == WL_CONNECTED) {
-    // Best effort: the device stays in HA until it is deleted there
+  // Best effort: the device stays in HA until it is deleted there. On WiFi
+  // to the address paired with; over 4G to one that answers from outside.
+  const char* base = _url;
+  if (!meckNetWifi()) {
+    base = _ext[0] ? _ext : _remote;
+    char host[96];
+    haUrlHost(base, host, sizeof(host));
+    if (!base[0] || haHostIsLocal(host)) base = "";
+  }
+  if (_refresh[0] && base[0] && meckNetWaitUp(DATA_APP_HA, 45000)) {
     char url[160], body[256], enc[200];
-    snprintf(url, sizeof(url), "%s/auth/revoke", _url);
+    snprintf(url, sizeof(url), "%s/auth/revoke", base);
     haUrlEncode(enc, sizeof(enc), _refresh);
     snprintf(body, sizeof(body), "token=%s", enc);
+    MeckNetUse use(DATA_APP_HA);
     int code = request("POST", url, "application/x-www-form-urlencoded", body, nullptr, nullptr, 0);
     Serial.printf("HA: token revoked (%d)\n", code);
+    meckNetRelease(DATA_APP_HA);
   }
   _url[0] = _int[0] = _ext[0] = _cloud[0] = _remote[0] = _hook[0] = _refresh[0] = _ssid[0] = 0;
   _removed = false;
@@ -534,7 +545,8 @@ int MeckHa::webhook(const char* body, char* resp, size_t respLen) {
   const char* bases[5];
   bool home = atHome();
   int n = haWebhookBases(home, _url, _int, _ext, _cloud, _remote, bases, 5);
-  String ssid = WiFi.SSID();
+  if (!meckNetWifi()) n = haDropLocalBases(bases, n);   // over 4G
+  String ssid = WiFi.SSID();   // "" over 4G: a network of its own for _goodIdx
   if (strcmp(ssid.c_str(), _goodSsid) != 0) { _goodIdx = -1; snprintf(_goodSsid, sizeof(_goodSsid), "%s", ssid.c_str()); }
   // The address that answered last time first, then the usual order
   int order[5], m = 0;
@@ -566,6 +578,7 @@ void MeckHa::post() {
   char* resp = haAlloc(2048);
   if (!body || !resp) { heap_caps_free(body); heap_caps_free(resp); _nextPost = millis() + RETRY_MS; return; }
   pmHold(true);
+  MeckNetUse use(DATA_APP_HA);
   int code = -1;
   if (haBuildUpdate(body, HA_BODY_LEN, v)) code = webhook(body, resp, 2048);
   _lastResult = code;
@@ -583,7 +596,8 @@ void MeckHa::post() {
   }
   pmHold(false);
   _nextPost = millis() + (code == 200 ? POST_INTERVAL_MS : RETRY_MS);
-  Serial.printf("HA: update %d via %s\n", code, _lastBase[0] ? _lastBase : "-");
+  Serial.printf("HA: update %d via %s%s\n", code, _lastBase[0] ? _lastBase : "-",
+                meckNetWifi() ? "" : " (4G)");
   if (_forceAway) { _forceAway = false; _goodIdx = -1; }
   heap_caps_free(body);
   heap_caps_free(resp);
@@ -602,9 +616,54 @@ void MeckHa::loop() {
     mdnsStop();
     awake(false);
   }
-  if (paired() && !_removed && !pairingActive() && WiFi.status() == WL_CONNECTED &&
-      (int32_t)(millis() - _nextPost) >= 0) {
+  if (paired() && !_removed && !pairingActive() && (int32_t)(millis() - _nextPost) >= 0) {
+    updateDue();
+  } else if (_netWait) {
+    meckNetRelease(DATA_APP_HA);   // unpaired or pairing meanwhile
+    _netWait = false;
+  }
+}
+
+// An update is due: on WiFi now; without it over mobile data when HA may
+// use it. The link is asked for without blocking, the update goes once it
+// is up, and HA lets go of it right after (the same 15 minutes either way).
+void MeckHa::updateDue() {
+  if (meckNetUp(DATA_APP_HA)) {
+    if (!meckNetWifi()) meckNetRequest(DATA_APP_HA);   // hold it through the update
     post();
+    if (_netWait || !meckNetWifi()) meckNetRelease(DATA_APP_HA);
+    _netWait = false;
+    return;
+  }
+  if (!_netWait) {
+    if (!meckNet4gAllowed(DATA_APP_HA)) return;   // waits for WiFi, as before
+    // Only home network addresses known: nothing would answer over 4G, so
+    // no paid link for it
+    const char* bases[5];
+    int n = haWebhookBases(false, _url, _int, _ext, _cloud, _remote, bases, 5);
+    if (haDropLocalBases(bases, n) == 0) {
+      if (!_netNoAddrLogged) Serial.println("HA: no address reachable over 4G, waiting for WiFi");
+      _netNoAddrLogged = true;
+      return;
+    }
+    _netNoAddrLogged = false;
+    Serial.println("HA: update due, bringing up mobile data");
+    meckNetRequest(DATA_APP_HA);
+    _netWait = true;
+    _netWaitSince = millis();
+    return;
+  }
+#ifdef MODEM_DATA
+  bool failed = modemManager.dataFailed() && millis() - _netWaitSince > 1000;
+#else
+  bool failed = true;
+#endif
+  if (failed || millis() - _netWaitSince > NET_WAIT_MS) {
+    Serial.println("HA: no mobile data, next try later");
+    meckNetRelease(DATA_APP_HA);
+    _netWait = false;
+    _lastResult = -1;
+    _nextPost = millis() + RETRY_MS;
   }
 }
 
@@ -633,7 +692,7 @@ void MeckHa::pmHold(bool on) {
 int MeckHa::request(const char* method, const char* url, const char* contentType, const char* body,
                     const char* bearer, char* resp, size_t respLen) {
   if (resp && respLen) resp[0] = 0;
-  if (WiFi.status() != WL_CONNECTED) return -1;
+  if (!meckNetUp(DATA_APP_HA)) return -1;
   WiFiClient plain;
   WiFiClientSecure* tls = nullptr;
   HTTPClient http;
@@ -683,6 +742,12 @@ void MeckHa::cmd(const char* arg) {
                   kPhase[_phase], _error[0] ? ", error: " : "", _error);
     Serial.printf("  webhook %s, refresh %s, cloudhook %s, remote %s, at home %s\n", a, b,
                   _cloud[0] ? "yes" : "no", _remote[0] ? "yes" : "no", atHome() ? "yes" : "no");
+    {
+      const char* bases[5];
+      int n = haDropLocalBases(bases, haWebhookBases(false, _url, _int, _ext, _cloud, _remote, bases, 5));
+      Serial.printf("  over 4G: %d address(es), 4G %s for HA%s\n", n,
+                    meckNet4gAllowed(DATA_APP_HA) ? "allowed" : "not allowed", _netWait ? ", waiting for it" : "");
+    }
     if (full) Serial.printf("  url %s\n  internal %s\n  external %s\n", _url, _int, _ext);
     Serial.printf("  last update %d via %s, %lu s ago, next in %lu s\n", _lastResult,
                   _lastBase[0] ? _lastBase : "-",

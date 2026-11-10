@@ -21,7 +21,7 @@
 
 // One per tile: the eight of the Now view, then the eight of When locked
 enum QsItem : uint8_t {
-  QS_BLE, QS_WIFI, QS_GPS, QS_MODEM, QS_TONES, QS_VIBRATE, QS_LIGHT, QS_KEYS,
+  QS_BLE, QS_WIFI, QS_GPS, QS_MODEM, QS_TONES, QS_VIBRATE, QS_LIGHT, QS_DATA,
   QS_L_BLE, QS_L_WIFI, QS_L_GPS, QS_L_MODEM, QS_L_TONES, QS_L_VIBRATE, QS_L_SAVING, QS_L_USB,
   QS_ITEM_COUNT
 };
@@ -67,7 +67,7 @@ private:
       case QS_TONES:   case QS_L_TONES:   return UI2_IC_BELL;
       case QS_VIBRATE: case QS_L_VIBRATE: return UI2_IC_VIBRATE;
       case QS_LIGHT:                      return UI2_IC_SUN;
-      case QS_KEYS:                       return UI2_IC_KEYBOARD;
+      case QS_DATA:                       return UI2_IC_GLOBE;
       case QS_L_SAVING:                   return UI2_IC_MOON;
       case QS_L_USB:                      return UI2_IC_BOLT;
       default:                            return UI2_NO_ICON;
@@ -83,7 +83,7 @@ private:
       case QS_TONES:   case QS_L_TONES:   return MECK_TR("Tones", "Sons");
       case QS_VIBRATE: case QS_L_VIBRATE: return MECK_TR("Vibration", "Vibreur");
       case QS_LIGHT:                      return MECK_TR("Light", "\xC3\x89" "clairage");
-      case QS_KEYS:                       return MECK_TR("Keys light", "LED clavier");
+      case QS_DATA:                       return MECK_TR("Mobile data", "Donn\xC3\xA9es mobiles");
       case QS_L_SAVING:                   return MECK_TR("Power saving", "\xC3\x89" "conomie");
       case QS_L_USB:                      return MECK_TR("On USB", "Sur USB");
       default:                            return "";

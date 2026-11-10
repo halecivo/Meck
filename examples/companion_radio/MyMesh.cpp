@@ -4012,8 +4012,11 @@ void MyMesh::checkCLIRescueCmd() {
         if (_rxlog_count < RXLOG_SIZE) _rxlog_count++;
       }
 #if defined(LilyGo_TDeck_Pro_Max) && HAS_BQ27220
-    } else if (memcmp(cli_command, "pwr", 3) == 0) {
-      // Debug: power measurement ("pwr", "pwrhiz 0|1", "pwrxl gps|1v8 0|1")
+    } else if (memcmp(cli_command, "pwr", 3) == 0 ||
+               strcmp(cli_command, "data") == 0 || memcmp(cli_command, "data ", 5) == 0) {
+      // Debug: power measurement ("pwr", "pwrhiz 0|1", "pwrxl gps|1v8 0|1"),
+      // and mobile data ("data", "data on|off|dns <host>|get <url>"), which
+      // share meckPowerCmd
       extern void meckPowerCmd(const char* cmd);
       meckPowerCmd(cli_command);
 #endif

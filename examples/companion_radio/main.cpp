@@ -110,6 +110,10 @@
 
   #ifdef HAS_4G_MODEM
     #include "ModemManager.h"
+    #ifdef MODEM_DATA
+      #include <WiFi.h>
+      #include <HTTPClient.h>   // debug CLI "data get"
+    #endif
     #include "SMSStore.h"
     #include "SMSContacts.h"
     #include "SMSScreen.h"
@@ -1013,6 +1017,43 @@ static uint32_t _atoi(const char* sp) {
     if (strcmp(cmd, "pwrchg") == 0) { board.chargerDebugPrint(); return; }   // charger + gauge, read-only
 #ifdef HAS_4G_MODEM
     if (strcmp(cmd, "pwrmodem") == 0) { modemManager.printPowerStats(); return; }   // UART sleep, read-only
+    // Mobile data: "data" is read-only; "data on" opens a real packet
+    // session on the SIM (costs data), so only when the user asks for it
+    if (strcmp(cmd, "data") == 0) { modemManager.printDataStats(); return; }
+    if (strcmp(cmd, "data on") == 0) {
+      if (!ModemManager::dataAllowed()) Serial.println("data: not allowed in settings");
+      modemManager.requestData();
+      return;
+    }
+    if (strcmp(cmd, "data off") == 0) { modemManager.releaseAllData(); return; }   // every app's hold
+#ifdef MODEM_DATA
+    // Small checks over the link (data costs money): a DNS lookup, or the
+    // first 256 bytes of a page (use a small one, e.g. http://example.com/)
+    if (strncmp(cmd, "data dns ", 9) == 0) {
+      IPAddress ip;
+      bool ok = Network.hostByName(cmd + 9, ip);
+      Serial.printf("data: %s -> %s\n", cmd + 9, ok ? ip.toString().c_str() : "failed");
+      return;
+    }
+    if (strncmp(cmd, "data get ", 9) == 0) {
+      HTTPClient http;
+      http.setTimeout(10000);
+      http.begin(cmd + 9);
+      int code = http.GET();
+      int got = 0;
+      if (code > 0) {
+        WiFiClient* st = http.getStreamPtr();
+        unsigned long t = millis();
+        while (got < 256 && millis() - t < 5000) {
+          if (st->available()) { st->read(); got++; } else delay(10);
+        }
+      }
+      Serial.printf("data: GET -> %d, size %d, read %d bytes\n", code, code > 0 ? http.getSize() : 0, got);
+      http.end();
+      modemManager.printDataStats();
+      return;
+    }
+#endif
     if (strncmp(cmd, "pwrmodemmv ", 11) == 0) {
       // Test the low-battery 4G cut-off without draining the cell
       modemManager.setTestMilliVolts((uint16_t)atoi(cmd + 11));
@@ -2012,7 +2053,9 @@ static void meckQsOpenMore(int item) {
     case QS_TONES: case QS_VIBRATE:
     case QS_L_TONES: case QS_L_VIBRATE: row = ROW_CHANNELS_SUBMENU; break;   // per-channel sounds
     case QS_LIGHT:                      row = ROW_BACKLIGHT_BRIGHTNESS; break;
-    case QS_KEYS:                       row = ROW_KB_BACKLIGHT; break;
+  #ifdef MODEM_DATA
+    case QS_DATA:                       row = ROW_MODEM_DATA; break;
+  #endif
     case QS_L_WIFI: case QS_L_GPS: case QS_L_MODEM:
     case QS_L_SAVING: case QS_L_USB:    row = ROW_LOCK_SLEEP; break;
   #ifdef MECK_BLE_LOCK_WINDOWS
@@ -2031,7 +2074,10 @@ static void meckQsOpenMore(int item) {
   ui_task.leaveQuickSettings();
   ui_task.gotoSettingsScreen();
   SettingsScreen* ss = (SettingsScreen*)ui_task.getSettingsScreen();
-  if (!ss->selectRowType((SettingsRowType)row)) ss->selectRowType(ROW_LOCK_SLEEP);   // a row shown only sometimes
+  if (!ss->selectRowType((SettingsRowType)row)) {
+    // A row shown only sometimes (Mobile data: with the modem on)
+    if (item != QS_DATA || !ss->selectRowType(ROW_MODEM_TOGGLE)) ss->selectRowType(ROW_LOCK_SLEEP);
+  }
 }
 
 // After a key or touch on the quick settings: close, or open a tile's page
@@ -3420,6 +3466,7 @@ void setup() {
 #else
       bool modemEnabled = ModemManager::loadEnabledConfig();
 #endif
+      ModemManager::loadDataConfig();
 #ifdef MODEM_MIN_MILLIVOLTS
       // A low cell keeps 4G off from the start (it comes on after charging)
       modemManager.checkBattery(board.getBattMilliVolts(), true);
@@ -4033,10 +4080,24 @@ void meckQsState(QsItem item, QsTileState& st) {
       if (st.on) snprintf(st.line, sizeof(st.line), "%d %%", (int)p->backlight_brightness_pct);
       else line(off);
       break;
-    case QS_KEYS:
-      st.on = keyboardBacklightIsOn();
-      if (st.on) snprintf(st.line, sizeof(st.line), "%d %%", (int)p->kb_backlight_pct);
-      else line(off);
+    case QS_DATA:
+      // The switch only allows it; the web reader brings the link up when it
+      // needs one and WiFi is not there. (Keys light left this grid: both
+      // Shifts switch it.)
+#ifdef MODEM_DATA
+      st.on = ModemManager::dataAllowed();
+      if (!st.on) { line(off); break; }
+      if (modemManager.getState() == ModemState::OFF) { line(MECK_TR("4G is off", "4G d\xC3\xA9sactiv\xC3\xA9")); break; }
+      switch (modemManager.getDataState()) {
+        case DataState::STARTING:
+        case DataState::STOPPING: st.pending = true; line(MECK_TR("Connecting\xE2\x80\xA6", "Connexion\xE2\x80\xA6")); break;
+        case DataState::UP:       line(MECK_TR("Connected", "Connect\xC3\xA9")); break;
+        case DataState::FAILED:   line(MECK_TR("Failed", "\xC3\x89" "chec")); break;
+        default:                  line(MECK_TR("When no WiFi", "Sans WiFi")); break;
+      }
+#else
+      st.available = false;
+#endif
       break;
 
     case QS_L_BLE:
@@ -4097,7 +4158,9 @@ void meckQsSwitch(QsItem item) {
     case QS_TONES:    ui_task.setTonesOn(p->buzzer_quiet); break;
     case QS_VIBRATE:  p->notif_vibrate = !p->notif_vibrate; the_mesh.savePrefs(); break;
     case QS_LIGHT:    meckFrontlightToggle(); break;
-    case QS_KEYS:     toggleKeyboardBacklight(); break;
+#ifdef MODEM_DATA
+    case QS_DATA:     ModemManager::saveDataConfig(!ModemManager::dataAllowed()); break;
+#endif
     case QS_L_BLE: {
 #ifdef MECK_BLE_LOCK_WINDOWS
       // Off: sync windows at the last interval used (5 min at first)
@@ -7019,10 +7082,11 @@ void handleKeyboardInput() {
   if (ui_task.isOnSettingsScreen()) {
     SettingsScreen* settings = (SettingsScreen*)ui_task.getSettingsScreen();
 
-    // Shift+Del: exit settings (when not editing)
+    // Shift+Del: exit settings (when not editing). Inside a sub-screen it
+    // only goes back to the parent list, which the settings screen handles.
     if (!settings->isEditing() && (key == KEY_CANCEL || key == 'q')) {
-      if (settings->hasRadioChanges()) {
-        // Let settings show "apply changes?" confirm dialog
+      if (settings->inSubScreen() || settings->hasRadioChanges()) {
+        // Back to the parent list, or the "apply changes?" confirm dialog
         ui_task.injectKey(key);
       } else {
         Serial.println("Exiting settings");

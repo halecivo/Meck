@@ -120,8 +120,8 @@ private:
     }
     if (meckHa.removed()) return MECK_TR("Removed in Home Assistant. Enter: pair again.",
                                          "Supprim\xC3\xA9 dans Home Assistant. Entr\xC3\xA9" "e : r\xC3\xA9" "associer.");
-    if (!meckHa.paired()) return MECK_TR("The deck reports its battery and mesh to Home Assistant over WiFi.",
-                                         "Le deck envoie batterie et mesh \xC3\xA0 Home Assistant par WiFi.");
+    if (!meckHa.paired()) return MECK_TR("The deck reports its battery and mesh to Home Assistant over WiFi or 4G.",
+                                         "Le deck envoie batterie et mesh \xC3\xA0 Home Assistant par WiFi ou 4G.");
     return nullptr;
   }
 

@@ -179,6 +179,19 @@ static inline int haWebhookBases(bool atHome, const char* paired, const char* in
   return k;
 }
 
+// Over mobile data the home network's own addresses cannot answer: drop
+// them from the list (keeping the order), so no paid bytes and no connect
+// timeouts go to them. Returns the new count.
+static inline int haDropLocalBases(const char** bases, int n) {
+  int k = 0;
+  for (int i = 0; i < n; i++) {
+    char host[96];
+    haUrlHost(bases[i], host, sizeof(host));
+    if (!haHostIsLocal(host)) bases[k++] = bases[i];
+  }
+  return k;
+}
+
 // The cloudhook is a full webhook URL; the others are base URLs that get
 // "/api/webhook/<id>"
 static inline void haWebhookUrl(char* out, size_t n, const char* base, const char* cloudhook,
