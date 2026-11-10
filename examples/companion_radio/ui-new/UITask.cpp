@@ -3016,6 +3016,14 @@ void UITask::setCurrScreen(UIScreen* c) {
     if (gd->fastPartialsSinceFull() >= EINK_FAST_FULL_EVERY) gd->requestFullRefresh();
   }
 #endif
+#if defined(MECK_WEB_READER) && defined(MODEM_DATA)
+  // The web reader is the only user of mobile data. Leaving it by any path
+  // (q, home key, lock, uigo) must take the link down now, not after the idle
+  // timeout; IRC isn't polled off-screen, so nothing is lost.
+  if (web_reader != nullptr && curr == web_reader && c != web_reader) {
+    modemManager.releaseData();
+  }
+#endif
   curr = c;
   _alert_expiry = 0;  // Dismiss any active toast — prevents stale overlay from
                        // triggering extra 644ms e-ink refreshes on the new screen
