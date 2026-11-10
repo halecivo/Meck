@@ -92,7 +92,9 @@ ESP32 UART ── ModemMux (AT+CMUX, GSM 07.10 basic mode)
 - 115200 baud, no RTS/CTS on the MAX: about 10 kB/s at best.
 - The main loop blocks for up to 60 s while the web reader waits for the
   link (as it already does for WiFi connects and fetches).
-- No status-bar indicator yet; the web reader's title shows `4G`.
+- Status header (UI v2): an up/down arrows icon next to the WiFi one while
+  traffic goes over 4G (the link is up and WiFi not joined, even with the
+  WiFi radio on). The classic UI has none; the web reader's title shows `4G`.
 - T-Deck Pro 4G: not enabled (`MODEM_DATA` is MAX only).
 
 ## To test on the device

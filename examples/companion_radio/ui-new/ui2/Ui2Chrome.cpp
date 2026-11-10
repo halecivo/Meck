@@ -22,6 +22,7 @@ void statusHeader(Ui2Canvas& c) {
   const Ui2Icon conn[] = {
     st.gpsOn ? (st.gpsFix ? UI2_IC_GPS : UI2_IC_GPSNOFIX) : UI2_NO_ICON,
     st.wifiOn ? wifiIcons[st.wifiLevel > 3 ? 3 : st.wifiLevel] : UI2_NO_ICON,
+    st.mobileData ? UI2_IC_DATA : UI2_NO_ICON,
     st.bleConnected ? UI2_IC_BLE : UI2_NO_ICON,
   };
   for (Ui2Icon ic : conn) {

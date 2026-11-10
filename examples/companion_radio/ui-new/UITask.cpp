@@ -2986,6 +2986,11 @@ void UITask::updateUi2Status() {
     st.wifiLevel = rssi >= -60 ? 3 : rssi >= -72 ? 2 : 1;
   }
 #endif
+#ifdef MODEM_DATA
+  // The link may stay up a moment after WiFi joins; the icon is for "this
+  // costs mobile data now"
+  st.mobileData = modemManager.isDataUp() && WiFi.status() != WL_CONNECTED;
+#endif
   st.gpsOn = getGPSState();
 #if ENV_INCLUDE_GPS == 1
   LocationProvider* gpsLoc = st.gpsOn ? sensors.getLocationProvider() : nullptr;
