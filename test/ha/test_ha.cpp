@@ -105,6 +105,19 @@ static void testWebhookOrder() {
   n = haWebhookBases(false, paired, nullptr, nullptr, nullptr, nullptr, out, 5);
   CHECK(n == 1);
 
+  // Over mobile data: the home network's addresses are left out, order kept
+  n = haWebhookBases(false, "http://192.168.1.20:8123", "http://homeassistant.local:8123", external,
+                     "https://hooks.example.net/x", "https://remote.example.net", out, 5);
+  CHECK(n == 5);
+  n = haDropLocalBases(out, n);
+  CHECK(n == 3);
+  CHECK_STR(out[0], "https://hooks.example.net/x");
+  CHECK_STR(out[1], "https://remote.example.net");
+  CHECK_STR(out[2], external);
+  out[0] = "http://10.0.0.5:8123";
+  CHECK(haDropLocalBases(out, 1) == 0);
+  CHECK(haDropLocalBases(out, 0) == 0);
+
   char url[128];
   haWebhookUrl(url, sizeof(url), external, "https://hooks.example.net/x", "abc");
   CHECK_STR(url, "https://ha.example.com/api/webhook/abc");

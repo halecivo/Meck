@@ -5,7 +5,8 @@ and report its battery and mesh state as sensors. You log in by scanning a
 QR code on the deck with your phone; nothing has to be typed on the deck.
 
 Only in the T-Deck MAX builds with WiFi (`meck_max_ble_wifi`, `meck_max_ui2`).
-Nothing is sent over LoRa: all of it goes over WiFi to Home Assistant.
+Nothing is sent over LoRa: all of it goes over WiFi to Home Assistant, or
+over 4G mobile data when there is no WiFi (see below).
 
 ## Pairing
 
@@ -43,10 +44,16 @@ with the name of the node.
 | Last LoRa packet | time of the last packet heard (diagnostic) |
 
 The deck sends them every 15 minutes, and about 10 seconds after the
-charger is plugged in or out. Only while WiFi is on: the deck does not turn
-WiFi on for this. When it locks, WiFi stays on if the lock keeps it (the
-default, see quick settings); the updates then go on in the automatic light
-sleep.
+charger is plugged in or out. Over WiFi when it is joined: the deck does
+not turn WiFi on for this. When it locks, WiFi stays on if the lock keeps it
+(the default, see quick settings); the updates then go on in the automatic
+light sleep.
+
+With no WiFi the update goes over 4G mobile data when **Mobile data** is on
+and Home Assistant has 4G allowed under **Settings > Mobile data usage**
+([mobile-data.md](mobile-data.md)). The deck brings the link up for the
+update and lets go of it right after; the interval stays 15 minutes. If the
+link does not come up within 90 s, it tries again 2 minutes later.
 
 ## Inside and outside the home network
 
@@ -62,7 +69,12 @@ the phone, the GPS or the 4G modem). A host that only exists inside a home
 network (a `192.168.x.x`-style address or a `.local` name) may have a
 self-signed certificate, which is accepted.
 
-Mobile data through the 4G modem is not used yet.
+Over 4G only the addresses reachable from the internet are tried (the
+cloudhook, the remote address, the external address); the home network's
+own addresses are skipped. When Home Assistant has no such address (no
+external URL, no Nabu Casa), the deck does not use 4G for it at all and
+waits for WiFi. Pairing needs WiFi: the phone opens a page on the deck over
+the local network.
 
 ## The screen when paired
 
