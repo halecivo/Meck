@@ -24,7 +24,10 @@ ModemManager modemManager;
   #include <WiFi.h>
   #include <esp_netif.h>
   #include <esp_netif_ppp.h>
+  #include <esp_netif_net_stack.h>   // esp_netif_get_netif_impl(): the lwIP netif
   #include <esp_event.h>
+  #include <lwip/netif.h>
+  #include <lwip/dns.h>
   // The AT code talks to DLC 1 while the mux is on, to Serial1 otherwise
   static ModemMux modemMux;
   static ModemAtPort modemAtPort(Serial1, modemMux);
@@ -2062,6 +2065,42 @@ static bool pppCreate() {
   return true;
 }
 
+// esp_netif makes an interface lwIP's default route only when it gets an
+// address with its link up, and lwIP's PPP sets the address (IPCP sifaddr)
+// before the link (sifup). So the PPP netif never became the default and
+// nothing could leave over it: DNS failed without sending a packet. Set it
+// in lwIP directly, and only when no other interface carries the route;
+// esp_netif_set_default_netif() would stick and keep WiFi from taking the
+// route back when it connects.
+static esp_err_t pppSetDefault(void*) {
+  struct netif* n = (struct netif*)esp_netif_get_netif_impl(pppNetif);
+  struct netif* d = netif_default;
+  if (n && d != n && (!d || !netif_is_up(d) || !netif_is_link_up(d))) netif_set_default(n);
+  return ESP_OK;
+}
+
+struct NetRoute { char name[8]; bool up, link, ppp; char dns[40]; };
+
+// lwIP thread, read-only: the route and name server lwIP uses right now
+static esp_err_t pppReadRoute(void* ctx) {
+  NetRoute* r = (NetRoute*)ctx;
+  struct netif* d = netif_default;
+  if (d) snprintf(r->name, sizeof(r->name), "%c%c%u", d->name[0], d->name[1], (unsigned)d->num);
+  else strcpy(r->name, "none");
+  r->up = d && netif_is_up(d);
+  r->link = d && netif_is_link_up(d);
+  r->ppp = d && d == (struct netif*)esp_netif_get_netif_impl(pppNetif);
+  ipaddr_ntoa_r(dns_getserver(0), r->dns, sizeof(r->dns));
+  return ESP_OK;
+}
+
+static void pppPrintRoute(const char* prefix) {
+  NetRoute r = {};
+  if (!pppNetif || esp_netif_tcpip_exec(pppReadRoute, &r) != ESP_OK) return;
+  Serial.printf("%sroute %s%s (up %d, link %d), dns %s\n", prefix, r.name,
+                r.ppp ? " = ppp" : "", (int)r.up, (int)r.link, r.dns);
+}
+
 void ModemManager::noteDataTraffic(size_t len) {
   if (len >= DATA_USE_MIN_BYTES) _dataLastUse = millis();
 }
@@ -2094,6 +2133,9 @@ bool ModemManager::dataTick() {
 
     case DataState::STARTING:
       if (pppGotIp) {
+        pppPrintRoute("[Data] before: ");
+        esp_netif_tcpip_exec(pppSetDefault, nullptr);
+        pppPrintRoute("[Data] ");
         _dataState = DataState::UP;
         _dataStateSince = millis();
         _dataLastUse = millis();
@@ -2289,6 +2331,7 @@ void ModemManager::stopDataForShutdown() {
 void ModemManager::restoreDataDns() {
   if (!isDataUp() || !pppNetif || !pppDns.ip.u_addr.ip4.addr) return;
   if (WiFi.status() == WL_CONNECTED) return;
+  esp_netif_tcpip_exec(pppSetDefault, nullptr);   // WiFi may have just let go of it
   esp_netif_dns_info_t cur;
   if (esp_netif_get_dns_info(pppNetif, ESP_NETIF_DNS_MAIN, &cur) == ESP_OK &&
       cur.ip.u_addr.ip4.addr == pppDns.ip.u_addr.ip4.addr) return;
@@ -2309,6 +2352,7 @@ void ModemManager::printDataStats() {
                 (unsigned long)pppRxBytes, (unsigned long)pppTxBytes,
                 (unsigned long)modemMux.rxBytes(), (unsigned long)modemMux.txBytes(),
                 (unsigned long)modemMux.badFrames());
+  pppPrintRoute("data: ");
 }
 
 #else  // !MODEM_DATA
