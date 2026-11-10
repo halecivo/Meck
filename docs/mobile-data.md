@@ -67,14 +67,24 @@ ESP32 UART ── ModemMux (AT+CMUX, GSM 07.10 basic mode)
 
 ## To test on the device
 
-Each of these uses real mobile data, so only with the user's agreement:
+Each step uses real mobile data; they are ordered from the cheapest. The
+`data` counters (`ppp rx/tx`) show what each step cost. Nothing on the deck
+sends over PPP by itself (no LCP echo, SNTP or mDNS; Home Assistant only
+uses WiFi), so an idle link costs nothing until the idle timeout drops it.
+Carriers may round each session up (often to 1 kB or more), so keep to few
+sessions.
 
-1. `data on` with the setting on: log shows CMUX open, `CONNECT`, an IP and
-   DNS; `data` shows the counters. `data off` returns to `UART sleep enabled`.
-2. Web reader with WiFi off: a page loads over 4G.
-3. While data is up: an incoming SMS arrives and a call rings (URCs on
-   DLC 1). If not, the A7682E may route URCs to another channel
-   (`AT+CATR`).
-4. Idle timeout: `pwrmodem` shows UART sleep again afterwards.
-5. WiFi + 4G: pages go over WiFi, 4G drops as idle.
-6. Power log (`pwrlog`) during a session and after it.
+1. Setting on, WiFi off, `data on`: the log shows CMUX open, `CONNECT`, an
+   IP and DNS. Only PPP negotiation (well under 1 kB). `data`, then
+   `data off`: back to `UART sleep enabled`, `pwrmodem` confirms.
+2. `data on`, `data dns example.com`: one DNS lookup (~100 B).
+3. `data get http://example.com/`: a 1.3 kB page, first 256 bytes read.
+   `data off`.
+4. While data is up (no traffic needed): an incoming SMS arrives and a call
+   rings (URCs on DLC 1). If not, the A7682E may route URCs to another
+   channel (`AT+CATR`).
+5. Idle timeout: leave it up with nothing running, it drops after 5 min (1
+   min locked); `pwrmodem` shows UART sleep again.
+6. Only then the web reader with WiFi off, on a light page (e.g.
+   `http://example.com/`; DuckDuckGo lite results are ~20 kB).
+7. WiFi + 4G: pages go over WiFi, 4G drops as idle.

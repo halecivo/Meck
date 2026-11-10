@@ -110,6 +110,10 @@
 
   #ifdef HAS_4G_MODEM
     #include "ModemManager.h"
+    #ifdef MODEM_DATA
+      #include <WiFi.h>
+      #include <HTTPClient.h>   // debug CLI "data get"
+    #endif
     #include "SMSStore.h"
     #include "SMSContacts.h"
     #include "SMSScreen.h"
@@ -1022,6 +1026,34 @@ static uint32_t _atoi(const char* sp) {
       return;
     }
     if (strcmp(cmd, "data off") == 0) { modemManager.releaseData(); return; }
+#ifdef MODEM_DATA
+    // Small checks over the link (data costs money): a DNS lookup, or the
+    // first 256 bytes of a page (use a small one, e.g. http://example.com/)
+    if (strncmp(cmd, "data dns ", 9) == 0) {
+      IPAddress ip;
+      bool ok = Network.hostByName(cmd + 9, ip);
+      Serial.printf("data: %s -> %s\n", cmd + 9, ok ? ip.toString().c_str() : "failed");
+      return;
+    }
+    if (strncmp(cmd, "data get ", 9) == 0) {
+      HTTPClient http;
+      http.setTimeout(10000);
+      http.begin(cmd + 9);
+      int code = http.GET();
+      int got = 0;
+      if (code > 0) {
+        WiFiClient* st = http.getStreamPtr();
+        unsigned long t = millis();
+        while (got < 256 && millis() - t < 5000) {
+          if (st->available()) { st->read(); got++; } else delay(10);
+        }
+      }
+      Serial.printf("data: GET -> %d, size %d, read %d bytes\n", code, code > 0 ? http.getSize() : 0, got);
+      http.end();
+      modemManager.printDataStats();
+      return;
+    }
+#endif
     if (strncmp(cmd, "pwrmodemmv ", 11) == 0) {
       // Test the low-battery 4G cut-off without draining the cell
       modemManager.setTestMilliVolts((uint16_t)atoi(cmd + 11));
