@@ -8,8 +8,9 @@ inside the home network does not (the WiFi companion's app server, Home
 Assistant pairing).
 
 Status: tested on a T-Deck MAX: the link, the browser, SMS/calls beside
-it, the per-app switches and usage screen, and a Home Assistant update over
-4G. Not yet: IRC over 4G, the browser's switch off. Branch `feature/data-4g`.
+it, the per-app switches and usage screen, a Home Assistant update over 4G
+and the status icon. Not yet: IRC over 4G, the browser's switch off.
+Branch `feature/data-4g`.
 
 ## Using it
 
