@@ -235,7 +235,11 @@ enum SettingsRowType : uint8_t {
   #ifdef HAS_4G_MODEM
   ROW_MODEM_TOGGLE,   // 4G modem enable/disable toggle (4G builds only)
   #ifdef MODEM_DATA
-  ROW_MODEM_DATA,     // Mobile data allowed (web reader over 4G when no WiFi)
+  ROW_MODEM_DATA,     // Mobile data allowed (the apps over 4G when no WiFi)
+  ROW_DATA_USAGE_SUBMENU, // Folder row: per-app 4G switches and usage
+  ROW_DATA_APP,       // An app's 4G switch and its usage; param = DataApp
+  ROW_DATA_OTHER,     // Usage that belongs to no app (read-only)
+  ROW_DATA_TOTAL,     // All of it (read-only)
   #endif
   // ROW_RINGTONE,       // Incoming call ringtone toggle (4G builds only)
   #endif
@@ -335,6 +339,7 @@ enum SubScreen : uint8_t {
   #endif
   SUB_EXPERIMENTAL,   // Experimental Features sub-screen
   SUB_SOS,            // SOS: button and the channels it goes to
+  SUB_DATA_USAGE,     // Mobile data: each app's 4G switch and its last 24 h
 };
 
 // Delete all contacts (Experimental Features) overlay phases
@@ -641,6 +646,19 @@ private:
         if (the_mesh.getChannel(i, ch) && (i == 0 || ch.name[0] != '\0')) addRow(ROW_SOS_CHANNEL, i);
       }
 #endif
+#ifdef MODEM_DATA
+    } else if (_subScreen == SUB_DATA_USAGE) {
+      // --- Mobile data: the apps that can use it, then the rest ---
+  #ifdef MECK_WEB_READER
+      addRow(ROW_DATA_APP, DATA_APP_BROWSER);
+      addRow(ROW_DATA_APP, DATA_APP_IRC);
+  #endif
+  #if defined(MECK_HA) && MECK_HA
+      addRow(ROW_DATA_APP, DATA_APP_HA);
+  #endif
+      addRow(ROW_DATA_OTHER);
+      addRow(ROW_DATA_TOTAL);
+#endif
     } else {
       // --- Top-level settings list ---
 #if defined(LilyGo_TDeck_Pro_Max)
@@ -692,7 +710,10 @@ private:
       #ifdef HAS_4G_MODEM
       addRow(ROW_MODEM_TOGGLE);
       #ifdef MODEM_DATA
-      if (_modemEnabled) addRow(ROW_MODEM_DATA);
+      if (_modemEnabled) {
+        addRow(ROW_MODEM_DATA);
+        addRow(ROW_DATA_USAGE_SUBMENU);
+      }
       #endif
       #endif
 
@@ -745,12 +766,33 @@ private:
     #ifdef HAS_4G_MODEM
       && t != ROW_IMEI && t != ROW_OPERATOR_INFO
     #endif
+    #ifdef MODEM_DATA
+      && t != ROW_DATA_OTHER && t != ROW_DATA_TOTAL
+    #endif
     ;  // ROW_CONTACTS_SUBMENU and ROW_CHANNELS_SUBMENU ARE selectable
   }
 
+#ifdef MODEM_DATA
+  static const char* dataAppName(uint8_t app) {
+    switch (app) {
+      case DATA_APP_BROWSER: return MECK_TR("Web browser", "Navigateur");
+      case DATA_APP_IRC:     return MECK_TR("IRC chat", "Chat IRC");
+      case DATA_APP_HA:      return "Home Assistant";
+      default:               return MECK_TR("Other", "Autre");
+    }
+  }
+#endif
+
   void skipNonSelectable(int dir) {
+    const int from = _cursor;
     while (_cursor >= 0 && _cursor < _numRows && !isSelectable(_cursor)) {
       _cursor += dir;
+    }
+    if (_cursor < 0 || _cursor >= _numRows) {
+      // Read-only rows to the end of the list (mobile data usage): the
+      // nearest selectable row the other way
+      _cursor = from;
+      while (_cursor >= 0 && _cursor < _numRows && !isSelectable(_cursor)) _cursor -= dir;
     }
     if (_cursor < 0) _cursor = 0;
     if (_cursor >= _numRows) _cursor = _numRows - 1;
@@ -2481,6 +2523,38 @@ public:
         }
         break;
       }
+
+      case ROW_DATA_USAGE_SUBMENU:
+        display.setColor(selected ? DisplayDriver::DARK : DisplayDriver::GREEN);
+        display.print(MECK_TR("Mobile data usage >>", "Conso. donn\xC3\xA9" "es mobiles >>"));
+        break;
+
+      case ROW_DATA_APP: {
+        uint8_t app = _rows[i].param;
+        snprintf(tmp, sizeof(tmp), "%s: %s", dataAppName(app),
+                 ModemManager::dataAppAllowed(app) ? MECK_TR("ON", "OUI") : MECK_TR("OFF", "NON"));
+        display.print(tmp);
+        char used[16], hint[32];
+        dataFormatBytes(used, sizeof(used), modemManager.dataUsage24h(app));
+        snprintf(hint, sizeof(hint), MECK_TR("24 h: %s", "24 h : %s"), used);
+        display.setCursor(display.width() - display.getTextWidth(hint) - 2, y);
+        display.print(hint);
+        break;
+      }
+
+      case ROW_DATA_OTHER:
+      case ROW_DATA_TOTAL: {
+        uint32_t b = modemManager.dataUsage24h(DATA_APP_OTHER);
+        if (_rows[i].type == ROW_DATA_TOTAL)
+          for (uint8_t a = DATA_APP_BROWSER; a < DATA_APP_COUNT; a++) b += modemManager.dataUsage24h(a);
+        char used[16];
+        dataFormatBytes(used, sizeof(used), b);
+        snprintf(tmp, sizeof(tmp), "%s: %s",
+                 _rows[i].type == ROW_DATA_TOTAL ? MECK_TR("Total, 24 h", "Total, 24 h") : MECK_TR("Other, 24 h", "Autre, 24 h"),
+                 used);
+        display.print(tmp);
+        break;
+      }
       #endif
 
       //case ROW_RINGTONE:
@@ -3330,6 +3404,7 @@ public:
   #endif
     else if (_subScreen == SUB_EXPERIMENTAL) title = MECK_TR("Experimental", "Exp\xC3\xA9rimental");
     else if (_subScreen == SUB_SOS) title = MECK_TR("Settings \xC2\xB7 SOS", "R\xC3\xA9glages \xC2\xB7 SOS");
+    else if (_subScreen == SUB_DATA_USAGE) title = MECK_TR("Mobile data", "Donn\xC3\xA9" "es mobiles");
 
     int start, end, page, pages;
     v2Page(_cursor, start, end, page, pages);
@@ -3433,6 +3508,8 @@ public:
     #endif
     } else if (_subScreen == SUB_EXPERIMENTAL) {
       display.print(MECK_TR("Settings > Experimental", "Param\xC3\xA8tres > Exp\xC3\xA9rimental"));
+    } else if (_subScreen == SUB_DATA_USAGE) {
+      display.print(MECK_TR("Settings > Mobile data", "Param\xC3\xA8tres > Donn\xC3\xA9" "es mobiles"));
     } else {
       display.print(MECK_TR("Settings", "Param\xC3\xA8tres"));
     }
@@ -5139,11 +5216,26 @@ public:
           break;
         #ifdef MODEM_DATA
         case ROW_MODEM_DATA:
-          // Only allows it: the web reader brings the link up when it needs
-          // one and WiFi is not there
+          // Only allows it: an app brings the link up when it needs one and
+          // WiFi is not there
           ModemManager::saveDataConfig(!ModemManager::dataAllowed());
           Serial.printf("Settings: mobile data %s\n", ModemManager::dataAllowed() ? "ALLOWED" : "OFF");
           break;
+        case ROW_DATA_USAGE_SUBMENU:
+          _savedTopCursor = _cursor;
+          _subScreen = SUB_DATA_USAGE;
+          _cursor = 0;
+          _scrollTop = 0;
+          rebuildRows();
+          Serial.println("Settings: entered mobile data usage");
+          break;
+        case ROW_DATA_APP: {
+          uint8_t app = _rows[_cursor].param;
+          ModemManager::setDataAppAllowed(app, !ModemManager::dataAppAllowed(app));
+          Serial.printf("Settings: 4G for app %u %s\n", (unsigned)app,
+                        ModemManager::dataAppAllowed(app) ? "ALLOWED" : "OFF");
+          break;
+        }
         #endif
        // case ROW_RINGTONE:
        //   _prefs->ringtone_enabled = _prefs->ringtone_enabled ? 0 : 1;

@@ -26,6 +26,7 @@ ModemManager modemManager;
   #include <esp_netif_ppp.h>
   #include <esp_netif_net_stack.h>   // esp_netif_get_netif_impl(): the lwIP netif
   #include <esp_event.h>
+  #include <esp_timer.h>
   #include <lwip/netif.h>
   #include <lwip/dns.h>
   // The AT code talks to DLC 1 while the mux is on, to Serial1 otherwise
@@ -83,7 +84,7 @@ void ModemManager::begin() {
   _apn[0] = '\0';
   strcpy(_apnSource, "none");
   _dataState = DataState::OFF;
-  _dataWanted = false;
+  _dataHolders = 0;
 
   // Create FreeRTOS primitives
   _sendQueue   = xQueueCreate(MODEM_SEND_QUEUE_SIZE, sizeof(SMSOutgoing));
@@ -128,7 +129,7 @@ void ModemManager::shutdown() {
 
 #ifdef MODEM_DATA
   // Out of mux mode first, or AT+CPOF would not reach the modem as AT
-  _dataWanted = false;
+  _dataHolders = 0;
   if (_dataState != DataState::OFF) {
     stopDataForShutdown();
   }
@@ -1942,27 +1943,43 @@ bool ModemManager::doSendSMS(const char* phone, const char* body) {
 #define DATA_CONFIG_FILE "/sms/data.cfg"
 
 bool ModemManager::_dataAllowed = false;
+uint8_t ModemManager::_dataAppMask = 0xFF;
 
 bool ModemManager::loadDataConfig() {
   File f = SD.open(DATA_CONFIG_FILE, FILE_READ);
-  char c = '0';
+  char s[DATA_APP_COUNT + 2] = "";
   if (f) {
-    if (f.available()) c = f.read();
+    size_t n = f.read((uint8_t*)s, sizeof(s) - 1);
+    s[n] = 0;
     f.close();
   }
-  _dataAllowed = (c == '1');
+  dataConfigParse(s, _dataAllowed, _dataAppMask);
   return _dataAllowed;
+}
+
+static void writeDataConfig(bool allowed, uint8_t appMask) {
+  char s[DATA_APP_COUNT + 2];
+  dataConfigFormat(s, sizeof(s), allowed, appMask);
+  if (!SD.exists("/sms")) SD.mkdir("/sms");
+  File f = SD.open(DATA_CONFIG_FILE, FILE_WRITE);
+  if (f) {
+    f.print(s);
+    f.close();
+  }
 }
 
 void ModemManager::saveDataConfig(bool allowed) {
   _dataAllowed = allowed;
-  if (!SD.exists("/sms")) SD.mkdir("/sms");
-  File f = SD.open(DATA_CONFIG_FILE, FILE_WRITE);
-  if (f) {
-    f.print(allowed ? '1' : '0');
-    f.close();
-  }
-  if (!allowed) modemManager.releaseData();
+  writeDataConfig(_dataAllowed, _dataAppMask);
+  if (!allowed) modemManager.releaseAllData();
+}
+
+void ModemManager::setDataAppAllowed(uint8_t app, bool allowed) {
+  if (app == DATA_APP_OTHER || app >= DATA_APP_COUNT) return;
+  if (allowed) _dataAppMask |= dataAppBit(app);
+  else _dataAppMask &= (uint8_t)~dataAppBit(app);
+  writeDataConfig(_dataAllowed, _dataAppMask);
+  if (!allowed) modemManager.releaseData(app);
 }
 
 const char* ModemManager::dataStateToString(DataState s) {
@@ -2101,24 +2118,52 @@ static void pppPrintRoute(const char* prefix) {
                 r.ppp ? " = ppp" : "", (int)r.up, (int)r.link, r.dns);
 }
 
+// Usage buckets: written from the lwIP thread (tx) and the modem task (rx),
+// read from the main loop
+static portMUX_TYPE dataUseMux = portMUX_INITIALIZER_UNLOCKED;
+
+static uint32_t dataUseHour() { return (uint32_t)(esp_timer_get_time() / 3600000000LL); }
+
 void ModemManager::noteDataTraffic(size_t len) {
   if (len >= DATA_USE_MIN_BYTES) _dataLastUse = millis();
+  uint8_t owner = dataUseOwner(_dataTag, _dataHolders);
+  uint32_t hour = dataUseHour();
+  portENTER_CRITICAL(&dataUseMux);
+  _dataUse.add(owner, (uint32_t)len, hour);
+  portEXIT_CRITICAL(&dataUseMux);
 }
 
-void ModemManager::requestData() {
-  if (!_dataAllowed || !_taskHandle) return;
+uint32_t ModemManager::dataUsage24h(uint8_t app) {
+  uint32_t hour = dataUseHour();
+  portENTER_CRITICAL(&dataUseMux);
+  uint32_t b = _dataUse.last24h(app, hour);
+  portEXIT_CRITICAL(&dataUseMux);
+  return b;
+}
+
+void ModemManager::requestData(uint8_t app) {
+  if (!_dataAllowed || !dataAppAllowed(app) || app >= DATA_APP_COUNT || !_taskHandle) return;
   _dataLastUse = millis();
-  if (!_dataWanted) {
-    _dataWanted = true;
+  uint8_t bit = dataAppBit(app);
+  if (_dataHolders & bit) return;
+  bool first = _dataHolders == 0;
+  _dataHolders |= bit;
+  if (first) {
     // A new request is a new try after a failure
     if (_dataState == DataState::FAILED) _dataState = DataState::OFF;
     xTaskNotifyGive(_taskHandle);
   }
 }
 
-void ModemManager::releaseData() {
-  if (!_dataWanted) return;
-  _dataWanted = false;
+void ModemManager::releaseData(uint8_t app) {
+  if (app >= DATA_APP_COUNT || !(_dataHolders & dataAppBit(app))) return;
+  _dataHolders &= (uint8_t)~dataAppBit(app);
+  if (_dataHolders == 0 && _taskHandle) xTaskNotifyGive(_taskHandle);
+}
+
+void ModemManager::releaseAllData() {
+  if (_dataHolders == 0) return;
+  _dataHolders = 0;
   if (_taskHandle) xTaskNotifyGive(_taskHandle);
 }
 
@@ -2126,7 +2171,7 @@ bool ModemManager::dataTick() {
   switch (_dataState) {
     case DataState::OFF:
     case DataState::FAILED:
-      if (_dataWanted && _state == ModemState::READY && !_battLow) {
+      if (_dataHolders && _state == ModemState::READY && !_battLow) {
         if (!startData()) return stopData(true);
       }
       return true;
@@ -2150,7 +2195,7 @@ bool ModemManager::dataTick() {
         Serial.println("[Data] no IP address in time");
         return stopData(true);
       }
-      if (!_dataWanted) return stopData(false);
+      if (!_dataHolders) return stopData(false);
       return true;
 
     case DataState::UP: {
@@ -2160,11 +2205,11 @@ bool ModemManager::dataTick() {
       }
       // Not in the middle of a call: closing the mux then is untested
       if (isCallActive()) return true;
-      if (!_dataWanted) return stopData(false);
+      if (!_dataHolders) return stopData(false);
       unsigned long idle = _locked ? MODEM_DATA_IDLE_LOCKED_MS : MODEM_DATA_IDLE_MS;
       if (millis() - _dataLastUse > idle) {
         Serial.println("[Data] idle, closing");
-        _dataWanted = false;
+        _dataHolders = 0;
         return stopData(false);
       }
       return true;
@@ -2305,7 +2350,7 @@ bool ModemManager::stopData(bool failed) {
   _dataStateSince = millis();
   if (failed) {
     _dataFailures++;
-    _dataWanted = false;   // no retry loop: the next request tries again
+    _dataHolders = 0;   // no retry loop: the next request tries again
     _dataState = DataState::FAILED;
   } else {
     _dataState = DataState::OFF;
@@ -2340,9 +2385,14 @@ void ModemManager::restoreDataDns() {
 }
 
 void ModemManager::printDataStats() {
-  Serial.printf("data: %s, allowed %d, wanted %d, sessions %lu, failures %lu\n",
-                dataStateToString(_dataState), (int)_dataAllowed, (int)_dataWanted,
-                (unsigned long)_dataSessions, (unsigned long)_dataFailures);
+  Serial.printf("data: %s, allowed %d, apps %02x, holders %02x, sessions %lu, failures %lu\n",
+                dataStateToString(_dataState), (int)_dataAllowed, (unsigned)_dataAppMask,
+                (unsigned)_dataHolders, (unsigned long)_dataSessions, (unsigned long)_dataFailures);
+  static const char* const names[DATA_APP_COUNT] = { "other", "browser", "irc", "ha" };
+  Serial.print("data: 24 h");
+  for (uint8_t a = 0; a < DATA_APP_COUNT; a++)
+    Serial.printf(" %s %lu", names[a], (unsigned long)dataUsage24h(a));
+  Serial.println();
   if (isDataUp()) {
     Serial.printf("data: IP " IPSTR ", DNS " IPSTR ", idle %lu s\n",
                   IP2STR(&pppIp.ip), IP2STR(&pppDns.ip.u_addr.ip4),
@@ -2357,8 +2407,10 @@ void ModemManager::printDataStats() {
 
 #else  // !MODEM_DATA
 
-void ModemManager::requestData() {}
-void ModemManager::releaseData() {}
+void ModemManager::requestData(uint8_t) {}
+void ModemManager::releaseData(uint8_t) {}
+void ModemManager::releaseAllData() {}
+uint32_t ModemManager::dataUsage24h(uint8_t) { return 0; }
 void ModemManager::restoreDataDns() {}
 void ModemManager::noteDataTraffic(size_t) {}
 void ModemManager::printDataStats() { Serial.println("data: not built"); }

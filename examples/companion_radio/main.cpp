@@ -1025,7 +1025,7 @@ static uint32_t _atoi(const char* sp) {
       modemManager.requestData();
       return;
     }
-    if (strcmp(cmd, "data off") == 0) { modemManager.releaseData(); return; }
+    if (strcmp(cmd, "data off") == 0) { modemManager.releaseAllData(); return; }   // every app's hold
 #ifdef MODEM_DATA
     // Small checks over the link (data costs money): a DNS lookup, or the
     // first 256 bytes of a page (use a small one, e.g. http://example.com/)

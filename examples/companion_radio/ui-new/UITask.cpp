@@ -3017,11 +3017,12 @@ void UITask::setCurrScreen(UIScreen* c) {
   }
 #endif
 #if defined(MECK_WEB_READER) && defined(MODEM_DATA)
-  // The web reader is the only user of mobile data. Leaving it by any path
-  // (q, home key, lock, uigo) must take the link down now, not after the idle
-  // timeout; IRC isn't polled off-screen, so nothing is lost.
+  // Leaving the web reader by any path (q, home key, lock, uigo) lets go of
+  // the link for it and its IRC now, not after the idle timeout; IRC isn't
+  // polled off-screen, so nothing is lost. Other apps may still hold it.
   if (web_reader != nullptr && curr == web_reader && c != web_reader) {
-    modemManager.releaseData();
+    modemManager.releaseData(DATA_APP_BROWSER);
+    modemManager.releaseData(DATA_APP_IRC);
   }
 #endif
   curr = c;

@@ -1,32 +1,62 @@
 # Mobile data over 4G (T-Deck MAX)
 
-The web reader (and its IRC client) can use the A7682E modem when there is no
-WiFi. The ESP32 gets a real IP interface over the modem, so `HTTPClient`,
-TLS and DNS work exactly as they do over WiFi.
+Everything on the deck that uses the internet over WiFi can use the A7682E
+modem when there is no WiFi: the web reader, its IRC client and Home
+Assistant updates. The ESP32 gets a real IP interface over the modem, so
+`HTTPClient`, TLS and DNS work exactly as they do over WiFi. What only works
+inside the home network does not (the WiFi companion's app server, Home
+Assistant pairing).
 
-Status: **untested on a device**, branch `feature/data-4g`.
+Status: link, browser and SMS/calls beside it tested on a T-Deck MAX;
+per-app switches, usage and Home Assistant over 4G not yet. Branch
+`feature/data-4g`.
 
 ## Using it
 
 - Settings → **Mobile data: ON** (shown while the 4G modem is on), or the
   **Mobile data** tile in quick settings (it took the keys light's place;
-  both Shifts still switch that). Off by default: data costs money. The
-  setting is stored in `/sms/data.cfg`.
-- The setting only *allows* data. Nothing connects until the web reader
-  needs a network: it tries saved WiFi first, then mobile data, then offers
-  a WiFi scan.
-- The link drops after 5 minutes without traffic (1 minute while locked),
-  when the web reader is left, or when the setting is turned off.
+  both Shifts still switch that). Off by default: data costs money.
+- Settings → **Mobile data usage**: each app has its own 4G switch (on
+  unless turned off) and shows what it used over 4G in the last 24 hours;
+  **Other** is traffic that belongs to no app (debug CLI), **Total** all of
+  it. WiFi traffic is not counted. The counts start at boot and are lost on
+  a restart; "24 hours" is the current hour plus the 23 before it.
+- Both are stored in `/sms/data.cfg`: the master switch, then one `0`/`1`
+  per app (browser, IRC, Home Assistant); an older one-character file means
+  every app allowed.
+- The setting only *allows* data. Nothing connects until an app needs a
+  network: the web reader tries saved WiFi first, then mobile data, then
+  offers a WiFi scan; IRC asks when it connects; Home Assistant when an
+  update is due.
+- Each app holds the link while it needs it. The link drops when no app
+  holds it any more, after 5 minutes without traffic (1 minute while
+  locked), or when the setting is turned off. Leaving the web reader lets
+  go of it for the browser and IRC; Home Assistant lets go after each update.
 - When WiFi comes up as well, traffic goes over WiFi (higher route
   priority) and the 4G link soon drops as idle.
+
+### For app code
+
+`ui-new/MeckNet.h`: `meckNetUp(app)` (WiFi, or 4G allowed for the app and
+up), `meckNetRequest(app)` / `meckNetRelease(app)` (hold the link, no
+blocking), `meckNetWaitUp(app, ms)` (blocking, for a user action),
+`MeckNetUse use(app)` around a request (counts its 4G bytes to the app) and
+`meckNetSaveData()`: true while the traffic goes over 4G, so an app can
+keep it small. A new app gets a `DataApp` value in `ui-new/MeckDataUse.h`
+and a row in the settings screen.
+
+Usage is counted per PPP frame in `ModemManager::noteDataTraffic()`: to the
+app tagged by `MeckNetUse`, else the only app holding the link (so its link
+setup counts to it), else IRC (the one connection that gets data by itself),
+else Other. Unit tests: `test/datause`.
 
 Debug CLI (`meck_max_ui2`):
 
 | Command    | What it does                                             |
 |------------|----------------------------------------------------------|
-| `data`     | State, IP, DNS, byte counters, mux frame errors (read-only) |
+| `data`     | State, app switches and holders, 24 h usage per app, IP, DNS, byte counters, mux frame errors (read-only) |
 | `data on`  | Bring the link up (needs the setting; uses the SIM's data) |
-| `data off` | Take it down                                             |
+| `data off` | Take it down (lets go of every app's hold)               |
 
 ## How it works
 
@@ -69,8 +99,9 @@ ESP32 UART ── ModemMux (AT+CMUX, GSM 07.10 basic mode)
 
 Each step uses real mobile data; they are ordered from the cheapest. The
 `data` counters (`ppp rx/tx`) show what each step cost. Nothing on the deck
-sends over PPP by itself (no LCP echo, SNTP or mDNS; Home Assistant only
-uses WiFi), so an idle link costs nothing until the idle timeout drops it.
+sends over PPP by itself (no LCP echo, SNTP or mDNS) except a paired Home
+Assistant every 15 minutes when it has 4G allowed, so an idle link costs
+nothing until the idle timeout drops it.
 Carriers may round each session up (often to 1 kB or more), so keep to few
 sessions.
 
@@ -88,3 +119,11 @@ sessions.
 6. Only then the web reader with WiFi off, on a light page (e.g.
    `http://example.com/`; DuckDuckGo lite results are ~20 kB).
 7. WiFi + 4G: pages go over WiFi, 4G drops as idle.
+8. Mobile data usage screen with the setting off: switches flip and are kept
+   after a restart (`data` shows `apps`), usage shows 0 B. No data used.
+9. Browser's 4G switch off, WiFi off: the web reader does not bring the link
+   up. No data used.
+10. Home Assistant (paired, WiFi off, `ha post`): `HA: update due, bringing
+    up mobile data`, `HA: update 200 via cloudhook (4G)`, the link closes
+    right after; the usage screen shows the bytes under Home Assistant. One
+    session; the TLS handshake is most of it.

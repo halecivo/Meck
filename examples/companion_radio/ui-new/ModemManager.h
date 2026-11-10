@@ -26,6 +26,7 @@
 #include "variant.h"
 #include "ApnDatabase.h"
 #include "ModemBundledSounds.h"
+#include "MeckDataUse.h"
 
 // ---------------------------------------------------------------------------
 // Modem pins (from variant.h, always defined for reference)
@@ -72,7 +73,8 @@
 
 // Mobile data: the ESP32 gets an IP interface over the modem (PPP inside a
 // CMUX channel, so SMS and calls keep working). Brought up on demand (web
-// reader) when the setting allows it, dropped after MODEM_DATA_IDLE_MS
+// reader, IRC, Home Assistant) when the setting and that app's own 4G switch
+// allow it, dropped when no app holds it any more or after MODEM_DATA_IDLE_MS
 // without traffic: while it is up the modem cannot use UART sleep. MAX only:
 // the Pro 4G build is untested.
 #if defined(LilyGo_TDeck_Pro_Max) && defined(CONFIG_LWIP_PPP_SUPPORT) && !defined(MODEM_NO_DATA)
@@ -287,11 +289,15 @@ public:
   static const char* stateToString(ModemState s);
 
   // --- Mobile data (MODEM_DATA; stubs otherwise) ---
-  // requestData(): bring the link up if the setting allows it (main loop,
-  // returns at once; poll isDataUp()). Calling it again, or traffic, keeps
-  // it from the idle timeout. releaseData(): take it down now.
-  void requestData();
-  void releaseData();
+  // requestData(app): this app wants the link; it comes up if the setting
+  // and the app's own 4G switch allow it (main loop, returns at once; poll
+  // isDataUp()). Calling it again, or traffic, keeps it from the idle
+  // timeout. releaseData(app): this app is done; the link goes down when no
+  // app holds it any more. The idle timeout lets go of every holder.
+  void requestData(uint8_t app = DATA_APP_OTHER);
+  void releaseData(uint8_t app);
+  void releaseAllData();
+  uint8_t dataHolders() const { return _dataHolders; }
   bool isDataUp() const { return _dataState == DataState::UP; }
   DataState getDataState() const { return _dataState; }
   bool dataFailed() const { return _dataState == DataState::FAILED; }
@@ -300,10 +306,20 @@ public:
   // one the carrier gave back while data is the only link
   void restoreDataDns();
   void printDataStats();      // debug CLI "data"
-  // Setting (SD file /sms/data.cfg), off by default: data costs money
+  // Setting (SD file /sms/data.cfg), off by default: data costs money.
+  // Each app also has its own 4G switch, on unless turned off.
   static bool loadDataConfig();
   static void saveDataConfig(bool allowed);
   static bool dataAllowed() { return _dataAllowed; }
+  static bool dataAppAllowed(uint8_t app) {
+    return app == DATA_APP_OTHER || (app < DATA_APP_COUNT && (_dataAppMask & dataAppBit(app)));
+  }
+  static void setDataAppAllowed(uint8_t app, bool allowed);
+  // Usage over 4G: an app tags the traffic of the request it is making
+  // (main loop, see MeckNetUse); the rest goes by dataUseOwner()
+  void setDataTag(uint8_t app) { _dataTag = app; }
+  uint8_t dataTag() const { return _dataTag; }
+  uint32_t dataUsage24h(uint8_t app);   // bytes over 4G in the last 24 hours, since boot
   // PPP glue (ModemManager.cpp), not for callers
   void noteDataTraffic(size_t len);
 
@@ -317,10 +333,13 @@ public:
 private:
   static bool _enabledInSettings;
   static bool _dataAllowed;
+  static uint8_t _dataAppMask;
 
   // Mobile data
   volatile DataState _dataState = DataState::OFF;
-  volatile bool _dataWanted = false;
+  volatile uint8_t _dataHolders = 0;         // dataAppBit() of the apps that want the link
+  volatile uint8_t _dataTag = DATA_APP_NONE;
+  DataUsage _dataUse = {};
   volatile unsigned long _dataLastUse = 0;   // requestData() or real traffic
   unsigned long _dataStateSince = 0;
   bool _dataSleepWasOn = false;              // UART sleep to restore afterwards
