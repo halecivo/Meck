@@ -7,9 +7,9 @@ Assistant updates. The ESP32 gets a real IP interface over the modem, so
 inside the home network does not (the WiFi companion's app server, Home
 Assistant pairing).
 
-Status: link, browser and SMS/calls beside it tested on a T-Deck MAX;
-per-app switches, usage and Home Assistant over 4G not yet. Branch
-`feature/data-4g`.
+Status: tested on a T-Deck MAX: the link, the browser, SMS/calls beside
+it, the per-app switches and usage screen, and a Home Assistant update over
+4G. Not yet: IRC over 4G, the browser's switch off. Branch `feature/data-4g`.
 
 ## Using it
 
@@ -126,4 +126,6 @@ sessions.
 10. Home Assistant (paired, WiFi off, `ha post`): `HA: update due, bringing
     up mobile data`, `HA: update 200 via cloudhook (4G)`, the link closes
     right after; the usage screen shows the bytes under Home Assistant. One
-    session; the TLS handshake is most of it.
+    session; the TLS handshake is most of it. Measured: 10.5 kB per update
+    to an external https address (7.9 kB in, 2.6 kB out, link up to closed
+    in 8 s), so about 1 MB a day at the 15-minute interval.

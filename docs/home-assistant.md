@@ -53,7 +53,9 @@ With no WiFi the update goes over 4G mobile data when **Mobile data** is on
 and Home Assistant has 4G allowed under **Settings > Mobile data usage**
 ([mobile-data.md](mobile-data.md)). The deck brings the link up for the
 update and lets go of it right after; the interval stays 15 minutes. If the
-link does not come up within 90 s, it tries again 2 minutes later.
+link does not come up within 90 s, it tries again 2 minutes later. One
+update to an external `https://` address measured 10.5 kB, almost all of it
+the TLS handshake: about 1 MB a day.
 
 ## Inside and outside the home network
 
