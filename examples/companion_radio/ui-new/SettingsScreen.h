@@ -1021,6 +1021,7 @@ public:
   bool isEditing() const { return _editMode != EDIT_NONE; }
   bool isPurgeBoxOpen() const { return _editMode == EDIT_PURGE; }  // main.cpp ignores touch while open
   bool hasRadioChanges() const { return _radioChanged; }
+  bool inSubScreen() const { return _subScreen != SUB_NONE; }
   bool isOnChannelsSubScreen() const { return _subScreen == SUB_CHANNELS; }
   bool isOnDeletableChannel() const {
     return _subScreen == SUB_CHANNELS &&

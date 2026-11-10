@@ -7082,10 +7082,11 @@ void handleKeyboardInput() {
   if (ui_task.isOnSettingsScreen()) {
     SettingsScreen* settings = (SettingsScreen*)ui_task.getSettingsScreen();
 
-    // Shift+Del: exit settings (when not editing)
+    // Shift+Del: exit settings (when not editing). Inside a sub-screen it
+    // only goes back to the parent list, which the settings screen handles.
     if (!settings->isEditing() && (key == KEY_CANCEL || key == 'q')) {
-      if (settings->hasRadioChanges()) {
-        // Let settings show "apply changes?" confirm dialog
+      if (settings->inSubScreen() || settings->hasRadioChanges()) {
+        // Back to the parent list, or the "apply changes?" confirm dialog
         ui_task.injectKey(key);
       } else {
         Serial.println("Exiting settings");
