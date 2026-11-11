@@ -1,0 +1,19 @@
+[server]
+hosts = 0.0.0.0:5232
+
+[auth]
+type = htpasswd
+htpasswd_filename = /config/users
+htpasswd_encryption = bcrypt
+# Slow down password guessing
+delay = 1
+
+[rights]
+# Each user sees only their own collections
+type = owner_only
+
+[storage]
+filesystem_folder = /data/collections
+
+[logging]
+level = info

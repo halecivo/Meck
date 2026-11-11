@@ -1,0 +1,30 @@
+# Radicale for the deck (CalDAV/CardDAV), behind an existing nginx proxy.
+# Put this next to ./config/config and ./config/users, then: docker compose up -d
+services:
+  radicale:
+    image: tomsquest/docker-radicale:latest
+    container_name: radicale
+    restart: unless-stopped
+    init: true
+    read_only: true
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    cap_add: [SETUID, SETGID, KILL]
+    pids_limit: 50
+    mem_limit: 256m
+    volumes:
+      - ./data:/data
+      - ./config:/config:ro
+    # Either join the proxy's docker network (and drop `ports`) ...
+    networks: [proxy]
+    # ... or publish on the host only, for a proxy that runs outside docker:
+    # ports: ["127.0.0.1:5232:5232"]
+    healthcheck:
+      test: curl -f http://127.0.0.1:5232 || exit 1
+      interval: 30s
+      retries: 3
+
+networks:
+  proxy:
+    external: true
+    name: proxy      # the network your nginx proxy is on (docker network ls)
