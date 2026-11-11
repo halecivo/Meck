@@ -45,6 +45,23 @@ jobs:
       - name: Clone Repo
         uses: actions/checkout@v4
 
+      # The pioarduino platform and all its packages (framework, toolchains)
+      # are GitHub release assets, and runners sometimes get 504 for every
+      # release download for a while. Keep the installed copies, so a build
+      # only downloads when platformio.ini changes the platform. The download
+      # cache matters too: with custom_sdkconfig and no sdkconfig.defaults in
+      # a fresh checkout, pioarduino reinstalls the Arduino framework on every
+      # build, and PlatformIO takes the archives from there.
+      - name: Cache PlatformIO Platform and Packages
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.platformio/platforms
+            ~/.platformio/packages
+            ~/.platformio/.cache/downloads
+          key: ${{ runner.os }}-pio-max-dl-${{ hashFiles('platformio.ini', 'variants/lilygo_tdeck_max/platformio.ini') }}
+          restore-keys: ${{ runner.os }}-pio-max-
+
       - name: Setup Build Environment
         uses: ./.github/actions/setup-build-environment
 

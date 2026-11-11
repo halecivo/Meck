@@ -51,6 +51,7 @@ static char _atBuf[AT_BUF_SIZE];
 
 void ModemManager::begin() {
   MESH_DEBUG_PRINTLN("[Modem] begin()");
+  if (_taskHandle) return;   // already running: a second task would share the UART
   if (_battLow) {
     Serial.println("[Modem] battery low, not starting");
     return;
@@ -86,12 +87,18 @@ void ModemManager::begin() {
   _dataState = DataState::OFF;
   _dataHolders = 0;
 
-  // Create FreeRTOS primitives
-  _sendQueue   = xQueueCreate(MODEM_SEND_QUEUE_SIZE, sizeof(SMSOutgoing));
-  _recvQueue   = xQueueCreate(MODEM_RECV_QUEUE_SIZE, sizeof(SMSIncoming));
-  _callCmdQueue = xQueueCreate(MODEM_CALL_CMD_QUEUE_SIZE, sizeof(CallCommand));
-  _callEvtQueue = xQueueCreate(MODEM_CALL_EVT_QUEUE_SIZE, sizeof(CallEvent));
-  _uartMutex   = xSemaphoreCreateMutex();
+  // FreeRTOS primitives, made once: shutdown() does not delete them, and
+  // making them on every begin() leaked ~2.8 kB of internal RAM per 4G off/on
+  // (each lock/unlock when 4G is paused while locked) until WiFi could not
+  // start any more. Requests left from the last session are dropped as
+  // before; received SMS and call events stay for the main loop.
+  if (!_sendQueue)    _sendQueue    = xQueueCreate(MODEM_SEND_QUEUE_SIZE, sizeof(SMSOutgoing));
+  if (!_recvQueue)    _recvQueue    = xQueueCreate(MODEM_RECV_QUEUE_SIZE, sizeof(SMSIncoming));
+  if (!_callCmdQueue) _callCmdQueue = xQueueCreate(MODEM_CALL_CMD_QUEUE_SIZE, sizeof(CallCommand));
+  if (!_callEvtQueue) _callEvtQueue = xQueueCreate(MODEM_CALL_EVT_QUEUE_SIZE, sizeof(CallEvent));
+  if (!_uartMutex)    _uartMutex    = xSemaphoreCreateMutex();
+  if (_sendQueue)    xQueueReset(_sendQueue);
+  if (_callCmdQueue) xQueueReset(_callCmdQueue);
 
   // Launch background task on Core 0
   xTaskCreatePinnedToCore(
