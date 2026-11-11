@@ -15,16 +15,13 @@ services:
     volumes:
       - ./data:/data
       - ./config:/config:ro
-    # Either join the proxy's docker network (and drop `ports`) ...
-    networks: [proxy]
-    # ... or publish on the host only, for a proxy that runs outside docker:
-    # ports: ["127.0.0.1:5232:5232"]
+    # Host port for the proxy. Change the left number if 5232 is taken.
+    # 0.0.0.0 = reachable from the LAN (the proxy may run in another
+    # container, so 127.0.0.1 would not work for it). Do not forward this
+    # port on the router: only the proxy's 443 goes outside.
+    ports:
+      - "5232:5232"
     healthcheck:
       test: curl -f http://127.0.0.1:5232 || exit 1
       interval: 30s
       retries: 3
-
-networks:
-  proxy:
-    external: true
-    name: proxy      # the network your nginx proxy is on (docker network ls)
