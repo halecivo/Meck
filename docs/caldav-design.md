@@ -136,6 +136,32 @@ except for the outbox.
   debug CLI before settling on batch sizes, and keep one connection open for a
   whole sync.
 
+## Adding an account (QR pairing)
+
+Same idea as the Home Assistant pairing (`MeckHa`, `HaScreen`): the deck shows
+a QR code, the phone opens a page the deck serves over the home WiFi, so the
+long server URL and password are typed on the phone's keyboard.
+
+1. Settings, Calendar, Add account: the deck shows the QR code, keeps the
+   screen from locking and waits 5 minutes (Q cancels).
+2. The QR holds `http://<deck-ip>/dav/<one-time-token>`.
+3. The page asks for server URL (any CalDAV server, with presets), user and
+   password, and has a Test button.
+4. The deck runs discovery and a login, reports the result, lists the found
+   calendars to pick from, and stores the account (`DavVault`).
+
+Safeguards: random one-time token, invalid after the first success or the
+timeout; only on a WiFi the deck is joined to (not over 4G, not as an access
+point); the password is not echoed back and is never logged. The password
+crosses the home WiFi as plain HTTP because the deck has no certificate: use a
+dedicated, revocable DAV user.
+
+OAuth is not part of this. CalDAV has no standard OAuth discovery; Google and
+Microsoft need their own registered client and flow, and providers that
+require it are out of scope for now. If it comes later it is a per-provider
+module that fits the same QR page (pairing via the phone's browser), next to
+the Basic-auth form.
+
 ## UI (UI v2, e-ink)
 
 - Home tile "Calendar": agenda list for the next days (default), month grid
