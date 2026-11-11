@@ -4034,6 +4034,12 @@ void MyMesh::checkCLIRescueCmd() {
       extern void meckHaCmd(const char* arg);
       meckHaCmd(cli_command[2] ? &cli_command[3] : "");
 #endif
+#if defined(MECK_DAV) && MECK_DAV
+    } else if (strcmp(cli_command, "dav") == 0 || memcmp(cli_command, "dav ", 4) == 0) {
+      // Debug: CalDAV account (docs/caldav-design.md); the password is never printed
+      extern void meckDavCmd(const char* arg);
+      meckDavCmd(cli_command[3] ? &cli_command[4] : "");
+#endif
     } else if (memcmp(cli_command, "uigo ", 5) == 0) {
       // Debug: open a screen directly, e.g. "uigo rxlog", "uigo pathed 3"
       extern void meckDebugGoto(const char* arg);

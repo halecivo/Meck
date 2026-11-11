@@ -122,6 +122,27 @@ static inline bool davSameOrigin(const char* a, const char* b) {
   return strcasecmp(oa, ob) == 0;
 }
 
+// Credentials go to the origin the user typed in, and to nothing else, except
+// for the providers that answer from a partition host of their own (iCloud:
+// caldav.icloud.com sends the client to pNN-caldav.icloud.com). A short list
+// of such domains; a public-suffix heuristic would let a hostile server on
+// the same suffix (co.uk) collect the password.
+static inline bool davHostInDomain(const char* host, const char* domain) {
+  size_t hl = strlen(host), dl = strlen(domain);
+  if (hl < dl) return false;
+  if (strcasecmp(host + hl - dl, domain) != 0) return false;
+  return hl == dl || host[hl - dl - 1] == '.';
+}
+
+static inline bool davSameSite(const char* a, const char* b) {
+  if (davSameOrigin(a, b)) return true;
+  if (!davUrlIsHttps(a) || !davUrlIsHttps(b)) return false;
+  char ha[96], hb[96];
+  davUrlHost(a, ha, sizeof(ha));
+  davUrlHost(b, hb, sizeof(hb));
+  return davHostInDomain(ha, "icloud.com") && davHostInDomain(hb, "icloud.com");
+}
+
 // --- Basic authentication -----------------------------------------------------------
 
 static inline size_t davBase64(char* out, size_t n, const uint8_t* in, size_t len) {
@@ -174,6 +195,12 @@ static const char DAV_BODY_CAL_LIST[] =
   "xmlns:a=\"http://apple.com/ns/ical/\" xmlns:cs=\"http://calendarserver.org/ns/\">"
   "<d:prop><d:resourcetype/><d:displayname/><a:calendar-color/><cs:getctag/><d:sync-token/>"
   "<c:supported-calendar-component-set/></d:prop></d:propfind>";
+
+// Every change in a calendar since the (empty) token = the whole listing, etags only
+static const char DAV_BODY_SYNC_ALL[] =
+  "<?xml version=\"1.0\" encoding=\"utf-8\"?>"
+  "<d:sync-collection xmlns:d=\"DAV:\"><d:sync-token/><d:sync-level>1</d:sync-level>"
+  "<d:prop><d:getetag/></d:prop></d:sync-collection>";
 
 // --- XML ----------------------------------------------------------------------------
 
@@ -281,6 +308,17 @@ static inline bool davXmlAttr(const char* tag, size_t len, const char* name, cha
     }
   }
   return false;
+}
+
+// A string cut at a byte limit may end in half a UTF-8 character: drop it
+static inline void davTrimUtf8(char* s) {
+  size_t l = strlen(s);
+  size_t i = l;
+  while (i > 0 && ((unsigned char)s[i - 1] & 0xC0) == 0x80) i--;   // continuation bytes
+  if (i == 0) return;
+  unsigned char lead = (unsigned char)s[i - 1];
+  size_t need = lead >= 0xF0 ? 4 : lead >= 0xE0 ? 3 : lead >= 0xC0 ? 2 : 1;
+  if (lead >= 0xC0 && l - (i - 1) < need) s[i - 1] = 0;
 }
 
 static inline void davCopy(char* dst, size_t n, const char* src) {

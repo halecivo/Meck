@@ -1,6 +1,11 @@
 # CalDAV on the deck: design proposal
 
-Status: proposal, nothing implemented. Target: T-Deck MAX (8 MB PSRAM, UI v2),
+Status: phase 0 written, **not yet built or run on a deck** (no PlatformIO
+where it was written). Done: account pairing by QR (`MeckDav`, `DavScreen`,
+Settings > Experimental > Calendar account), discovery of the calendars, debug
+CLI `dav ...`, host tests (`test/dav`, with replies captured from Radicale).
+Not done: any sync, calendar screen, writing, iCloud profile, mobile data for
+DAV (`DATA_APP_DAV`). See `docs/calendar-account.md`. Target: T-Deck MAX (8 MB PSRAM, UI v2),
 WiFi or 4G through `MeckNet`. Radicale first (decided), iCloud later. The DAV core is
 written once and CardDAV (phone contacts, see `SMSContacts`) reuses it.
 

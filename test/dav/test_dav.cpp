@@ -75,6 +75,12 @@ static void testUrls() {
   CHECK(!davSameOrigin("https://dav.example.com/a", "https://evil.example.com/a"));
   CHECK(!davSameOrigin("https://dav.example.com/a", "http://dav.example.com/a"));   // downgrade
   CHECK(!davSameOrigin("https://dav.example.com", "https://dav.example.com:8443"));
+  CHECK(davSameSite("https://caldav.icloud.com", "https://p12-caldav.icloud.com:443/x"));
+  CHECK(davSameSite("https://icloud.com", "https://p12-caldav.icloud.com"));
+  CHECK(!davSameSite("http://caldav.icloud.com", "https://p12-caldav.icloud.com"));   // no http
+  CHECK(!davSameSite("https://caldav.icloud.com", "https://p12-caldav.icloud.com.evil.com"));
+  CHECK(!davSameSite("https://caldav.icloud.com", "https://evilicloud.com"));
+  CHECK(!davSameSite("https://dav.example.co.uk", "https://evil.co.uk"));          // suffix match is not enough
   CHECK_STR(davUrlPath("https://dav.example.com"), "/");
   CHECK_STR(davUrlPath("https://dav.example.com/x/y"), "/x/y");
 }
@@ -108,6 +114,15 @@ static void testText() {
   CHECK(davStatusCode("HTTP/1.1 200 OK") == 200);
   CHECK(davStatusCode("HTTP/1.1 404 Not Found") == 404);
   CHECK(davStatusCode("garbage") == 0);
+}
+
+static void testTrimUtf8() {
+  char a[8] = "ab\xC4";            CHECK((davTrimUtf8(a), strcmp(a, "ab") == 0));          // half of a 2-byte letter
+  char b[8] = "ab\xC4\x8D";       CHECK((davTrimUtf8(b), strcmp(b, "ab\xC4\x8D") == 0)); // whole
+  char c[8] = "a\xE2\x82";        CHECK((davTrimUtf8(c), strcmp(c, "a") == 0));           // 2 of 3
+  char d[8] = "a\xF0\x9F\x98";   CHECK((davTrimUtf8(d), strcmp(d, "a") == 0));           // 3 of 4
+  char e[8] = "";                  CHECK((davTrimUtf8(e), e[0] == 0));
+  char f[8] = "plain";             CHECK((davTrimUtf8(f), strcmp(f, "plain") == 0));
 }
 
 static void testPrincipalAndHome() {
@@ -238,6 +253,7 @@ int main() {
   testUrls();
   testBasic();
   testText();
+  testTrimUtf8();
   testPrincipalAndHome();
   testCalendarList();
   testSyncCollection();
