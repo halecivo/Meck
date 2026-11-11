@@ -9,7 +9,7 @@ services:
     read_only: true
     security_opt: [no-new-privileges:true]
     cap_drop: [ALL]
-    cap_add: [SETUID, SETGID, KILL]
+    cap_add: [SETUID, SETGID, CHOWN, KILL]   # CHOWN: the image hands /data to its user at start
     pids_limit: 50
     mem_limit: 256m
     volumes:
