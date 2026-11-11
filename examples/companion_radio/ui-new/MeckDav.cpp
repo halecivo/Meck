@@ -14,6 +14,7 @@
 #include <Preferences.h>
 #include <esp_heap_caps.h>
 #include <esp_random.h>
+#include <esp_wifi.h>
 #include <mbedtls/platform.h>
 #include <qrcode.h>
 #ifdef CONFIG_PM_ENABLE
@@ -525,6 +526,16 @@ void MeckDav::loop() {
 void MeckDav::awake(bool on) {
   if (on == _awake) return;
   _awake = on;
+  // WiFi modem sleep (Arduino's default) wakes the station only for DTIM
+  // beacons: a phone looking for the deck gets no ARP answer for seconds and
+  // the page crawls or never opens. Off while the server waits, back after.
+  if (on) {
+    _psSaved = esp_wifi_get_ps((wifi_ps_type_t*)&_psBefore) == ESP_OK;
+    if (_psSaved) esp_wifi_set_ps(WIFI_PS_NONE);
+  } else if (_psSaved) {
+    esp_wifi_set_ps((wifi_ps_type_t)_psBefore);
+    _psSaved = false;
+  }
 #ifdef CONFIG_PM_ENABLE
   if (!_pmLock && esp_pm_lock_create(ESP_PM_NO_LIGHT_SLEEP, 0, "meck_dav",
                                      (esp_pm_lock_handle_t*)&_pmLock) != ESP_OK) return;

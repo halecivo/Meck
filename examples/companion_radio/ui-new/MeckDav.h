@@ -95,6 +95,8 @@ private:
   void* _server = nullptr;       // WebServer
   void* _pmLock = nullptr;
   bool _awake = false;
+  int _psBefore = 0;             // wifi_ps_type_t to put back when pairing ends
+  bool _psSaved = false;
   bool _blocking = false;        // a debug CLI discovery: no way back to the form
   char* _resp = nullptr;         // reply buffer in PSRAM, only while a discovery runs
 
