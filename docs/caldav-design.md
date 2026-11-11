@@ -1,7 +1,7 @@
 # CalDAV on the deck: design proposal
 
 Status: proposal, nothing implemented. Target: T-Deck MAX (8 MB PSRAM, UI v2),
-WiFi or 4G through `MeckNet`. Radicale first, iCloud second. The DAV core is
+WiFi or 4G through `MeckNet`. Radicale first (decided), iCloud later. The DAV core is
 written once and CardDAV (phone contacts, see `SMSContacts`) reuses it.
 
 ## Goals and non-goals
@@ -26,7 +26,7 @@ Non-goals (first versions)
     ICal                          VEVENT parser/serializer, RRULE, time zones
     Dav                           discovery, PROPFIND/REPORT/PUT/DELETE, XML
     MeckNet + HTTPClient/TLS      existing; new app id DATA_APP_DAV
-    DavVault                      credentials, encrypted
+    DavVault                      credentials (plain NVS for now)
 
 New files go next to `MeckHa.*` in `examples/companion_radio/ui-new/`:
 `MeckDav.{h,cpp}`, `MeckICal.{h,cpp}`, `MeckCal.{h,cpp}`, `CalendarScreen.h`.
@@ -118,10 +118,13 @@ except for the outbox.
 
 ## Credentials and TLS
 
-- `DavVault`: server URL in the clear, password encrypted with AES-GCM using a
-  key from PBKDF2 over the unlock PIN. Stored in NVS namespace `dav`. Locked
-  deck: no background sync. Never logged; masked in the debug CLI the way
-  `haMask` does it.
+- Password: stored in NVS (namespace `dav`) the way the Home Assistant refresh
+  token is, no PIN encryption (decided: no PIN prompts). Mitigation is the
+  server side: a dedicated Radicale user for the deck, revocable by changing
+  one line in the `htpasswd` file. Never logged; masked in the debug CLI the
+  way `haMask` does it. Encryption can be added later behind the same
+  `DavVault` interface (a key kept in RAM after one unlock per boot) without
+  touching the rest.
 - iCloud: app-specific password, revocable at appleid.apple.com. Radicale:
   dedicated user for the deck.
 - TLS: public servers verify against the ESP32 certificate bundle (check that
