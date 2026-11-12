@@ -5907,12 +5907,10 @@ void loop() {
       }
 
       if (callEvt.type == CallEventType::INCOMING) {
-        // Incoming call — auto-switch to SMS screen if not already there
-        char alertBuf[48];
-        char dispName[SMS_CONTACT_NAME_LEN];
-        smsContacts.displayName(callEvt.phone, dispName, sizeof(dispName));
-        snprintf(alertBuf, sizeof(alertBuf), MECK_TR("Call: %s", "Appel : %s"), dispName);
-        ui_task.showAlert(alertBuf, 3000);
+        // Incoming call — auto-switch to SMS screen if not already there.
+        // No toast: the ringing screen shows the caller, and the toast
+        // (re-raised by every +CLIP, i.e. every ring) covered the
+        // Answer / Reject buttons.
         ui_task.notify(UIEventType::contactMessage);
 
         // An incoming call drops the lock screen so the call can be answered.
