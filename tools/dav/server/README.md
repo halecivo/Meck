@@ -58,7 +58,9 @@ things on the phone.
        mkdir -p secrets status
        printf '%s' 'abcd-efgh-ijkl-mnop'   > secrets/icloud     # the app-specific password
        printf '%s' 'your Radicale password' > secrets/radicale
-       sudo chown -R 1000:1000 secrets status && chmod 700 secrets && chmod 600 secrets/*
+       chmod 700 secrets && chmod 600 secrets/*
+       # only when your user is not uid 1000 (`id -u`), the container's user:
+       sudo chown -R 1000:1000 secrets status
 
 3. `cp vdirsyncer/config.example vdirsyncer/config`, put in your Apple ID and
    your Radicale user (`you`, the one the iPhone would use, not `deck`).
