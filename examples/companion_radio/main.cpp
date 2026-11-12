@@ -1645,6 +1645,56 @@ bool meckCompanionUseWiFi(bool connectSaved) {
   return true;
 }
 
+#ifdef MECK_UI_SCREENDUMP
+#include <WiFiClientSecure.h>
+
+static void meckMemPrint(const char* when) {
+  Serial.printf("mem %s: internal free=%u largest=%u, DMA free=%u, PSRAM free=%u largest=%u\n", when,
+                (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+                (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+                (unsigned)heap_caps_get_free_size(MALLOC_CAP_DMA),
+                (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
+                (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM));
+}
+
+// Debug CLI "mem": internal RAM with the radios in a given state, to size
+// what a WiFi sync can use. "mem ble 0|1" and "mem wifi 0|1" switch the
+// companion links as Settings does (nothing is saved); "mem tls <host>"
+// holds one TLS session to <host>:443 the way the Web Reader opens it and
+// reports the lowest free internal RAM during the handshake. Nothing is
+// sent over the session.
+void meckMemCmd(const char* arg) {
+  if (!strcmp(arg, "ble 1")) { meckCompanionUseBLE(); }
+  else if (!strcmp(arg, "ble 0")) { meckCompanionBleOff(); }
+  else if (!strcmp(arg, "wifi 1")) { meckCompanionUseWiFi(true); }
+  else if (!strcmp(arg, "wifi 0")) { meckCompanionWifiOff(); }
+  else if (!strncmp(arg, "tls ", 4)) {
+    if (WiFi.status() != WL_CONNECTED) { Serial.println("mem tls: WiFi not connected"); return; }
+    meckMemPrint("before TLS");
+    heap_caps_monitor_local_minimum_free_size_start();
+    WiFiClientSecure* c = new WiFiClientSecure();
+    c->setInsecure();
+    unsigned long t0 = millis();
+    bool ok = c->connect(arg + 4, 443, 10000);
+    unsigned long ms = millis() - t0;
+    unsigned minInt = heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    unsigned minPs = heap_caps_get_minimum_free_size(MALLOC_CAP_SPIRAM);
+    heap_caps_monitor_local_minimum_free_size_stop();
+    Serial.printf("mem tls: %s in %lu ms, lowest during handshake: internal %u, PSRAM %u\n",
+                  ok ? "connected" : "FAILED", ms, minInt, minPs);
+    meckMemPrint("TLS open");
+    c->stop();
+    delete c;
+    meckMemPrint("TLS closed");
+    return;
+  } else if (arg[0]) { Serial.println("mem [ble 0|1 | wifi 0|1 | tls <host>]"); return; }
+  Serial.printf("mem: BLE %s%s, WiFi %s%s\n", meckCompanionIsBLE() ? "on" : "off",
+                meckCompanionBleConnected() ? " (connected)" : "", meckCompanionIsWiFi() ? "on" : "off",
+                WiFi.status() == WL_CONNECTED ? " (connected)" : "");
+  meckMemPrint("now");
+}
+#endif
+
 // App command line (message 66): upstream MeshCore's wifi.* commands, with
 // the network kept in /web/wifi.cfg as Settings keeps it. Replies are worded
 // as upstream's. Returns false for any other command (the caller then
