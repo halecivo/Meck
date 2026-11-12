@@ -500,6 +500,7 @@ void MeckDav::work(const char* url, const char* user, const char* pass) {
   memset(_tmpCals, 0, sizeof(_tmpCals));
   memset(_tmpBooks, 0, sizeof(_tmpBooks));
   _workStep = 0;
+  _route = 0;
   _step = "Looking for the account";
   _phase = PH_WORKING;
 }
@@ -557,6 +558,16 @@ void MeckDav::workStep() {
   switch (_workStep) {
     case 0: {
       _step = "Looking for the account";
+      // A typed path is looked into first: it may be someone else's home the
+      // deck's user may read (Radicale rights), which the principal would not lead to
+      if (_route == 0 && strcmp(davUrlPath(_pairUrl), "/") != 0) {
+        _route = 1;
+        snprintf(_home, sizeof(_home), "%s", _pairUrl);
+        _abHome[0] = 0;
+        _workStep = 2;
+        return;
+      }
+      _route = 2;
       int rc = propfindPrincipal(_pairUrl, loc, sizeof(loc));
       if (rc == 401 || rc == 403) { retry(davErrText(rc)); return; }
       if (rc < 0) { retry(davErrText(rc)); return; }
@@ -588,6 +599,7 @@ void MeckDav::workStep() {
     case 2: {
       _step = "Reading the calendar list";
       int rc = findCalendars(_home);
+      if (rc != 207 && _route == 1 && rc != 401 && rc != 403 && rc >= 0) { _workStep = 0; return; }
       if (rc != 207) { retry(davErrText(rc)); return; }
       _workStep = _abHome[0] ? 3 : 4;
       return;
@@ -600,7 +612,11 @@ void MeckDav::workStep() {
       return;
     }
     case 4: {
-      if (_tmpCount == 0 && _tmpBookCount == 0) { retry("No calendars or address books found at this address"); return; }
+      if (_tmpCount == 0 && _tmpBookCount == 0) {
+        if (_route == 1) { _workStep = 0; return; }   // nothing right there: the principal's way
+        retry("No calendars or address books found at this address");
+        return;
+      }
       _workStep = 5;
       return;
     }

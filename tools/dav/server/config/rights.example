@@ -1,0 +1,34 @@
+# Radicale rights (type = from_file in config). Copy to `rights` (not in git)
+# and replace `you` with your Radicale user name. The first section that
+# matches wins.
+#
+# R: read the principal and plain collections, r: read calendars and address
+# books, W/w: write them.
+
+# The deck reads your calendars and address books, and writes nothing
+[deck-reads-your-home]
+user: deck
+collection: you
+permissions: R
+
+[deck-reads-your-collections]
+user: deck
+collection: you/[^/]+
+permissions: r
+
+# Everyone (vdirsyncer runs as you): the server root, their own home and
+# what is in it -- what owner_only gave before
+[root]
+user: .+
+collection:
+permissions: R
+
+[principal]
+user: .+
+collection: {user}
+permissions: RW
+
+[collections]
+user: .+
+collection: {user}/[^/]+
+permissions: rw

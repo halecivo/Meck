@@ -114,6 +114,7 @@ private:
   char _error[64] = "";
   const char* _step = "";
   uint8_t _workStep = 0;
+  uint8_t _route = 0;            // discovery: 0 not yet, 1 typed path tried, 2 by the principal
   uint8_t _tries = 0;
   uint32_t _pairStart = 0, _doneAt = 0;
   uint8_t _qr[(QR_MAX * QR_MAX + 7) / 8] = {};

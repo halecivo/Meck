@@ -9,8 +9,12 @@ htpasswd_encryption = bcrypt
 delay = 1
 
 [rights]
-# Each user sees only their own collections
+# Each user sees only their own collections. To let the deck read yours
+# (calendars and contacts synced from iCloud), copy rights.example to rights,
+# put your user name in, and use the two lines below instead.
 type = owner_only
+#type = from_file
+#file = /config/rights
 
 [storage]
 filesystem_folder = /data/collections

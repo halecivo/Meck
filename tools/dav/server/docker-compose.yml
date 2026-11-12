@@ -25,3 +25,25 @@ services:
       test: curl -f http://127.0.0.1:5232 || exit 1
       interval: 30s
       retries: 3
+
+  # iCloud -> Radicale, one way, every 15 minutes (vdirsyncer/config.example).
+  # Needs ./vdirsyncer/config and ./secrets/{icloud,radicale}; talks to
+  # Radicale inside the compose network, so nothing else is opened.
+  vdirsyncer:
+    build: ./vdirsyncer
+    container_name: vdirsyncer
+    restart: unless-stopped
+    init: true
+    read_only: true
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    pids_limit: 50
+    mem_limit: 256m
+    depends_on: [radicale]
+    environment:
+      SYNC_EVERY: "900"
+    tmpfs: [/tmp]
+    volumes:
+      - ./vdirsyncer/config:/config/config:ro
+      - ./secrets:/secrets:ro
+      - ./status:/status
