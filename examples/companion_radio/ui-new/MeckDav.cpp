@@ -7,6 +7,7 @@
   #include "MeckHa.h"
 #endif
 #include <Arduino.h>
+#include <new>
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
 #include <HTTPClient.h>
@@ -16,6 +17,7 @@
   #include "SMSContacts.h"   // where the synced contacts go
 #endif
 #include <esp_heap_caps.h>
+#include <esp_memory_utils.h>
 #include <esp_random.h>
 #include <esp_wifi.h>
 #include <mbedtls/platform.h>
@@ -24,7 +26,19 @@
   #include <esp_pm.h>
 #endif
 
-MeckDav meckDav;
+// The account, the pairing and the sync keep about 8 kB of arrays. Internal
+// RAM is what WiFi, TLS and every connection live on (about 9 kB are left with
+// WiFi on), so the object goes to PSRAM. Made at the first use (setup()):
+// during the global constructors PSRAM is not in the heap yet.
+MeckDav& meckDavGet() {
+  static MeckDav* inst = nullptr;
+  if (!inst) {
+    void* p = heap_caps_calloc(1, sizeof(MeckDav), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!p) p = calloc(1, sizeof(MeckDav));
+    inst = new (p) MeckDav();
+  }
+  return *inst;
+}
 
 #define DAV_NVS       "meckdav"
 #define DAV_RESP_LEN  24576   // a calendar list with a few dozen calendars, or a sync listing
@@ -168,7 +182,11 @@ static const char* davErrText(int rc) {
 
 // --- NVS ------------------------------------------------------------------------
 
-void MeckDav::begin() { load(); }
+void MeckDav::begin() {
+  load();
+  Serial.printf("DAV: state %u bytes in %s\n", (unsigned)sizeof(MeckDav),
+                esp_ptr_external_ram(this) ? "PSRAM" : "internal RAM");
+}
 
 void MeckDav::load() {
   Preferences p;

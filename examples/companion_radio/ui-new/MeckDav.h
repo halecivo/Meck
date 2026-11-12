@@ -175,6 +175,7 @@ private:
   void sendPage(int code, const char* title, const char* body, int refreshSecs = 0);
 };
 
-extern MeckDav meckDav;
+MeckDav& meckDavGet();     // the one instance, in PSRAM (MeckDav.cpp)
+#define meckDav (meckDavGet())
 
 #endif
