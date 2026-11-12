@@ -5203,6 +5203,20 @@ static void meckPwrLogTick() {
 }
 #endif
 
+#ifdef HAS_4G_MODEM
+// Key or tap on a call screen (dialing, ringing, in call)
+static void smsCallInput(SMSScreen* smsScr, char key) {
+  smsScr->handleInput(key);
+  if (!smsScr->isInCallView()) {
+    // Hangup just happened — show "Call Ended" alert immediately
+    ui_task.showAlert(MECK_TR("Call Ended", "Appel termin\xC3\xA9"), 2000);
+  }
+  // Force immediate render (call screen updates or return-to-dialer)
+  ui_task.forceRefresh();
+  ui_task.loop();
+}
+#endif
+
 // ---- Phone dialer input ----
 //
 // Typing a number at phone speed puts several digits into one e-ink refresh,
@@ -5232,7 +5246,8 @@ static void pollDialerTouch() {
   if (!smsMode) return;
   SMSScreen* smsScr = (SMSScreen*)ui_task.getSMSScreen();
   if (smsScr && (smsScr->getSubView() == SMSScreen::PHONE_DIALER
-                 || smsScr->getSubView() == SMSScreen::APP_MENU)) {
+                 || smsScr->getSubView() == SMSScreen::APP_MENU
+                 || smsScr->isInCallView())) {
     int16_t tx, ty;
     #if defined(LilyGo_TDeck_Pro_Max) || defined(MECK_PRO_HYN_TOUCH)
     int16_t _htx[1], _hty[1];
@@ -5250,7 +5265,13 @@ static void pollDialerTouch() {
       if (!touchFingerDown && (now - lastTouchAccepted >= DIAL_LIFT_MS)) {
         touchFingerDown = true;
         lastTouchAccepted = now;
-        if (smsScr->handleTouch(tx, ty)) {
+        if (smsScr->isInCallView()) {
+          // Answer / reject / hang up buttons. Only reached from the loop:
+          // the busy-poll path runs while the dialer or menu is drawn.
+          ui_task.keepAlive();
+          char k = smsScr->callTouchKey(tx, ty);
+          if (k) smsCallInput(smsScr, k);
+        } else if (smsScr->handleTouch(tx, ty)) {
           dialerNeedsRefresh = true;
           // Don't reset the gate on touch: COMPOSE_REFRESH_INTERVAL is
           // measured from the last completed render (set at the render
@@ -5981,12 +6002,10 @@ void loop() {
       }
 
       if (callEvt.type == CallEventType::INCOMING) {
-        // Incoming call — auto-switch to SMS screen if not already there
-        char alertBuf[48];
-        char dispName[SMS_CONTACT_NAME_LEN];
-        smsContacts.displayName(callEvt.phone, dispName, sizeof(dispName));
-        snprintf(alertBuf, sizeof(alertBuf), MECK_TR("Call: %s", "Appel : %s"), dispName);
-        ui_task.showAlert(alertBuf, 3000);
+        // Incoming call — auto-switch to SMS screen if not already there.
+        // No toast: the ringing screen shows the caller, and the toast
+        // (re-raised by every +CLIP, i.e. every ring) covered the
+        // Answer / Reject buttons.
         ui_task.notify(UIEventType::contactMessage);
 
         // An incoming call drops the lock screen so the call can be answered.
@@ -6278,8 +6297,10 @@ void loop() {
     // SMS dialer has its own dedicated touch handler — don't consume touch data here
     if (smsMode) {
       SMSScreen* smsScr = (SMSScreen*)ui_task.getSMSScreen();
+      // Call screens too: a header tap must not leave a ringing call for Home
       if (smsScr && (smsScr->getSubView() == SMSScreen::PHONE_DIALER
-                     || smsScr->getSubView() == SMSScreen::APP_MENU)) {
+                     || smsScr->getSubView() == SMSScreen::APP_MENU
+                     || smsScr->isInCallView())) {
         touchBlocked = true;
       }
     }
@@ -7295,14 +7316,7 @@ void handleKeyboardInput() {
       // bypassing injectKey() which normally extends the auto-off timer.
       ui_task.keepAlive();
       if (smsScr->isInCallView()) {
-        smsScr->handleInput(key);
-        if (!smsScr->isInCallView()) {
-          // Hangup just happened — show "Call Ended" alert immediately
-          ui_task.showAlert(MECK_TR("Call Ended", "Appel termin\xC3\xA9"), 2000);
-        }
-        // Force immediate render (call screen updates or return-to-dialer)
-        ui_task.forceRefresh();
-        ui_task.loop();
+        smsCallInput(smsScr, key);
         return;
       }
 

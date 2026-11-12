@@ -218,6 +218,32 @@ public:
     return _view == DIALING_OUT || _view == INCOMING_CALL || _view == IN_CALL;
   }
 
+  // Tap on a call screen (PHYSICAL touch coords) -> the key the keyboard
+  // would send: '\r' answers a ringing call / hangs up, KEY_CANCEL rejects.
+  // 0 = tap outside the buttons, so a stray touch mid-call does nothing.
+  char callTouchKey(int16_t px, int16_t py, int dispW = 128, int dispH = 128,
+                    int physW = 240, int physH = 320) const {
+    if (!isInCallView()) return 0;
+#ifdef MECK_UI_V2
+    // Button row of v2CallButton(), with a little slack above it
+    (void)dispW; (void)dispH; (void)physW; (void)physH;
+    using namespace ui2;
+    const int16_t top = FOOTER_Y - 8 - 48 - 8;
+    if (py < top || py >= FOOTER_Y) return 0;
+    if (_view != INCOMING_CALL) return '\r';
+    const int16_t w = (SCREEN_W - 2 * PAD - 8) / 2;   // must match renderIncomingCallV2
+    return (px < PAD + w + 4) ? '\r' : (char)KEY_CANCEL;
+#else
+    // Classic UI has no buttons, only the footer legend: the footer line is
+    // the target, Answer on the left and Reject on the right as printed
+    int x = (int)px * dispW / physW;
+    int y = (int)py * dispH / physH;
+    if (y < dispH - 14) return 0;
+    if (_view != INCOMING_CALL) return '\r';
+    return (x < dispW / 2) ? '\r' : (char)KEY_CANCEL;
+#endif
+  }
+
   // Transition to dialing screen — used by all dial callsites
   void startCall(const char* phone) {
     strncpy(_callPhone, phone, SMS_PHONE_LEN - 1);
