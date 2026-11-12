@@ -1,0 +1,4 @@
+# Run inside Linux containers: LF even in a Windows checkout
+*.sh text eol=lf
+Dockerfile text eol=lf
+config.example text eol=lf

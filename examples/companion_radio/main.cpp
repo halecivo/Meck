@@ -172,6 +172,13 @@
   void meckHaTick();
   #endif
 
+  #if defined(MECK_DAV) && MECK_DAV
+  // CalDAV account (experimental, docs/caldav-design.md)
+  #include "MeckDav.h"
+  #include "DavScreen.h"
+  void meckDavTick();
+  #endif
+
   // SD-backed persistence state
   static bool sdCardReady = false;
 
@@ -1276,6 +1283,9 @@ static uint32_t _atoi(const char* sp) {
     else if (strcmp(name, "rxlog") == 0)    ui_task.gotoRxLogScreen();
 #if defined(MECK_HA) && MECK_HA
     else if (strcmp(name, "ha") == 0)       ui_task.gotoHaScreen();
+#endif
+#if defined(MECK_DAV) && MECK_DAV
+    else if (strcmp(name, "dav") == 0)      ui_task.gotoDavScreen();
 #endif
     else if (strcmp(name, "chat") == 0)     ui_task.gotoChannelScreen();
 #ifdef MECK_UI_V2
@@ -3322,6 +3332,9 @@ void setup() {
 #if defined(MECK_HA) && MECK_HA
   meckHa.begin();
 #endif
+#if defined(MECK_DAV) && MECK_DAV
+  meckDav.begin();
+#endif
 
   // ---------------------------------------------------------------------------
   // OTA boot validation — confirm new firmware is working after an OTA update.
@@ -5301,6 +5314,9 @@ void loop() {
   #if defined(MECK_HA) && MECK_HA
   meckHaTick();            // Home Assistant: pairing web server, sensor updates
   #endif
+  #if defined(MECK_DAV) && MECK_DAV
+  meckDavTick();           // CalDAV account: pairing web server and discovery
+  #endif
   #ifdef MECK_OTA_UPDATE
   if (!otaRadioPaused) {
   #endif
@@ -6584,6 +6600,19 @@ void handleKeyboardInput() {
   }
 #endif
 
+#if defined(MECK_DAV) && MECK_DAV
+  // Calendar account screen: it takes every key (P and X are shortcuts elsewhere)
+  if (ui_task.isOnDavScreen()) {
+    ui_task.injectKey(key);
+    DavScreen* dav = (DavScreen*)ui_task.getDavScreen();
+    if (dav->wantsExit()) {
+      dav->clearExit();
+      ui_task.leaveDavScreen();
+    }
+    return;
+  }
+#endif
+
 #ifdef MECK_QUICK_SETTINGS
   // Quick settings: Alt+Space opens and closes it over any screen, text
   // entry included; while it is up it takes every key
@@ -7149,6 +7178,12 @@ void handleKeyboardInput() {
     if (settings->isHaRequested()) {
       settings->clearHaRequest();
       ui_task.gotoHaScreen();
+    }
+#endif
+#if defined(MECK_DAV) && MECK_DAV
+    if (settings->isDavRequested()) {
+      settings->clearDavRequest();
+      ui_task.gotoDavScreen();
     }
 #endif
     // Check for channel share request from the settings screen
@@ -8815,6 +8850,17 @@ void meckHaDeviceName(char* out, size_t n) {
 }
 
 void meckHaCmd(const char* arg) { meckHa.cmd(arg); }
+#endif
+
+#if defined(MECK_DAV) && MECK_DAV
+// CalDAV account (docs/caldav-design.md)
+void meckDavTick() {
+  // The QR code has to stay up while someone is scanning it: no auto-lock
+  if (meckDav.pairingActive() && ui_task.isOnDavScreen()) ui_task.resetIdleTimer();
+  meckDav.loop(ui_task.isLocked());
+}
+
+void meckDavCmd(const char* arg) { meckDav.cmd(arg); }
 #endif
 
 // SOS channels (Settings > SOS) are kept by the start of the channel's

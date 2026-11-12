@@ -1,0 +1,7 @@
+# Real data and secrets stay on the server, never in git
+data/
+secrets/
+status/
+config/users
+config/rights
+vdirsyncer/config

@@ -298,6 +298,9 @@ enum SettingsRowType : uint8_t {
 #if defined(MECK_HA) && MECK_HA
   ROW_HOME_ASSISTANT,   // Folder row: opens the Home Assistant screen (HaScreen)
 #endif
+#if defined(MECK_DAV) && MECK_DAV
+  ROW_CALENDAR_ACCOUNT, // Folder row: opens the calendar account screen (DavScreen)
+#endif
 };
 
 // ---------------------------------------------------------------------------
@@ -454,6 +457,9 @@ private:
 
   bool _rxlogRequested = false;  // set by key handler, cleared by main.cpp after opening Rx Log
   bool _haRequested = false;     // the same for the Home Assistant screen
+#if defined(MECK_DAV) && MECK_DAV
+  bool _davRequested = false;    // ... and for the calendar account screen
+#endif
 
   // Channel share picker state
   #define SHARE_MAX_CONTACTS 32
@@ -636,6 +642,9 @@ private:
 #endif
 #if defined(MECK_HA) && MECK_HA
       addRow(ROW_HOME_ASSISTANT);
+#endif
+#if defined(MECK_DAV) && MECK_DAV
+      addRow(ROW_CALENDAR_ACCOUNT);
 #endif
 #if defined(LilyGo_TDeck_Pro)
     } else if (_subScreen == SUB_SOS) {
@@ -1249,6 +1258,10 @@ public:
   void clearRxLogRequest() { _rxlogRequested = false; }
   bool isHaRequested() const { return _haRequested; }
   void clearHaRequest() { _haRequested = false; }
+#if defined(MECK_DAV) && MECK_DAV
+  bool isDavRequested() const { return _davRequested; }
+  void clearDavRequest() { _davRequested = false; }
+#endif
 
   // Channel share request -- checked and cleared by main.cpp
   bool isShareRequested() const { return _shareRequested; }
@@ -2905,6 +2918,13 @@ public:
       case ROW_HOME_ASSISTANT:
         display.setColor(selected ? DisplayDriver::DARK : DisplayDriver::GREEN);
         display.print("Home Assistant >>");
+        break;
+#endif
+
+#if defined(MECK_DAV) && MECK_DAV
+      case ROW_CALENDAR_ACCOUNT:
+        display.setColor(selected ? DisplayDriver::DARK : DisplayDriver::GREEN);
+        display.print(MECK_TR("Calendar account >>", "Compte agenda >>"));
         break;
 #endif
 
@@ -5315,6 +5335,12 @@ public:
 #if defined(MECK_HA) && MECK_HA
         case ROW_HOME_ASSISTANT:
           _haRequested = true;
+          break;
+#endif
+
+#if defined(MECK_DAV) && MECK_DAV
+        case ROW_CALENDAR_ACCOUNT:
+          _davRequested = true;
           break;
 #endif
 

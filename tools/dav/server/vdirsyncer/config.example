@@ -1,0 +1,58 @@
+# vdirsyncer: iCloud -> Radicale, one way. Copy to `config` (not in git) and
+# put in your Apple ID and Radicale user. The passwords are read from files in
+# ../secrets (not in git):
+#   secrets/icloud    app-specific password from appleid.apple.com
+#   secrets/radicale  the password of YOUR Radicale user (not the deck's)
+#
+# iCloud is read only here: nothing is ever written there. Whatever changes in
+# Radicale's copies is put back the way iCloud has it at the next sync
+# (partial_sync = "revert"), so Radicale stays a mirror. Change things on the
+# phone (iCloud), not in Radicale.
+
+[general]
+status_path = "/status/"
+
+# --- Contacts -------------------------------------------------------------------
+
+[pair contacts]
+a = "icloud_contacts"
+b = "radicale_contacts"
+collections = ["from a"]
+conflict_resolution = "a wins"
+partial_sync = "revert"
+
+[storage icloud_contacts]
+type = "carddav"
+url = "https://contacts.icloud.com/"
+username = "your-apple-id@example.com"
+password.fetch = ["command", "cat", "/secrets/icloud"]
+read_only = true
+
+[storage radicale_contacts]
+type = "carddav"
+url = "http://radicale:5232/"
+username = "you"
+password.fetch = ["command", "cat", "/secrets/radicale"]
+
+# --- Calendars (iCloud's Reminders lists come along; the deck shows events only)
+
+[pair calendars]
+a = "icloud_calendars"
+b = "radicale_calendars"
+collections = ["from a"]
+conflict_resolution = "a wins"
+partial_sync = "revert"
+metadata = ["displayname", "color"]
+
+[storage icloud_calendars]
+type = "caldav"
+url = "https://caldav.icloud.com/"
+username = "your-apple-id@example.com"
+password.fetch = ["command", "cat", "/secrets/icloud"]
+read_only = true
+
+[storage radicale_calendars]
+type = "caldav"
+url = "http://radicale:5232/"
+username = "you"
+password.fetch = ["command", "cat", "/secrets/radicale"]

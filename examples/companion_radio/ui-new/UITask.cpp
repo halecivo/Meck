@@ -24,6 +24,9 @@
 #if defined(LilyGo_TDeck_Pro_Max)
   #include "DRV2605Haptic.h"   // haptic motor for "Buzzer (vibrate)" channels
 #endif
+#if defined(MECK_DAV) && MECK_DAV
+  #include "DavScreen.h"
+#endif
 #if defined(MECK_HA) && MECK_HA
   #include "HaScreen.h"
 #endif
@@ -2576,6 +2579,9 @@ void UITask::begin(DisplayDriver* display, SensorManager* sensors, NodePrefs* no
 #if defined(MECK_HA) && MECK_HA
   ha_screen = new HaScreen(&rtc_clock, node_prefs);
 #endif
+#if defined(MECK_DAV) && MECK_DAV
+  dav_screen = new DavScreen();
+#endif
   audiobook_screen = nullptr;  // Created and assigned from main.cpp if audio hardware present
 #ifdef MECK_AUDIO_VARIANT
   alarm_screen = nullptr;      // Created and assigned from main.cpp if audio hardware present
@@ -3750,6 +3756,25 @@ void UITask::gotoHaScreen() {
 void UITask::leaveHaScreen() {
   UIScreen* back = _screenBeforeHa;
   _screenBeforeHa = nullptr;
+  if (back) setCurrScreen(back);
+  else gotoHomeScreen();
+  keepAlive();
+  _next_refresh = 0;
+}
+#endif
+
+#if defined(MECK_DAV) && MECK_DAV
+void UITask::gotoDavScreen() {
+  ((DavScreen*)dav_screen)->onOpen();
+  if (curr != dav_screen) _screenBeforeDav = curr;
+  setCurrScreen(dav_screen);
+  keepAlive();
+  _next_refresh = 0;
+}
+
+void UITask::leaveDavScreen() {
+  UIScreen* back = _screenBeforeDav;
+  _screenBeforeDav = nullptr;
   if (back) setCurrScreen(back);
   else gotoHomeScreen();
   keepAlive();
