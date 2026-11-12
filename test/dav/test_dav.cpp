@@ -249,6 +249,151 @@ static void testMalformed() {
   CHECK(v.size() == 1 && strlen(v[0].href) < sizeof(v[0].href));
 }
 
+// --- CardDAV ------------------------------------------------------------------------
+// Written by hand in the shape Radicale 3 answers (to be checked against a
+// capture); the names and numbers are made up.
+
+static const char FX_HOMES[] = R"FX(<?xml version='1.0' encoding='utf-8'?>
+<multistatus xmlns="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav" xmlns:CR="urn:ietf:params:xml:ns:carddav"><response><href>/deck/</href><propstat><prop><C:calendar-home-set><href>/deck/</href></C:calendar-home-set><CR:addressbook-home-set><href>/deck/</href></CR:addressbook-home-set></prop><status>HTTP/1.1 200 OK</status></propstat></response></multistatus>)FX";
+
+// Contacts only (no calendar home): the 404 block must not break the rest
+static const char FX_HOMES_AB_ONLY[] = R"FX(<?xml version="1.0"?>
+<d:multistatus xmlns:d="DAV:" xmlns:card="urn:ietf:params:xml:ns:carddav" xmlns:cal="urn:ietf:params:xml:ns:caldav"><d:response><d:href>/remote.php/dav/principals/users/deck/</d:href><d:propstat><d:prop><card:addressbook-home-set><d:href>/remote.php/dav/addressbooks/users/deck/</d:href></card:addressbook-home-set></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat><d:propstat><d:prop><cal:calendar-home-set/></d:prop><d:status>HTTP/1.1 404 Not Found</d:status></d:propstat></d:response></d:multistatus>)FX";
+
+static const char FX_BOOKS[] = R"FX(<?xml version='1.0' encoding='utf-8'?>
+<multistatus xmlns="DAV:" xmlns:CR="urn:ietf:params:xml:ns:carddav" xmlns:CS="http://calendarserver.org/ns/"><response><href>/deck/</href><propstat><prop><resourcetype><principal /><collection /></resourcetype></prop><status>HTTP/1.1 200 OK</status></propstat></response><response><href>/deck/contacts/</href><propstat><prop><resourcetype><CR:addressbook /><collection /></resourcetype><displayname>Contacts</displayname><CS:getctag>"abc123"</CS:getctag><sync-token>http://radicale.org/ns/sync/abc123</sync-token></prop><status>HTTP/1.1 200 OK</status></propstat></response></multistatus>)FX";
+
+static const char FX_CARD_LIST[] = R"FX(<?xml version='1.0' encoding='utf-8'?>
+<multistatus xmlns="DAV:"><response><href>/deck/contacts/</href><propstat><prop><resourcetype><collection /></resourcetype></prop><status>HTTP/1.1 200 OK</status></propstat></response><response><href>/deck/contacts/a1.vcf</href><propstat><prop><resourcetype /><getetag>"e1"</getetag><getcontentlength>312</getcontentlength></prop><status>HTTP/1.1 200 OK</status></propstat></response><response><href>/deck/contacts/b%202.vcf</href><propstat><prop><resourcetype /><getetag>"e2"</getetag><getcontentlength>48210</getcontentlength></prop><status>HTTP/1.1 200 OK</status></propstat></response></multistatus>)FX";
+
+// multiget reply: an escaped card, a CDATA card, a card without numbers
+static const char FX_MULTIGET[] = "<?xml version='1.0' encoding='utf-8'?>\n"
+  "<multistatus xmlns=\"DAV:\" xmlns:CR=\"urn:ietf:params:xml:ns:carddav\">"
+  "<response><href>/deck/contacts/a1.vcf</href><propstat><prop><getetag>\"e1\"</getetag><CR:address-data>"
+  "BEGIN:VCARD&#13;\nVERSION:3.0&#13;\nFN:Jan Nov\xC3\xA1k &amp; syn&#13;\nN:Nov\xC3\xA1k;Jan;;;&#13;\n"
+  "TEL;TYPE=CELL:+420 777 123 456&#13;\nitem1.TEL;TYPE=\"voice,home\":00420 212 345 678&#13;\n"
+  "TEL:+420777123456&#13;\nEND:VCARD&#13;\n</CR:address-data></prop><status>HTTP/1.1 200 OK</status></propstat></response>"
+  "<response><href>/deck/contacts/b%202.vcf</href><propstat><prop><getetag>\"e2\"</getetag><CR:address-data><![CDATA[BEGIN:VCARD\r\n"
+  "VERSION:3.0\r\nN:Dvo\xC5\x99\xC3\xA1k;Petr;;;\r\nPHOTO;ENCODING=b;TYPE=JPEG:/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/2wBDAQkJCQwLDBgNDQ\r\n"
+  " gyIRwhMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjI\r\n"
+  "TEL;TYPE=WORK:(02) 9876-5432 ext. 12\r\nEND:VCARD\r\n]]></CR:address-data></prop><status>HTTP/1.1 200 OK</status></propstat></response>"
+  "<response><href>/deck/contacts/c.vcf</href><propstat><prop><getetag>\"e3\"</getetag><CR:address-data>"
+  "BEGIN:VCARD&#13;\nVERSION:3.0&#13;\nFN:No Number&#13;\nEMAIL:a@example.com&#13;\nEND:VCARD&#13;\n"
+  "</CR:address-data></prop><status>HTTP/1.1 200 OK</status></propstat></response>"
+  "<response><href>/deck/contacts/gone.vcf</href><status>HTTP/1.1 404 Not Found</status></response></multistatus>";
+
+struct Got { std::vector<std::string> names, phones; };
+static void gotFn(const char* n, const char* p, void* c) { ((Got*)c)->names.push_back(n); ((Got*)c)->phones.push_back(p); }
+
+static void testPhones() {
+  char o[24];
+  CHECK(davPhoneNorm("+420 777-12 34 56", o, sizeof(o)));   CHECK_STR(o, "+420777123456");
+  CHECK(davPhoneNorm("tel:00420777123456", o, sizeof(o)));  CHECK_STR(o, "+420777123456");
+  CHECK(davPhoneNorm("(02) 9876 5432 x12", o, sizeof(o)));  CHECK_STR(o, "0298765432");
+  CHECK(davPhoneNorm("777123456;ext=5", o, sizeof(o)));     CHECK_STR(o, "777123456");
+  CHECK(!davPhoneNorm("12", o, sizeof(o)));
+  CHECK(!davPhoneNorm("+1 234 567 890 123 456 789 012 345 678", o, sizeof(o)));   // does not fit
+  CHECK(!davPhoneNorm("", o, sizeof(o)));
+  CHECK(davPhoneSame("+420777123456", "777 123 456"));
+  CHECK(davPhoneSame("+420777123456", "00420777123456"));
+  CHECK(!davPhoneSame("+420777123456", "+420777123457"));
+  CHECK(!davPhoneSame("1234", "+421234"));           // short numbers only whole
+  CHECK(davPhoneSame("1234", "1234"));
+  CHECK(!davPhoneSame("", ""));
+}
+
+static void testHomes() {
+  auto v = parse(FX_HOMES);
+  CHECK(v.size() == 1);
+  CHECK_STR(v[0].home, "/deck/");
+  CHECK_STR(v[0].abHome, "/deck/");
+  v = parse(FX_HOMES_AB_ONLY);
+  CHECK(v.size() == 1);
+  CHECK_STR(v[0].home, "");
+  CHECK_STR(v[0].abHome, "/remote.php/dav/addressbooks/users/deck/");
+}
+
+static void testBooks() {
+  auto v = parse(FX_BOOKS);
+  CHECK(v.size() == 2);
+  CHECK(!v[0].isAddressbook);
+  CHECK(v[1].isAddressbook && v[1].isCollection && !v[1].isCalendar);
+  CHECK_STR(v[1].name, "Contacts");
+  CHECK_STR(v[1].ctag, "\"abc123\"");
+  CHECK_STR(v[1].syncToken, "http://radicale.org/ns/sync/abc123");
+  v = parse(FX_CARD_LIST);
+  CHECK(v.size() == 3);
+  CHECK(v[0].isCollection && v[0].contentLength == -1);
+  CHECK(!v[1].isCollection && v[1].contentLength == 312);
+  CHECK_STR(v[2].href, "/deck/contacts/b%202.vcf");
+  CHECK(v[2].contentLength == 48210);
+}
+
+static void testMultiget() {
+  auto v = parse(FX_MULTIGET);
+  CHECK(v.size() == 4);
+  Got g;
+  int cards = 0;
+  for (auto& r : v) cards += davVcardParse(r.data, r.dataLen, gotFn, &g);
+  CHECK(cards == 3);
+  CHECK(v[3].status == 404 && v[3].data == nullptr);
+  CHECK(g.phones.size() == 3);
+  if (g.phones.size() == 3) {
+    CHECK_STR(g.names[0].c_str(), "Jan Nov\xC3\xA1k & syn");
+    CHECK_STR(g.phones[0].c_str(), "+420777123456");     // the duplicate TEL dropped
+    CHECK_STR(g.phones[1].c_str(), "+420212345678");     // grouped, quoted TYPE with a comma
+    CHECK_STR(g.names[2].c_str(), "Petr Dvo\xC5\x99\xC3\xA1k");   // from N, no FN
+    CHECK_STR(g.phones[2].c_str(), "0298765432");
+  }
+}
+
+static void testVcardOddities() {
+  // vCard 2.1 quoted-printable with a soft break, LF only, escapes, ORG name
+  const char* c1 =
+    "BEGIN:VCARD\nVERSION:2.1\nN;CHARSET=UTF-8;ENCODING=QUOTED-PRINTABLE:=C5=A0imek;Pavel=\n;;;\n"
+    "TEL;CELL:+420 603 000 111\nEND:VCARD\n"
+    "BEGIN:VCARD\nVERSION:3.0\nFN:Smith\\, John\nTEL:+44 20 7946 0000\nEND:VCARD\n"
+    "BEGIN:VCARD\nVERSION:4.0\nORG:Pizza Roma;Delivery\nTEL;VALUE=uri:tel:+420-222-333-444\nEND:VCARD\n"
+    "BEGIN:VCARD\nVERSION:4.0\nTEL:+420 111 222 333\nEND:VCARD\n"
+    "BEGIN:VCARD\nFN:Folded\n Name\nTEL:123 456\n 789\nEND:VCARD";   // no newline at the end
+  Got g;
+  int cards = davVcardParse(c1, strlen(c1), gotFn, &g);
+  CHECK(cards == 5);
+  CHECK(g.phones.size() == 5);
+  if (g.phones.size() == 5) {
+    CHECK_STR(g.names[0].c_str(), "Pavel \xC5\xA0imek");
+    CHECK_STR(g.phones[0].c_str(), "+420603000111");
+    CHECK_STR(g.names[1].c_str(), "Smith, John");
+    CHECK_STR(g.names[2].c_str(), "Pizza Roma");
+    CHECK_STR(g.phones[2].c_str(), "+420222333444");
+    CHECK_STR(g.names[3].c_str(), "+420111222333");     // no name at all: the number
+    CHECK_STR(g.names[4].c_str(), "FoldedName");
+    CHECK_STR(g.phones[4].c_str(), "123456789");
+  }
+  // Garbage, a card that never ends, a huge line: nothing, no crash
+  std::string big = "BEGIN:VCARD\nFN:";
+  big.append(5000, 'x');
+  big += "\nTEL:+420777000000\nEND:VCARD\n";
+  Got g2;
+  CHECK(davVcardParse(big.c_str(), big.size(), gotFn, &g2) == 1);
+  CHECK(g2.phones.size() == 1 && g2.names[0].size() == 95);
+  Got g3;
+  CHECK(davVcardParse("BEGIN:VCARD\nTEL:777\n", 20, gotFn, &g3) == 0 && g3.phones.empty());
+  CHECK(davVcardParse("&amp&#xZZ;&#99999999;<![CDATA[", 30, gotFn, &g3) == 0);
+  CHECK(davVcardParse(nullptr, 0, gotFn, &g3) == 0);
+}
+
+static void testMultigetBody() {
+  char b[700];
+  const char* hrefs[] = { "/deck/contacts/a1.vcf", "/deck/contacts/x&y<z>.vcf" };
+  size_t n = davMultigetBody(b, sizeof(b), hrefs, 2);
+  CHECK(n == strlen(b) && n > 0);
+  CHECK(strstr(b, "<d:href>/deck/contacts/a1.vcf</d:href>") != nullptr);
+  CHECK(strstr(b, "<d:href>/deck/contacts/x&amp;y&lt;z&gt;.vcf</d:href></r:addressbook-multiget>") != nullptr);
+  CHECK(davMultigetBody(b, 300, hrefs, 2) == 0);    // too small
+  CHECK(davMultigetBody(b, sizeof(b), hrefs, 0) > 0);
+}
+
 int main() {
   testUrls();
   testBasic();
@@ -259,6 +404,12 @@ int main() {
   testSyncCollection();
   testDeletedAndOtherServers();
   testMalformed();
+  testPhones();
+  testHomes();
+  testBooks();
+  testMultiget();
+  testVcardOddities();
+  testMultigetBody();
   printf("%d checks, %d failed\n", checks, failures);
   return failures ? 1 : 0;
 }

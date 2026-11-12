@@ -2,8 +2,8 @@
 // =============================================================================
 // CalDAV/CardDAV client (docs/caldav-design.md) -- the parts without hardware
 //
-// URL handling, HTTP Basic, and a small XML reader for the multistatus
-// replies of PROPFIND and REPORT. The replies are flat enough that a tag
+// URL handling, HTTP Basic, a small XML reader for the multistatus
+// replies of PROPFIND and REPORT, and the vCard reading for CardDAV contacts. The replies are flat enough that a tag
 // scanner does instead of an XML library: namespace prefixes are dropped,
 // entities and CDATA are decoded, and one DavResponse is handed to the
 // callback per <response>. No Arduino code here, so test/dav/test_dav.cpp
@@ -184,10 +184,13 @@ static const char DAV_BODY_PRINCIPAL[] =
   "<?xml version=\"1.0\" encoding=\"utf-8\"?>"
   "<d:propfind xmlns:d=\"DAV:\"><d:prop><d:current-user-principal/></d:prop></d:propfind>";
 
+// Both home sets in one go: a server without contacts (or calendars) answers
+// the other one in a 404 propstat, which the reader ignores
 static const char DAV_BODY_CAL_HOME[] =
   "<?xml version=\"1.0\" encoding=\"utf-8\"?>"
-  "<d:propfind xmlns:d=\"DAV:\" xmlns:c=\"urn:ietf:params:xml:ns:caldav\">"
-  "<d:prop><c:calendar-home-set/></d:prop></d:propfind>";
+  "<d:propfind xmlns:d=\"DAV:\" xmlns:c=\"urn:ietf:params:xml:ns:caldav\" "
+  "xmlns:r=\"urn:ietf:params:xml:ns:carddav\">"
+  "<d:prop><c:calendar-home-set/><r:addressbook-home-set/></d:prop></d:propfind>";
 
 static const char DAV_BODY_CAL_LIST[] =
   "<?xml version=\"1.0\" encoding=\"utf-8\"?>"
@@ -195,6 +198,49 @@ static const char DAV_BODY_CAL_LIST[] =
   "xmlns:a=\"http://apple.com/ns/ical/\" xmlns:cs=\"http://calendarserver.org/ns/\">"
   "<d:prop><d:resourcetype/><d:displayname/><a:calendar-color/><cs:getctag/><d:sync-token/>"
   "<c:supported-calendar-component-set/></d:prop></d:propfind>";
+
+// Has an address book changed since the last sync (depth 0)
+static const char DAV_BODY_BOOK_STATE[] =
+  "<?xml version=\"1.0\" encoding=\"utf-8\"?>"
+  "<d:propfind xmlns:d=\"DAV:\" xmlns:cs=\"http://calendarserver.org/ns/\">"
+  "<d:prop><cs:getctag/><d:sync-token/></d:prop></d:propfind>";
+
+// The cards in an address book (depth 1): what to fetch, and how big it is
+static const char DAV_BODY_BOOK_LIST[] =
+  "<?xml version=\"1.0\" encoding=\"utf-8\"?>"
+  "<d:propfind xmlns:d=\"DAV:\"><d:prop><d:resourcetype/><d:getetag/><d:getcontentlength/>"
+  "</d:prop></d:propfind>";
+
+// addressbook-multiget for up to n hrefs (paths, XML-escaped here). Asks for
+// the name and numbers only; most servers send the whole card anyway. Returns
+// the body length, 0 when it does not fit.
+static inline size_t davMultigetBody(char* out, size_t cap, const char* const* hrefs, int n) {
+  static const char head[] =
+    "<?xml version=\"1.0\" encoding=\"utf-8\"?>"
+    "<r:addressbook-multiget xmlns:d=\"DAV:\" xmlns:r=\"urn:ietf:params:xml:ns:carddav\">"
+    "<d:prop><d:getetag/><r:address-data><r:prop name=\"FN\"/><r:prop name=\"N\"/>"
+    "<r:prop name=\"ORG\"/><r:prop name=\"TEL\"/></r:address-data></d:prop>";
+  static const char tail[] = "</r:addressbook-multiget>";
+  if (!out || cap < sizeof(head) + sizeof(tail)) return 0;
+  size_t o = 0;
+  memcpy(out, head, sizeof(head) - 1);
+  o = sizeof(head) - 1;
+  for (int k = 0; k < n; k++) {
+    if (o + 16 >= cap) return 0;
+    memcpy(out + o, "<d:href>", 8); o += 8;
+    for (const char* p = hrefs[k]; *p; p++) {
+      const char* e = *p == '&' ? "&amp;" : *p == '<' ? "&lt;" : *p == '>' ? "&gt;" : nullptr;
+      size_t el = e ? strlen(e) : 1;
+      if (o + el + 16 >= cap) return 0;
+      if (e) { memcpy(out + o, e, el); o += el; }
+      else out[o++] = *p;
+    }
+    memcpy(out + o, "</d:href>", 9); o += 9;
+  }
+  if (o + sizeof(tail) > cap) return 0;
+  memcpy(out + o, tail, sizeof(tail));   // with the 0
+  return o + sizeof(tail) - 1;
+}
 
 // Every change in a calendar since the (empty) token = the whole listing, etags only
 static const char DAV_BODY_SYNC_ALL[] =
@@ -213,6 +259,10 @@ struct DavResponse {
   char syncToken[120];
   char principal[200];    // current-user-principal / href
   char home[200];         // calendar-home-set / href
+  char abHome[200];       // addressbook-home-set / href
+  long contentLength;     // getcontentlength, -1 = not given
+  const char* data;       // address-data / calendar-data: raw text in the reply (still
+  size_t dataLen;         //   XML-escaped, or a CDATA section), not copied
   int status;             // status of the response itself (sync-collection: 404 = deleted), 0 = none
   bool isCollection, isCalendar, isAddressbook;
   bool hasVevent, hasVtodo, hasComps;   // supported-calendar-component-set seen / lists VEVENT / VTODO
@@ -387,8 +437,8 @@ static inline int davParseMultistatus(const char* xml, size_t len, DavResponseFn
       const char* parent = depth ? stack[depth - 1] : "";
       if (depth == 0 && !strcmp(name, "multistatus")) seenMulti = true;
       if (depth == 0 && !seenMulti) return -1;   // not a multistatus
-      if (!strcmp(name, "response")) { memset(&resp, 0, sizeof(resp)); psStatus = 0; }
-      else if (!strcmp(name, "propstat")) { memset(&ps, 0, sizeof(ps)); psStatus = 0; }
+      if (!strcmp(name, "response")) { memset(&resp, 0, sizeof(resp)); resp.contentLength = -1; psStatus = 0; }
+      else if (!strcmp(name, "propstat")) { memset(&ps, 0, sizeof(ps)); ps.contentLength = -1; psStatus = 0; }
       else if (!strcmp(name, "collection") && !strcmp(parent, "resourcetype")) ps.isCollection = true;
       else if (!strcmp(name, "calendar") && !strcmp(parent, "resourcetype")) ps.isCalendar = true;
       else if (!strcmp(name, "addressbook") && !strcmp(parent, "resourcetype")) ps.isAddressbook = true;
@@ -402,6 +452,19 @@ static inline int davParseMultistatus(const char* xml, size_t len, DavResponseFn
       if (!selfClose) {
         if (depth >= MAXD) return -1;
         davCopy(stack[depth], sizeof(stack[depth]), name);
+        // A card or an event: kept as a pointer into the reply, it can be large
+        if (!strcmp(name, "address-data") || !strcmp(name, "calendar-data")) {
+          size_t ds = tagEnd + 1, de = ds;
+          if (len - ds >= 9 && !strncmp(xml + ds, "<![CDATA[", 9)) {
+            const char* e = strstr(xml + ds + 9, "]]>");
+            if (!e || (size_t)(e - xml) > len) return seenMulti ? count : -1;
+            de = (size_t)(e - xml) + 3;
+          } else {
+            while (de < len && xml[de] != '<') de++;
+          }
+          ps.data = xml + ds;
+          ps.dataLen = de - ds;
+        }
         // Text of a leaf: from after this tag to the next one
         size_t ts = tagEnd + 1, te = ts;
         while (te < len && xml[te] != '<') te++;
@@ -414,7 +477,9 @@ static inline int davParseMultistatus(const char* xml, size_t len, DavResponseFn
             if (!strcmp(parent, "response")) davCopy(resp.href, sizeof(resp.href), text);
             else if (!strcmp(parent, "current-user-principal")) davCopy(ps.principal, sizeof(ps.principal), text);
             else if (!strcmp(parent, "calendar-home-set")) davCopy(ps.home, sizeof(ps.home), text);
+            else if (!strcmp(parent, "addressbook-home-set")) davCopy(ps.abHome, sizeof(ps.abHome), text);
           } else if (!strcmp(name, "getetag")) davCopy(ps.etag, sizeof(ps.etag), text);
+          else if (!strcmp(name, "getcontentlength")) ps.contentLength = atol(text);
           else if (!strcmp(name, "displayname")) davCopy(ps.name, sizeof(ps.name), text);
           else if (!strcmp(name, "calendar-color")) {
             // "#RRGGBBAA" -> "#RRGGBB"
@@ -446,6 +511,9 @@ static inline int davParseMultistatus(const char* xml, size_t len, DavResponseFn
           if (ps.syncToken[0]) davCopy(resp.syncToken, sizeof(resp.syncToken), ps.syncToken);
           if (ps.principal[0]) davCopy(resp.principal, sizeof(resp.principal), ps.principal);
           if (ps.home[0]) davCopy(resp.home, sizeof(resp.home), ps.home);
+          if (ps.abHome[0]) davCopy(resp.abHome, sizeof(resp.abHome), ps.abHome);
+          if (ps.contentLength >= 0) resp.contentLength = ps.contentLength;
+          if (ps.data) { resp.data = ps.data; resp.dataLen = ps.dataLen; }
           resp.isCollection |= ps.isCollection;
           resp.isCalendar |= ps.isCalendar;
           resp.isAddressbook |= ps.isAddressbook;
@@ -461,4 +529,267 @@ static inline int davParseMultistatus(const char* xml, size_t len, DavResponseFn
     i = tagEnd + 1;
   }
   return seenMulti ? count : -1;
+}
+
+// --- Phone numbers -------------------------------------------------------------------
+
+// A number as the modem shows it: "+420 777-12 34 56" / "tel:00420777123456"
+// -> "+420777123456". Digits and one leading +, "00" as +, an extension
+// (";ext=", "x", "p", "w") dropped. False when fewer than 3 digits are left
+// or it does not fit.
+static inline bool davPhoneNorm(const char* in, char* out, size_t n) {
+  if (!in || !out || n < 4) return false;
+  out[0] = 0;
+  while (*in == ' ' || *in == '\t') in++;
+  if (!strncasecmp(in, "tel:", 4)) in += 4;
+  size_t o = 0;
+  int digits = 0;
+  for (const char* p = in; *p; p++) {
+    char c = *p;
+    if (c >= '0' && c <= '9') {
+      if (o + 1 >= n) { out[0] = 0; return false; }
+      out[o++] = c;
+      digits++;
+    } else if (c == '+' && o == 0) {
+      out[o++] = '+';
+    } else if (c == ';' || c == ',' || c == 'x' || c == 'X' || c == 'p' || c == 'P' || c == 'w' || c == 'W') {
+      break;
+    }
+  }
+  out[o] = 0;
+  if (o >= 2 && out[0] == '0' && out[1] == '0') {   // 00420... -> +420...
+    out[0] = '+';
+    memmove(out + 1, out + 2, o - 1);
+    o--;
+  }
+  if (digits < 3) { out[0] = 0; return false; }
+  return true;
+}
+
+// The same number written with or without the country code: equal after
+// davPhoneNorm, or the last 9 digits equal when both have at least 9
+// (the national number length in much of Europe; shorter ones must match whole)
+static inline bool davPhoneSame(const char* a, const char* b) {
+  char na[24], nb[24];
+  if (!davPhoneNorm(a, na, sizeof(na)) || !davPhoneNorm(b, nb, sizeof(nb))) return false;
+  if (!strcmp(na, nb)) return true;
+  const char* da = na[0] == '+' ? na + 1 : na;
+  const char* db = nb[0] == '+' ? nb + 1 : nb;
+  size_t la = strlen(da), lb = strlen(db);
+  if (la < 9 || lb < 9) return false;
+  return !strcmp(da + la - 9, db + lb - 9);
+}
+
+// --- vCard ---------------------------------------------------------------------------
+
+// The text of an address-data element as the reply has it: XML entities (or
+// a CDATA section) undone byte by byte, CR dropped
+struct DavRawText {
+  const char* s;
+  size_t len, i;
+  bool cdata;
+  char pend[4];
+  int npend, ipend, peekc;
+  DavRawText(const char* str, size_t n) : s(str), len(n), i(0), cdata(false), npend(0), ipend(0), peekc(-2) {
+    if (len >= 9 && !strncmp(s, "<![CDATA[", 9)) {
+      cdata = true;
+      i = 9;
+      if (len >= 12 && !strncmp(s + len - 3, "]]>", 3)) len -= 3;
+    }
+  }
+  int raw() {   // next byte, -1 at the end
+    if (ipend < npend) return (unsigned char)pend[ipend++];
+    while (i < len) {
+      char c = s[i];
+      if (!cdata && c == '&') {
+        const char* semi = (const char*)memchr(s + i, ';', len - i < 12 ? len - i : 12);
+        if (semi) {
+          size_t el = (size_t)(semi - (s + i)) - 1;
+          const char* e = s + i + 1;
+          uint32_t cp = 0;
+          if (el == 3 && !strncmp(e, "amp", 3)) cp = '&';
+          else if (el == 2 && !strncmp(e, "lt", 2)) cp = '<';
+          else if (el == 2 && !strncmp(e, "gt", 2)) cp = '>';
+          else if (el == 4 && !strncmp(e, "quot", 4)) cp = '"';
+          else if (el == 4 && !strncmp(e, "apos", 4)) cp = '\'';
+          else if (el >= 2 && e[0] == '#') {
+            char num[12];
+            size_t nl = el - 1 < sizeof(num) - 1 ? el - 1 : sizeof(num) - 1;
+            memcpy(num, e + 1, nl);
+            num[nl] = 0;
+            cp = (num[0] == 'x' || num[0] == 'X') ? (uint32_t)strtoul(num + 1, nullptr, 16)
+                                                  : (uint32_t)strtoul(num, nullptr, 10);
+            if (cp >= 0x110000) cp = 0;
+          }
+          if (cp) {
+            i += el + 2;
+            if (cp == '\r') continue;
+            npend = (int)davUtf8(pend, cp);
+            ipend = 1;
+            return (unsigned char)pend[0];
+          }
+        }
+      }
+      i++;
+      if (c == '\r') continue;
+      return (unsigned char)c;
+    }
+    return -1;
+  }
+  int get() { if (peekc != -2) { int c = peekc; peekc = -2; return c; } return raw(); }
+  int peek() { if (peekc == -2) peekc = raw(); return peekc; }
+};
+
+// Whether the parameter part of a line (before its first ':') asks for
+// quoted-printable (vCard 2.1)
+static inline bool davVcardIsQp(const char* line, size_t upto) {
+  for (size_t k = 0; k + 16 <= upto; k++)
+    if (!strncasecmp(line + k, "QUOTED-PRINTABLE", 16)) return true;
+  return false;
+}
+
+// One unfolded content line ("TEL;TYPE=cell:+420 ..."), cut at n-1 bytes (a
+// photo line is long and of no use here). False at the end of the text.
+static inline bool davVcardLine(DavRawText& t, char* out, size_t n) {
+  size_t o = 0;
+  int c = t.get();
+  if (c < 0) return false;
+  for (;;) {
+    if (c < 0) break;
+    if (c == '\n') {
+      int nx = t.peek();
+      if (nx == ' ' || nx == '\t') { t.get(); c = t.get(); continue; }   // a folded line goes on
+      // vCard 2.1 quoted-printable: a soft line break is "=" at the end
+      if (o && out[o - 1] == '=') {
+        const char* colon = (const char*)memchr(out, ':', o);
+        if (colon && davVcardIsQp(out, (size_t)(colon - out))) { o--; c = t.get(); continue; }
+      }
+      break;
+    }
+    if (o + 1 < n) out[o++] = (char)c;
+    c = t.get();
+  }
+  out[o] = 0;
+  return true;
+}
+
+// A value with vCard escapes (\n \, \; \\) undone, and quoted-printable
+// decoded when the parameters say so; in place
+static inline void davVcardValue(char* v, bool qp) {
+  char* o = v;
+  for (char* p = v; *p; p++) {
+    if (qp && *p == '=' && isxdigit((unsigned char)p[1]) && isxdigit((unsigned char)p[2])) {
+      char h[3] = { p[1], p[2], 0 };
+      *o++ = (char)strtoul(h, nullptr, 16);
+      p += 2;
+    } else if (*p == '\\' && p[1]) {
+      p++;
+      *o++ = (*p == 'n' || *p == 'N') ? ' ' : *p;
+    } else {
+      *o++ = *p;
+    }
+  }
+  *o = 0;
+}
+
+// The idx-th ';'-separated part of a structured value (N, ORG); "\;" is not
+// a separator and stays escaped for davVcardValue
+static inline void davVcardPart(const char* v, int idx, char* out, size_t n) {
+  out[0] = 0;
+  int k = 0;
+  size_t o = 0;
+  for (const char* p = v; *p; p++) {
+    if (*p == '\\' && p[1]) {
+      if (k == idx && o + 2 < n) { out[o++] = p[0]; out[o++] = p[1]; }
+      p++;
+      continue;
+    }
+    if (*p == ';') { if (k == idx) break; k++; continue; }
+    if (k == idx && o + 1 < n) out[o++] = *p;
+  }
+  out[o] = 0;
+}
+
+static inline void davTrimSpaces(char* s) {
+  size_t l = strlen(s);
+  while (l && isspace((unsigned char)s[l - 1])) s[--l] = 0;
+  size_t lead = 0;
+  while (s[lead] && isspace((unsigned char)s[lead])) lead++;
+  if (lead) memmove(s, s + lead, l - lead + 1);
+}
+
+typedef void (*DavContactFn)(const char* name, const char* phone, void* ctx);
+
+// Reads the cards in an address-data text (one or more BEGIN:VCARD ...
+// END:VCARD) and calls fn once per phone number with the card's name: FN,
+// else "Given Family" from N, else the organisation, else the number itself.
+// Cards without a number are skipped. Returns the number of cards read.
+static inline int davVcardParse(const char* data, size_t len, DavContactFn fn, void* ctx) {
+  if (!data) return 0;
+  DavRawText t(data, len);
+  const int MAXTEL = 8;
+  char line[320];
+  char fnName[96], nName[96], org[96];
+  char tels[MAXTEL][24];
+  int ntel = 0, cards = 0;
+  bool in = false;
+  fnName[0] = nName[0] = org[0] = 0;
+  while (davVcardLine(t, line, sizeof(line))) {
+    // name[;params]:value, maybe with a group ("item1.TEL")
+    char* colon = nullptr;
+    bool quoted = false;
+    for (char* p = line; *p; p++) {
+      if (*p == '"') quoted = !quoted;
+      else if (*p == ':' && !quoted) { colon = p; break; }
+    }
+    if (!colon) continue;
+    bool qp = davVcardIsQp(line, (size_t)(colon - line));
+    *colon = 0;
+    char* value = colon + 1;
+    char* name = line;
+    char* params = strchr(name, ';');
+    if (params) *params = 0;
+    char* dot = strchr(name, '.');
+    if (dot) name = dot + 1;
+
+    if (!strcasecmp(name, "BEGIN") && !strncasecmp(value, "VCARD", 5)) {
+      in = true;
+      fnName[0] = nName[0] = org[0] = 0;
+      ntel = 0;
+    } else if (!in) {
+      continue;
+    } else if (!strcasecmp(name, "END") && !strncasecmp(value, "VCARD", 5)) {
+      in = false;
+      cards++;
+      for (int k = 0; k < ntel && fn; k++) {
+        const char* nm = fnName[0] ? fnName : nName[0] ? nName : org[0] ? org : tels[k];
+        fn(nm, tels[k], ctx);
+      }
+    } else if (!strcasecmp(name, "FN")) {
+      davVcardValue(value, qp);
+      davCopy(fnName, sizeof(fnName), value);
+      davTrimSpaces(fnName);
+    } else if (!strcasecmp(name, "N")) {
+      char fam[48], giv[48];
+      davVcardPart(value, 0, fam, sizeof(fam));
+      davVcardPart(value, 1, giv, sizeof(giv));
+      davVcardValue(fam, qp);
+      davVcardValue(giv, qp);
+      davTrimSpaces(fam);
+      davTrimSpaces(giv);
+      snprintf(nName, sizeof(nName), "%s%s%s", giv, giv[0] && fam[0] ? " " : "", fam);
+    } else if (!strcasecmp(name, "ORG")) {
+      davVcardPart(value, 0, org, sizeof(org));
+      davVcardValue(org, qp);
+      davTrimSpaces(org);
+    } else if (!strcasecmp(name, "TEL") && ntel < MAXTEL) {
+      davVcardValue(value, qp);
+      if (davPhoneNorm(value, tels[ntel], sizeof(tels[ntel]))) {
+        bool dup = false;
+        for (int k = 0; k < ntel && !dup; k++) dup = !strcmp(tels[k], tels[ntel]);
+        if (!dup) ntel++;
+      }
+    }
+  }
+  return cards;
 }

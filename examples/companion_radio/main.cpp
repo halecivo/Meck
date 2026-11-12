@@ -8857,7 +8857,7 @@ void meckHaCmd(const char* arg) { meckHa.cmd(arg); }
 void meckDavTick() {
   // The QR code has to stay up while someone is scanning it: no auto-lock
   if (meckDav.pairingActive() && ui_task.isOnDavScreen()) ui_task.resetIdleTimer();
-  meckDav.loop();
+  meckDav.loop(ui_task.isLocked());
 }
 
 void meckDavCmd(const char* arg) { meckDav.cmd(arg); }

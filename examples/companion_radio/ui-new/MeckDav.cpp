@@ -12,6 +12,9 @@
 #include <HTTPClient.h>
 #include <WebServer.h>
 #include <Preferences.h>
+#ifdef HAS_4G_MODEM
+  #include "SMSContacts.h"   // where the synced contacts go
+#endif
 #include <esp_heap_caps.h>
 #include <esp_random.h>
 #include <esp_wifi.h>
@@ -25,6 +28,14 @@ MeckDav meckDav;
 
 #define DAV_NVS       "meckdav"
 #define DAV_RESP_LEN  24576   // a calendar list with a few dozen calendars, or a sync listing
+#define DAV_SYNC_LEN  (512 * 1024)   // contacts sync: a card listing, a batch of cards (PSRAM)
+#define DAV_HREF_POOL (256 * 1024)   // the card paths of one address book (PSRAM)
+#define DAV_MAX_CARDS 2000
+#define DAV_BATCH_CARDS 20
+#define DAV_BATCH_BYTES (360 * 1024) // what the cards of one multiget may add up to
+#define DAV_SYNC_EVERY_MS  (6UL * 3600 * 1000)
+#define DAV_SYNC_RETRY_MS  (15UL * 60 * 1000)
+#define DAV_SYNC_FIRST_MS  (60UL * 1000)        // after boot: let WiFi and the rest settle
 
 // --- Small helpers ------------------------------------------------------------
 
@@ -62,6 +73,15 @@ static String davHtmlEsc(const char* s) {
   return o;
 }
 
+// Internal RAM is what the WiFi driver and every TCP connection draw on; the
+// pairing page has to fit in what is left, so it is logged
+static void davHeap(const char* what) {
+  Serial.printf("DAV: %s, internal free=%u largest=%u lowest=%u\n", what,
+                (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+                (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
+                (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL));
+}
+
 // Collects a response body into a fixed buffer; the rest is read and dropped
 // so HTTPClient finishes the response (chunked included) either way
 class DavBufStream : public Stream {
@@ -82,6 +102,7 @@ public:
   int peek() override { return -1; }
   void flush() override {}
   size_t length() const { return _len; }
+  bool full() const { return _cap && _len + 1 >= _cap; }
 private:
   char* _buf;
   size_t _cap, _len = 0;
@@ -91,8 +112,11 @@ private:
 struct DavDisc {
   char principal[200];
   char home[200];
+  char abHome[200];
   MeckDav::Cal* cals;
   int n, max;
+  MeckDav::Cal* books;
+  int nb, maxb;
   char base[200];    // the URL the reply is for: hrefs are resolved against it
 };
 
@@ -111,6 +135,17 @@ static void davDiscCb(const DavResponse& r, void* c) {
   DavDisc* d = (DavDisc*)c;
   if (r.principal[0] && !d->principal[0]) davResolve(d->base, r.principal, d->principal, sizeof(d->principal));
   if (r.home[0] && !d->home[0]) davResolve(d->base, r.home, d->home, sizeof(d->home));
+  if (r.abHome[0] && !d->abHome[0]) davResolve(d->base, r.abHome, d->abHome, sizeof(d->abHome));
+  if (d->books && r.isAddressbook && d->nb < d->maxb && r.status != 404) {
+    MeckDav::Cal& k = d->books[d->nb];
+    if (!davResolve(d->base, r.href, k.url, sizeof(k.url))) return;
+    for (int i = 0; i < d->nb; i++) if (!strcmp(d->books[i].url, k.url)) return;   // home listed twice
+    if (r.name[0]) { snprintf(k.name, sizeof(k.name), "%.*s", (int)sizeof(k.name) - 1, r.name); davTrimUtf8(k.name); }
+    else davLastSegment(r.href, k.name, sizeof(k.name));
+    if (!k.name[0]) snprintf(k.name, sizeof(k.name), "Contacts");
+    d->nb++;
+    return;
+  }
   // A calendar that lists its components and has no VEVENT (iCloud's Reminders) is not for us
   if (d->cals && r.isCalendar && (r.hasVevent || !r.hasComps) && d->n < d->max && r.status != 404) {
     MeckDav::Cal& k = d->cals[d->n];
@@ -124,6 +159,7 @@ static void davDiscCb(const DavResponse& r, void* c) {
 
 static const char* davErrText(int rc) {
   if (rc == -2) return "The server sent us to another site";
+  if (rc == -3) return "The server's reply is too large";
   if (rc < 0) return "Cannot reach the server (address, WiFi, clock?)";
   if (rc == 401 || rc == 403) return "Wrong user name or password";
   if (rc == 404) return "Address not found on the server";
@@ -150,6 +186,18 @@ void MeckDav::load() {
     p.getString(k, _cals[_calCount].name, sizeof(_cals[0].name));
     _calCount++;
   }
+  n = p.getUChar("nb", 0);
+  _bookCount = 0;
+  for (int i = 0; i < n && i < MAX_BOOKS; i++) {
+    char k[16];
+    snprintf(k, sizeof(k), "bu%d", i);
+    if (!p.getString(k, _books[_bookCount].url, sizeof(_books[0].url))) continue;
+    snprintf(k, sizeof(k), "bn%d", i);
+    p.getString(k, _books[_bookCount].name, sizeof(_books[0].name));
+    snprintf(k, sizeof(k), "bt%d", i);
+    p.getString(k, _bookTokens[_bookCount], sizeof(_bookTokens[0]));
+    _bookCount++;
+  }
   p.end();
 }
 
@@ -168,6 +216,16 @@ void MeckDav::save() {
     snprintf(k, sizeof(k), "cn%d", i);
     p.putString(k, _cals[i].name);
   }
+  p.putUChar("nb", (uint8_t)_bookCount);
+  for (int i = 0; i < _bookCount; i++) {
+    char k[16];
+    snprintf(k, sizeof(k), "bu%d", i);
+    p.putString(k, _books[i].url);
+    snprintf(k, sizeof(k), "bn%d", i);
+    p.putString(k, _books[i].name);
+    snprintf(k, sizeof(k), "bt%d", i);
+    p.putString(k, _bookTokens[i]);
+  }
   p.end();
 }
 
@@ -178,6 +236,16 @@ void MeckDav::forget() {
   _url[0] = _user[0] = _pass[0] = 0;
   _calCount = 0;
   memset(_cals, 0, sizeof(_cals));
+  syncEnd();
+  _bookCount = 0;
+  memset(_books, 0, sizeof(_books));
+  memset(_bookTokens, 0, sizeof(_bookTokens));
+  _syncAt = 0;
+  _syncErr[0] = 0;
+  _syncWanted = false;
+#ifdef HAS_4G_MODEM
+  smsContacts.clearSynced();
+#endif
   Preferences p;
   if (p.begin(DAV_NVS, false)) { p.clear(); p.end(); }
   Serial.println("DAV: account forgotten");
@@ -193,6 +261,7 @@ uint32_t MeckDav::pairLeftMs() const {
 
 void MeckDav::startPairing() {
   stopPairing();
+  syncEnd();
   _error[0] = 0;
   if (WiFi.status() != WL_CONNECTED || !(WiFi.getMode() & WIFI_STA)) {
     _phase = PH_NO_WIFI;
@@ -213,8 +282,10 @@ void MeckDav::startPairing() {
   _pairStart = millis();
   _phase = PH_SCAN;
   makeQr();
+  davHeap("before server");
   serverStart();
   awake(true);
+  davHeap("server up");
   Serial.printf("DAV: pairing, page %s\n", _pageUrl);
 }
 
@@ -227,10 +298,10 @@ void MeckDav::stopPairing() {
 }
 
 void MeckDav::endDiscovery() {
-  if (_resp) { heap_caps_free(_resp); _resp = nullptr; }
+  if (_resp) { heap_caps_free(_resp); _resp = nullptr; _respCap = 0; }
   memset(_pairPass, 0, sizeof(_pairPass));
   _pairUser[0] = _pairUrl[0] = 0;
-  _principal[0] = _home[0] = 0;
+  _principal[0] = _home[0] = _abHome[0] = 0;
   _workStep = 0;
 }
 
@@ -292,7 +363,7 @@ void MeckDav::serverStart() {
   s->on(path, HTTP_GET, [this]() { pageForm(); });
   s->on(path, HTTP_POST, [this]() { pageSubmit(); });
   s->on(_statusPath, HTTP_GET, [this]() { pageStatus(); });
-  s->onNotFound([this]() { DAV_SRV->send(404, "text/plain", "Not found"); });
+  s->onNotFound([this]() { davHeap("other request"); DAV_SRV->send(404, "text/plain", "Not found"); });
   s->begin();
 }
 
@@ -320,6 +391,7 @@ void MeckDav::sendPage(int code, const char* title, const char* body, int refres
 }
 
 void MeckDav::pageForm() {
+  davHeap("form requested");
   if (_phase != PH_SCAN) { pageStatus(); return; }
   String b;
   if (_error[0]) { b += "<p class=err>"; b += davHtmlEsc(_error); b += "</p>"; }
@@ -339,6 +411,7 @@ void MeckDav::pageForm() {
 }
 
 void MeckDav::pageSubmit() {
+  davHeap("form posted");
   if (_phase != PH_SCAN) { pageStatus(); return; }
   char url[128];
   String u = DAV_SRV->arg("url"), n = DAV_SRV->arg("user"), p = DAV_SRV->arg("pass");
@@ -404,8 +477,10 @@ void MeckDav::work(const char* url, const char* user, const char* pass) {
   snprintf(_pairUrl, sizeof(_pairUrl), "%s", url);
   snprintf(_pairUser, sizeof(_pairUser), "%s", user);
   snprintf(_pairPass, sizeof(_pairPass), "%s", pass);
-  _principal[0] = _home[0] = 0;
-  _tmpCount = 0;
+  _principal[0] = _home[0] = _abHome[0] = 0;
+  _tmpCount = _tmpBookCount = 0;
+  memset(_tmpCals, 0, sizeof(_tmpCals));
+  memset(_tmpBooks, 0, sizeof(_tmpBooks));
   _workStep = 0;
   _step = "Looking for the account";
   _phase = PH_WORKING;
@@ -424,18 +499,36 @@ int MeckDav::propfindPrincipal(const char* url, char* location, size_t locationL
   return rc;
 }
 
+// Calendars and address books in a home collection (Radicale keeps both in one);
+// added to what an earlier home gave
 int MeckDav::findCalendars(const char* homeUrl) {
   int rc = request("PROPFIND", homeUrl, 1, DAV_BODY_CAL_LIST);
-  _tmpCount = 0;
   if (rc == 207) {
     DavDisc d;
     memset(&d, 0, sizeof(d));
     snprintf(d.base, sizeof(d.base), "%s", homeUrl);
     d.cals = _tmpCals;
+    d.n = _tmpCount;
     d.max = MAX_CALS;
-    memset(_tmpCals, 0, sizeof(_tmpCals));
+    d.books = _tmpBooks;
+    d.nb = _tmpBookCount;
+    d.maxb = MAX_BOOKS;
     davParseMultistatus(_resp, strlen(_resp), davDiscCb, &d);
     _tmpCount = d.n;
+    _tmpBookCount = d.nb;
+  }
+  return rc;
+}
+
+// A bare host: the server may tell where its CalDAV or CardDAV lives (RFC 6764)
+int MeckDav::wellKnown(const char* which) {
+  char origin[128], url[200], loc[200];
+  if (!davUrlOrigin(_pairUrl, origin, sizeof(origin))) return 404;
+  snprintf(url, sizeof(url), "%s/.well-known/%s", origin, which);
+  int rc = propfindPrincipal(url, loc, sizeof(loc));
+  if ((rc == 301 || rc == 302 || rc == 307 || rc == 308) && loc[0]) {
+    char target[200];
+    if (davResolve(url, loc, target, sizeof(target))) rc = propfindPrincipal(target, loc, sizeof(loc));
   }
   return rc;
 }
@@ -449,37 +542,28 @@ void MeckDav::workStep() {
       int rc = propfindPrincipal(_pairUrl, loc, sizeof(loc));
       if (rc == 401 || rc == 403) { retry(davErrText(rc)); return; }
       if (rc < 0) { retry(davErrText(rc)); return; }
-      // A bare host: the server may tell where its CalDAV lives (RFC 6764)
+      // A bare host: the server may tell where its CalDAV or CardDAV lives
       if (!_principal[0] && strcmp(davUrlPath(_pairUrl), "/") == 0) {
-        char origin[128];
-        if (davUrlOrigin(_pairUrl, origin, sizeof(origin))) {
-          snprintf(url, sizeof(url), "%s/.well-known/caldav", origin);
-          rc = propfindPrincipal(url, loc, sizeof(loc));
-          if (rc == 401 || rc == 403) { retry(davErrText(rc)); return; }
-          if ((rc == 301 || rc == 302 || rc == 307 || rc == 308) && loc[0]) {
-            char target[200];
-            if (davResolve(url, loc, target, sizeof(target))) {
-              rc = propfindPrincipal(target, loc, sizeof(loc));
-              if (rc == 401 || rc == 403 || rc < 0) { retry(davErrText(rc)); return; }
-            }
-          }
-        }
+        rc = wellKnown("caldav");
+        if (!_principal[0] && rc != 401 && rc != 403 && rc >= 0) rc = wellKnown("carddav");
+        if (rc == 401 || rc == 403 || rc < 0) { retry(davErrText(rc)); return; }
       }
       if (rc == 404 && !_principal[0]) { retry(davErrText(rc)); return; }
-      // No principal: the address may be the calendar home itself
+      // No principal: the address may be the home (or a calendar, an address book) itself
       if (!_principal[0]) { snprintf(_home, sizeof(_home), "%s", _pairUrl); _workStep = 2; }
       else _workStep = 1;
       return;
     }
     case 1: {
-      _step = "Looking for the calendars";
+      _step = "Looking for the calendars and contacts";
       int rc = request("PROPFIND", _principal, 0, DAV_BODY_CAL_HOME);
       if (rc != 207) { retry(davErrText(rc)); return; }
       DavDisc d;
       memset(&d, 0, sizeof(d));
       snprintf(d.base, sizeof(d.base), "%s", _principal);
       davParseMultistatus(_resp, strlen(_resp), davDiscCb, &d);
-      snprintf(_home, sizeof(_home), "%s", d.home[0] ? d.home : _principal);
+      snprintf(_home, sizeof(_home), "%s", d.home[0] ? d.home : d.abHome[0] ? d.abHome : _principal);
+      if (d.abHome[0] && strcmp(d.abHome, _home) != 0) snprintf(_abHome, sizeof(_abHome), "%s", d.abHome);
       _workStep = 2;
       return;
     }
@@ -487,8 +571,19 @@ void MeckDav::workStep() {
       _step = "Reading the calendar list";
       int rc = findCalendars(_home);
       if (rc != 207) { retry(davErrText(rc)); return; }
-      if (_tmpCount == 0) { retry("No calendars found at this address"); return; }
-      _workStep = 3;
+      _workStep = _abHome[0] ? 3 : 4;
+      return;
+    }
+    case 3: {
+      _step = "Reading the address books";
+      int rc = findCalendars(_abHome);   // contacts kept apart (Nextcloud, iCloud)
+      if (rc != 207) { retry(davErrText(rc)); return; }
+      _workStep = 4;
+      return;
+    }
+    case 4: {
+      if (_tmpCount == 0 && _tmpBookCount == 0) { retry("No calendars or address books found at this address"); return; }
+      _workStep = 5;
       return;
     }
     default: {
@@ -498,18 +593,29 @@ void MeckDav::workStep() {
       snprintf(_pass, sizeof(_pass), "%s", _pairPass);
       memcpy(_cals, _tmpCals, sizeof(_cals));
       _calCount = _tmpCount;
+      // An address book already synced keeps its state: only what changed is fetched again
+      char tokens[MAX_BOOKS][sizeof(_bookTokens[0])];
+      memset(tokens, 0, sizeof(tokens));
+      for (int i = 0; i < _tmpBookCount; i++)
+        for (int j = 0; j < _bookCount; j++)
+          if (!strcmp(_tmpBooks[i].url, _books[j].url)) memcpy(tokens[i], _bookTokens[j], sizeof(tokens[i]));
+      memcpy(_books, _tmpBooks, sizeof(_books));
+      memcpy(_bookTokens, tokens, sizeof(_bookTokens));
+      _bookCount = _tmpBookCount;
       save();
       endDiscovery();
       _error[0] = 0;
       _doneAt = millis();
       _phase = PH_DONE;
-      Serial.printf("DAV: account saved, %d calendar(s)\n", _calCount);
+      _syncWanted = _bookCount > 0;
+      Serial.printf("DAV: account saved, %d calendar(s), %d address book(s)\n", _calCount, _bookCount);
     }
   }
 }
 
-void MeckDav::loop() {
+void MeckDav::loop(bool locked) {
   if (_server) DAV_SRV->handleClient();
+  if (!pairingActive() && !_blocking) syncTick(locked);
   if (_phase == PH_SCAN) {
     if (pairLeftMs() == 0) fail("Timed out");
     else if (WiFi.status() != WL_CONNECTED) fail("WiFi lost");
@@ -549,9 +655,12 @@ void MeckDav::awake(bool on) {
 int MeckDav::request(const char* method, const char* url, int depth, const char* body,
                      char* location, size_t locationLen) {
   if (location && locationLen) location[0] = 0;
+  size_t want = _sy != SY_IDLE ? DAV_SYNC_LEN : DAV_RESP_LEN;
+  if (_resp && _respCap != want) { heap_caps_free(_resp); _resp = nullptr; }
   if (!_resp) {
-    _resp = (char*)heap_caps_malloc(DAV_RESP_LEN, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    _resp = (char*)heap_caps_malloc(want, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!_resp) return -1;
+    _respCap = want;
   }
   _resp[0] = 0;
   if (WiFi.status() != WL_CONNECTED) return -1;
@@ -594,13 +703,249 @@ int MeckDav::request(const char* method, const char* url, int depth, const char*
   if (code > 0) {
     if (location && locationLen && http.hasHeader("Location"))
       snprintf(location, locationLen, "%s", http.header("Location").c_str());
-    DavBufStream s(_resp, DAV_RESP_LEN);
+    DavBufStream s(_resp, _respCap);
     http.writeToStream(&s);
+    if (s.full()) code = -3;
   }
   http.end();
   delete tls;
   return code;
 }
+
+// --- Contacts sync (CardDAV, read only) -------------------------------------------
+//
+// One request per loop() pass, like the discovery: the state of every address
+// book (ctag / sync-token); when one has changed, the card list of each book
+// and the cards in batches (addressbook-multiget). The numbers go to
+// smsContacts as a whole new list; nothing is written to the server. WiFi
+// only, never while the deck is locked.
+
+#ifdef HAS_4G_MODEM
+
+static int davNameCmp(const void* a, const void* b) {
+  int c = strcasecmp(((const SMSContact*)a)->name, ((const SMSContact*)b)->name);
+  return c ? c : strcmp(((const SMSContact*)a)->phone, ((const SMSContact*)b)->phone);
+}
+
+// One number of a card into the list being built
+static void davAddContact(const char* name, const char* phone, void* c) {
+  MeckDav* m = (MeckDav*)c;
+  m->syncAdd(name, phone);
+}
+
+void MeckDav::syncAdd(const char* name, const char* phone) {
+  if (!_syList || _syN >= SMS_SYNCED_MAX) { _syDropped++; return; }
+  for (int i = 0; i < _syN; i++) if (!strcmp(_syList[i].phone, phone)) return;   // in two cards
+  SMSContact& k = _syList[_syN];
+  snprintf(k.phone, sizeof(k.phone), "%s", phone);
+  snprintf(k.name, sizeof(k.name), "%s", name);
+  davTrimUtf8(k.name);
+  for (char* p = k.name; *p; p++) if (*p == '=' || *p == '\n' || *p == '\r') *p = ' ';   // the file's format
+  k.valid = true;
+  _syN++;
+}
+
+// The card paths of a listing: everything in the book that is not a collection
+struct DavHrefList {
+  char* pool;
+  size_t used, cap;
+  uint32_t* off;
+  int32_t* len;
+  int n, max;
+  const char* book;   // the book's own URL: its own entry is skipped
+};
+
+static void davHrefCb(const DavResponse& r, void* c) {
+  DavHrefList* h = (DavHrefList*)c;
+  if (r.isCollection || r.status == 404 || !r.href[0] || h->n >= h->max) return;
+  // Paths only: a multiget names cards by path on the book's server
+  const char* path = r.href;
+  if (!strncmp(path, "http://", 7) || !strncmp(path, "https://", 8)) path = davUrlPath(path);
+  if (!strcmp(path, davUrlPath(h->book))) return;
+  size_t l = strlen(path) + 1;
+  if (h->used + l > h->cap) return;
+  memcpy(h->pool + h->used, path, l);
+  h->off[h->n] = (uint32_t)h->used;
+  h->len[h->n] = (int32_t)r.contentLength;
+  h->used += l;
+  h->n++;
+}
+
+static void davCardsCb(const DavResponse& r, void* c) {
+  if (r.data && r.status != 404) davVcardParse(r.data, r.dataLen, davAddContact, c);
+}
+
+static void davStateCb(const DavResponse& r, void* c) {
+  char* tok = (char*)c;
+  // sync-token changes with every change; getctag is the older way to say it
+  if (!tok[0] && r.syncToken[0]) snprintf(tok, 120, "%s", r.syncToken);
+  else if (!tok[0] && r.ctag[0]) snprintf(tok, 120, "%s", r.ctag);
+}
+
+uint32_t MeckDav::syncAgoMs() const {
+  if (!_syncAt) return 0;
+  uint32_t d = millis() - _syncAt;
+  return d ? d : 1;
+}
+
+void MeckDav::syncNow() {
+  if (!configured() || _bookCount == 0) return;
+  _syncWanted = true;
+}
+
+bool MeckDav::syncDue() const {
+  if (!configured() || _bookCount == 0) return false;
+  if (_syncWanted) return true;
+  uint32_t now = millis();
+  if (_syncAt == 0) return now > DAV_SYNC_FIRST_MS;
+  return now - _syncAt >= (_syncOk ? DAV_SYNC_EVERY_MS : DAV_SYNC_RETRY_MS);
+}
+
+void MeckDav::syncTick(bool locked) {
+  if (_sy == SY_IDLE) {
+    if (locked || !syncDue() || WiFi.status() != WL_CONNECTED || !(WiFi.getMode() & WIFI_STA)) return;
+    syncStart();
+    return;
+  }
+  if (locked) return;   // goes on after the unlock
+  if (WiFi.status() != WL_CONNECTED) { syncFail("WiFi lost"); return; }
+  syncStep();
+}
+
+void MeckDav::syncStart() {
+  _syncWanted = false;
+  snprintf(_pairUrl, sizeof(_pairUrl), "%s", _url);
+  snprintf(_pairUser, sizeof(_pairUser), "%s", _user);
+  snprintf(_pairPass, sizeof(_pairPass), "%s", _pass);
+  memset(_syTokens, 0, sizeof(_syTokens));
+  _syBook = 0;
+  _syChanged = false;
+  _syN = _syDropped = 0;
+  _sy = SY_STATE;
+  Serial.printf("DAV: contacts sync, %d address book(s)\n", _bookCount);
+}
+
+void MeckDav::syncEnd() {
+  if (_syList) { heap_caps_free(_syList); _syList = nullptr; }
+  if (_syPool) { heap_caps_free(_syPool); _syPool = nullptr; }
+  if (_syOff) { heap_caps_free(_syOff); _syOff = nullptr; }
+  if (_syLen) { heap_caps_free(_syLen); _syLen = nullptr; }
+  if (_syBody) { heap_caps_free(_syBody); _syBody = nullptr; }
+  if (_sy != SY_IDLE) endDiscovery();   // the reply buffer and the copied password
+  _sy = SY_IDLE;
+}
+
+void MeckDav::syncFail(const char* why) {
+  snprintf(_syncErr, sizeof(_syncErr), "%s", why);
+  Serial.printf("DAV: contacts sync failed: %s\n", why);
+  _syncOk = false;
+  _syncAt = millis();
+  if (!_syncAt) _syncAt = 1;
+  syncEnd();
+}
+
+void MeckDav::syncStep() {
+  static const uint32_t PSRAM = MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT;
+  switch (_sy) {
+    case SY_STATE: {   // has book _syBook changed?
+      const Cal& b = _books[_syBook];
+      int rc = request("PROPFIND", b.url, 0, DAV_BODY_BOOK_STATE);
+      if (rc != 207) { syncFail(davErrText(rc)); return; }
+      davParseMultistatus(_resp, strlen(_resp), davStateCb, _syTokens[_syBook]);
+      if (!_syTokens[_syBook][0] || strcmp(_syTokens[_syBook], _bookTokens[_syBook]) != 0) _syChanged = true;
+      if (++_syBook < _bookCount) return;
+      if (!_syChanged && smsContacts.syncedCount() > 0) {
+        Serial.println("DAV: contacts unchanged");
+        _syncOk = true;
+        _syncErr[0] = 0;
+        _syncAt = millis();
+        if (!_syncAt) _syncAt = 1;
+        syncEnd();
+        return;
+      }
+      // Something changed: all the books again, so the list is whole
+      _syList = (SMSContact*)heap_caps_calloc(SMS_SYNCED_MAX, sizeof(SMSContact), PSRAM);
+      _syPool = (char*)heap_caps_malloc(DAV_HREF_POOL, PSRAM);
+      _syOff = (uint32_t*)heap_caps_malloc(DAV_MAX_CARDS * sizeof(uint32_t), PSRAM);
+      _syLen = (int32_t*)heap_caps_malloc(DAV_MAX_CARDS * sizeof(int32_t), PSRAM);
+      _syBody = (char*)heap_caps_malloc(DAV_BODY_LEN, PSRAM);
+      if (!_syList || !_syPool || !_syOff || !_syLen || !_syBody) { syncFail("Out of memory"); return; }
+      _syBook = 0;
+      _sy = SY_LIST;
+      return;
+    }
+    case SY_LIST: {   // the cards of book _syBook
+      const Cal& b = _books[_syBook];
+      int rc = request("PROPFIND", b.url, 1, DAV_BODY_BOOK_LIST);
+      if (rc != 207) { syncFail(davErrText(rc)); return; }
+      DavHrefList h = { _syPool, 0, DAV_HREF_POOL, _syOff, _syLen, 0, DAV_MAX_CARDS, b.url };
+      davParseMultistatus(_resp, strlen(_resp), davHrefCb, &h);
+      _syCards = h.n;
+      _syNext = 0;
+      Serial.printf("DAV: %s: %d card(s)\n", b.name, _syCards);
+      _sy = _syCards ? SY_FETCH : SY_NEXT;
+      return;
+    }
+    case SY_FETCH: {   // the next batch of cards
+      const char* hrefs[DAV_BATCH_CARDS];
+      int n = 0;
+      long bytes = 0;
+      while (_syNext < _syCards && n < DAV_BATCH_CARDS) {
+        long l = _syLen[_syNext] > 0 ? _syLen[_syNext] : 4096;
+        if (l > DAV_BATCH_BYTES) {   // a card with a large photo: alone it would not fit either
+          Serial.printf("DAV: card of %ld bytes skipped\n", l);
+          _syNext++;
+          continue;
+        }
+        if (n && bytes + l > DAV_BATCH_BYTES) break;
+        hrefs[n++] = _syPool + _syOff[_syNext++];
+        bytes += l;
+      }
+      if (n) {
+        if (!davMultigetBody(_syBody, DAV_BODY_LEN, hrefs, n)) { syncFail("Card names too long"); return; }
+        int rc = request("REPORT", _books[_syBook].url, 1, _syBody);
+        if (rc != 207) { syncFail(davErrText(rc)); return; }
+        davParseMultistatus(_resp, strlen(_resp), davCardsCb, this);
+      }
+      if (_syNext >= _syCards) _sy = SY_NEXT;
+      return;
+    }
+    case SY_NEXT: {
+      if (++_syBook < _bookCount) { _sy = SY_LIST; return; }
+      // All read: the new list replaces the old one, then the books count as synced
+      qsort(_syList, _syN, sizeof(SMSContact), davNameCmp);
+      SMSContact* list = _syList;
+      _syList = nullptr;   // smsContacts owns it now (and frees it if the write fails)
+      int n = _syN;
+      if (!smsContacts.replaceSynced(list, n)) { syncFail("Cannot write to the SD card"); return; }
+      memcpy(_bookTokens, _syTokens, sizeof(_bookTokens));
+      save();
+      _syncOk = true;
+      _syncErr[0] = 0;
+      _syncAt = millis();
+      if (!_syncAt) _syncAt = 1;
+      Serial.printf("DAV: contacts synced, %d number(s)%s\n", n, _syDropped ? " (list full, some left out)" : "");
+      syncEnd();
+      return;
+    }
+    default:
+      syncEnd();
+  }
+}
+
+#else   // no phone, no place for the contacts
+
+uint32_t MeckDav::syncAgoMs() const { return 0; }
+void MeckDav::syncNow() {}
+bool MeckDav::syncDue() const { return false; }
+void MeckDav::syncTick(bool) {}
+void MeckDav::syncStart() {}
+void MeckDav::syncEnd() { _sy = SY_IDLE; }
+void MeckDav::syncFail(const char*) {}
+void MeckDav::syncStep() {}
+void MeckDav::syncAdd(const char*, const char*) {}
+
+#endif
 
 // --- Debug CLI -------------------------------------------------------------------
 
@@ -619,8 +964,30 @@ void MeckDav::cmd(const char* arg) {
     if (configured()) {
       Serial.printf("  server %s, user %s, password %s\n", _url, _user, m);
       for (int i = 0; i < _calCount; i++) Serial.printf("  [%d] %s  %s\n", i, _cals[i].name, _cals[i].url);
+      for (int i = 0; i < _bookCount; i++)
+        Serial.printf("  book %s  %s  %s\n", _books[i].name, _books[i].url, _bookTokens[i][0] ? "synced" : "not synced");
+#ifdef HAS_4G_MODEM
+      Serial.printf("  contacts: %d synced, %s", smsContacts.syncedCount(), syncing() ? "syncing now" : _syncAt ? "" : "no sync since boot");
+      if (!syncing() && _syncAt) Serial.printf("last sync %lu min ago %s%s", (unsigned long)(syncAgoMs() / 60000),
+                                               _syncOk ? "ok" : "failed: ", _syncOk ? "" : _syncErr);
+      Serial.println();
+#endif
     }
+    davHeap("heap");
     if (pairingActive()) Serial.printf("  page %s, %lu s left\n", _pageUrl, (unsigned long)(pairLeftMs() / 1000));
+    return;
+  }
+  // "dav sync": the contacts now, waiting for the end (blocking); read only
+  if (strcmp(arg, "sync") == 0) {
+    if (!configured() || _bookCount == 0) { Serial.println("DAV: no address book"); return; }
+    if (WiFi.status() != WL_CONNECTED) { Serial.println("DAV: no WiFi"); return; }
+    stopPairing();
+    syncEnd();
+    syncStart();
+    while (_sy != SY_IDLE) {
+      if (WiFi.status() != WL_CONNECTED) { syncFail("WiFi lost"); break; }
+      syncStep();
+    }
     return;
   }
   if (strcmp(arg, "pair") == 0) { startPairing(); Serial.printf("DAV: phase %s, page %s\n", kPhase[_phase], _pageUrl); return; }
@@ -634,6 +1001,7 @@ void MeckDav::cmd(const char* arg) {
       return;
     }
     stopPairing();
+    syncEnd();   // shares the credentials and the reply buffer
     _blocking = true;
     work(url, n, p);
     while (_phase == PH_WORKING) workStep();
@@ -647,6 +1015,7 @@ void MeckDav::cmd(const char* arg) {
   if (strcmp(arg, "test") == 0) {
     if (!configured()) { Serial.println("DAV: no account"); return; }
     stopPairing();
+    syncEnd();   // shares the credentials and the reply buffer
     _blocking = true;
     work(_url, _user, _pass);
     while (_phase == PH_WORKING) workStep();
@@ -659,6 +1028,7 @@ void MeckDav::cmd(const char* arg) {
   if (strncmp(arg, "ls ", 3) == 0) {
     int i = atoi(arg + 3);
     if (!configured() || i < 0 || i >= _calCount) { Serial.println("DAV: no such calendar"); return; }
+    syncEnd();
     snprintf(_pairUrl, sizeof(_pairUrl), "%s", _url);
     snprintf(_pairUser, sizeof(_pairUser), "%s", _user);
     snprintf(_pairPass, sizeof(_pairPass), "%s", _pass);
@@ -671,7 +1041,7 @@ void MeckDav::cmd(const char* arg) {
     endDiscovery();
     return;
   }
-  Serial.println("DAV: dav [status] | pair | stop | forget | test | ls <n> | login <url> <user> <password>");
+  Serial.println("DAV: dav [status] | pair | stop | forget | test | sync | ls <n> | login <url> <user> <password>");
 }
 
 #endif

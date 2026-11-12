@@ -57,3 +57,27 @@ events = {
 for name, ics in events.items():
     print(name, req("PUT", f"/{user}/test/{name}.ics", ics,
                     {"Content-Type": "text/calendar", "If-None-Match": "*"}))
+
+# Address book "contacts" for the deck's CardDAV sync: made-up names and
+# numbers (555 / reserved ranges), a card without a number, 2.1 quoted-printable
+mkab = ('<?xml version="1.0"?><mkcol xmlns="DAV:" xmlns:r="urn:ietf:params:xml:ns:carddav">'
+        '<set><prop><resourcetype><collection/><r:addressbook/></resourcetype>'
+        '<displayname>contacts</displayname></prop></set></mkcol>')
+print("MKCOL addressbook", req("MKCOL", f"/{user}/contacts/", mkab, {"Content-Type": "application/xml"}))
+
+def vcard(uid, *lines):
+    return "BEGIN:VCARD\r\nVERSION:3.0\r\n" + f"UID:{uid}\r\n" + "\r\n".join(lines) + "\r\nEND:VCARD\r\n"
+
+cards = {
+ "anna": vcard("anna@seed", "FN:Anna Testov\u00e1", "N:Testov\u00e1;Anna;;;",
+               "TEL;TYPE=CELL:+420 555 000 101", "TEL;TYPE=HOME:+420 555 000 102"),
+ "bob": vcard("bob@seed", "N:Example;Bob;;;", "TEL:00420555000103"),
+ "pizza": vcard("pizza@seed", "ORG:Pizza Test;Delivery", "TEL;TYPE=WORK:555 000 104"),
+ "nonum": vcard("nonum@seed", "FN:No Number", "EMAIL:nobody@example.com"),
+ "qp": ("BEGIN:VCARD\r\nVERSION:2.1\r\nUID:qp@seed\r\n"
+        "N;CHARSET=UTF-8;ENCODING=QUOTED-PRINTABLE:=C4=8Cern=C3=BD;Petr;;;\r\n"
+        "TEL;CELL:+420555000105\r\nEND:VCARD\r\n"),
+}
+for name, vcf in cards.items():
+    print(name, req("PUT", f"/{user}/contacts/{name}.vcf", vcf,
+                    {"Content-Type": "text/vcard", "If-None-Match": "*"}))

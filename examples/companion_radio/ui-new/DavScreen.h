@@ -4,7 +4,8 @@
 //
 // No account: Enter starts the pairing and the QR code appears; the phone that
 // scans it types the server, user and password. With an account: the server,
-// user and the calendars found; P pairs again, X twice forgets the account.
+// user, the calendars and the synced contacts; S syncs the contacts now, P
+// pairs again, X twice forgets the account (and its synced contacts).
 // Q leaves (and stops a pairing that is still waiting).
 // =============================================================================
 
@@ -16,6 +17,9 @@
 #include <helpers/ui/GxEPDDisplay.h>
 #include "MeckDav.h"
 #include "MeckLang.h"
+#ifdef HAS_4G_MODEM
+  #include "SMSContacts.h"
+#endif
 #ifdef MECK_UI_V2
   #include "ui2/Ui2Chrome.h"
   #include "ui2/Ui2List.h"
@@ -42,6 +46,7 @@ public:
     }
     if (!have) return true;
     if (c == 'p' || c == 'P') { meckDav.startPairing(); return true; }
+    if ((c == 's' || c == 'S') && meckDav.bookCount() > 0) { meckDav.syncNow(); return true; }
     if (c == 'x' || c == 'X') {
       if (_forgetAt && millis() - _forgetAt < 4000) { _forgetAt = 0; meckDav.stopPairing(); meckDav.forget(); }
       else _forgetAt = millis();
@@ -57,8 +62,8 @@ public:
 #else
     renderClassic(display);
 #endif
-    // Pairing changes on the phone's side; otherwise nothing moves
-    return meckDav.pairingActive() || _forgetAt ? 1000 : 5000;
+    // Pairing changes on the phone's side, a sync moves on; otherwise nothing does
+    return meckDav.pairingActive() || meckDav.syncing() || _forgetAt ? 1000 : 5000;
   }
 
 private:
@@ -82,6 +87,21 @@ private:
         if (meckDav.qrModule(x, y))
           d.fillRectRaw(x0 + q + x * scale, top + q + y * scale, scale, scale, !dark);
     return side;
+  }
+
+  // "12 contacts, synced 5 min ago" and the like, for the account page
+  static void contactsLine(char* out, size_t n) {
+#ifdef HAS_4G_MODEM
+    int k = smsContacts.syncedCount();
+    if (meckDav.syncing()) snprintf(out, n, "%s", MECK_TR("Syncing contacts...", "Synchronisation des contacts..."));
+    else if (!meckDav.syncAgoMs() && !k) snprintf(out, n, "%s", MECK_TR("Contacts: not synced yet", "Contacts : pas encore synchronis\xC3\xA9s"));
+    else if (!meckDav.syncAgoMs()) snprintf(out, n, MECK_TR("%d contacts", "%d contacts"), k);
+    else if (!meckDav.syncOk()) snprintf(out, n, MECK_TR("Sync failed: %s", "\xC3\x89" "chec : %s"), meckDav.syncError());
+    else snprintf(out, n, MECK_TR("%d contacts, synced %lu min ago", "%d contacts, il y a %lu min"), k,
+                  (unsigned long)(meckDav.syncAgoMs() / 60000));
+#else
+    snprintf(out, n, "-");
+#endif
   }
 
   const char* stateText() const {
@@ -135,9 +155,17 @@ private:
         Ui2List::kvRow(c, y, MECK_TR("User", "Utilisateur"), meckDav.user()); y += 20;
         snprintf(v, sizeof(v), "%d", meckDav.calCount());
         Ui2List::kvRow(c, y, MECK_TR("Calendars", "Agendas"), v); y += 20;
-        for (int i = 0; i < meckDav.calCount() && i < 4; i++) {
+        for (int i = 0; i < meckDav.calCount() && i < 3; i++) {
           c.textFit(PAD + 8, y + 10, SCREEN_W - 2 * PAD - 8, meckDav.cal(i).name, UI2_F_META, true);
           y += 15;
+        }
+        snprintf(v, sizeof(v), "%d", meckDav.bookCount());
+        Ui2List::kvRow(c, y, MECK_TR("Address books", "Carnets"), v); y += 20;
+        if (meckDav.bookCount() > 0) {
+          char line[64];
+          contactsLine(line, sizeof(line));
+          c.wrap(PAD + 8, y + 10, SCREEN_W - 2 * PAD - 8, 13, 2, line, UI2_F_META, true);
+          y += 28;
         }
       }
       if (_forgetAt) {
@@ -155,6 +183,7 @@ private:
         keys[k++] = ui2Key("Ent", MECK_TR("Pair", "Associer"));
       else {
         keys[k++] = ui2Key("P", MECK_TR("Re-pair", "R\xC3\xA9" "associer"));
+        if (meckDav.bookCount() > 0) keys[k++] = ui2Key("S", MECK_TR("Sync", "Synchro"));
         keys[k++] = ui2Key("X", MECK_TR("Forget", "Oublier"));
       }
     }
@@ -190,8 +219,12 @@ private:
       d.drawTextEllipsized(2, y, d.width() - 4, line); y += 11;
       snprintf(line, sizeof(line), MECK_TR("User: %s", "Utilisateur : %s"), meckDav.user());
       d.drawTextEllipsized(2, y, d.width() - 4, line); y += 11;
-      for (int i = 0; i < meckDav.calCount() && i < 6; i++) {
+      for (int i = 0; i < meckDav.calCount() && i < 4; i++) {
         d.drawTextEllipsized(8, y, d.width() - 10, meckDav.cal(i).name); y += 11;
+      }
+      if (meckDav.bookCount() > 0) {
+        contactsLine(line, sizeof(line));
+        d.drawTextEllipsized(2, y, d.width() - 4, line); y += 11;
       }
     }
     if (_forgetAt) d.drawTextEllipsized(2, d.height() - 24, d.width() - 4,
@@ -201,6 +234,7 @@ private:
                          meckDav.pairingActive() ? "Q:back"
                          : (!have || ph == MeckDav::PH_FAILED || ph == MeckDav::PH_NO_WIFI)
                            ? MECK_TR("Enter:pair  Q:back", "Entr\xC3\xA9" "e:associer Q:retour")
+                           : meckDav.bookCount() > 0 ? MECK_TR("P:pair S:sync X:forget Q", "P:assoc S:sync X Q")
                            : MECK_TR("P:re-pair X:forget Q:back", "P:r\xC3\xA9" "assoc X:oublier Q"));
   }
 #endif
