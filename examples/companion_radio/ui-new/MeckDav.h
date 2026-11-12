@@ -131,7 +131,7 @@ private:
   enum SyncPhase : uint8_t { SY_IDLE, SY_STATE, SY_LIST, SY_FETCH, SY_NEXT };
   static constexpr size_t DAV_BODY_LEN = 8192;   // one multiget request
   SyncPhase _sy = SY_IDLE;
-  bool _syncWanted = false, _syncOk = false, _syChanged = false;
+  bool _syncWanted = false, _syncOk = false, _syChanged = false, _syForce = false;
   uint32_t _syncAt = 0;          // millis() of the last finished sync, 0 = none since boot
   char _syncErr[64] = "";
   char _syTokens[MAX_BOOKS][120] = {};
@@ -159,6 +159,8 @@ private:
   // body goes to _resp. A redirect's target goes to `location`.
   int request(const char* method, const char* url, int depth, const char* body,
               char* location = nullptr, size_t locationLen = 0);
+  int requestOnce(const char* method, const char* url, int depth, const char* body,
+                  char* location, size_t locationLen);
   int findCalendars(const char* homeUrl);          // status code; calendars and books go to _tmpCals / _tmpBooks
   int wellKnown(const char* which);                // "caldav" / "carddav": the principal from /.well-known
   bool syncDue() const;

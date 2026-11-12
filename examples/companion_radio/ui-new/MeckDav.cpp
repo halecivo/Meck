@@ -174,6 +174,7 @@ static void davDiscCb(const DavResponse& r, void* c) {
 static const char* davErrText(int rc) {
   if (rc == -2) return "The server sent us to another site";
   if (rc == -3) return "The server's reply is too large";
+  if (rc == -4) return "The reply was cut off (low memory?)";
   if (rc < 0) return "Cannot reach the server (address, WiFi, clock?)";
   if (rc == 401 || rc == 403) return "Wrong user name or password";
   if (rc == 404) return "Address not found on the server";
@@ -686,8 +687,37 @@ void MeckDav::awake(bool on) {
 
 // --- HTTP ------------------------------------------------------------------------
 
+// A multistatus that arrived whole ends in its closing tag; one cut off on the
+// way (a TLS error halfway) must not count as the whole list
+static bool davMultistatusWhole(const char* xml) {
+  const char* end = xml + strlen(xml);
+  while (end > xml && isspace((unsigned char)end[-1])) end--;
+  const char* lt = end;
+  while (lt > xml && *lt != '<') lt--;
+  if (end - lt < 14 || lt[1] != '/') return false;
+  size_t n = (size_t)(end - lt);
+  return n >= 13 && !strncasecmp(end - 12, "multistatus>", 12);
+}
+
+// While a DAV request runs, mallocs of 256 bytes and more go to PSRAM too
+// (normally only those over 4 kB do): the HTTP client's buffers and strings
+// would take the internal RAM that WiFi frames and the AES engine's DMA
+// buffers (2 x 1.6 kB per TLS record) need. The loop is blocked meanwhile,
+// so little else allocates; the old limit is put back right after.
 int MeckDav::request(const char* method, const char* url, int depth, const char* body,
                      char* location, size_t locationLen) {
+  heap_caps_malloc_extmem_enable(256);
+  int rc = requestOnce(method, url, depth, body, location, locationLen);
+  heap_caps_malloc_extmem_enable(CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL);
+  if (rc == 207 && !davMultistatusWhole(_resp)) {
+    Serial.println("DAV: reply cut off");
+    rc = -4;
+  }
+  return rc;
+}
+
+int MeckDav::requestOnce(const char* method, const char* url, int depth, const char* body,
+                         char* location, size_t locationLen) {
   if (location && locationLen) location[0] = 0;
   size_t want = _sy != SY_IDLE ? DAV_SYNC_LEN : DAV_RESP_LEN;
   if (_resp && _respCap != want) { heap_caps_free(_resp); _resp = nullptr; }
@@ -738,8 +768,9 @@ int MeckDav::request(const char* method, const char* url, int depth, const char*
     if (location && locationLen && http.hasHeader("Location"))
       snprintf(location, locationLen, "%s", http.header("Location").c_str());
     DavBufStream s(_resp, _respCap);
-    http.writeToStream(&s);
+    int got = http.writeToStream(&s);
     if (s.full()) code = -3;
+    else if (got < 0) code = -4;   // the connection broke while reading
   }
   http.end();
   delete tls;
@@ -825,6 +856,7 @@ uint32_t MeckDav::syncAgoMs() const {
 void MeckDav::syncNow() {
   if (!configured() || _bookCount == 0) return;
   _syncWanted = true;
+  _syForce = true;   // asked for: everything again, whatever the books' state says
 }
 
 bool MeckDav::syncDue() const {
@@ -860,6 +892,7 @@ void MeckDav::syncStart() {
 }
 
 void MeckDav::syncEnd() {
+  _syForce = false;
   if (_syList) { heap_caps_free(_syList); _syList = nullptr; }
   if (_syPool) { heap_caps_free(_syPool); _syPool = nullptr; }
   if (_syOff) { heap_caps_free(_syOff); _syOff = nullptr; }
@@ -888,7 +921,7 @@ void MeckDav::syncStep() {
       davParseMultistatus(_resp, strlen(_resp), davStateCb, _syTokens[_syBook]);
       if (!_syTokens[_syBook][0] || strcmp(_syTokens[_syBook], _bookTokens[_syBook]) != 0) _syChanged = true;
       if (++_syBook < _bookCount) return;
-      if (!_syChanged && smsContacts.syncedCount() > 0) {
+      if (!_syChanged && !_syForce && smsContacts.syncedCount() > 0) {
         Serial.println("DAV: contacts unchanged");
         _syncOk = true;
         _syncErr[0] = 0;
@@ -1018,6 +1051,7 @@ void MeckDav::cmd(const char* arg) {
     stopPairing();
     syncEnd();
     syncStart();
+    _syForce = true;
     while (_sy != SY_IDLE) {
       if (WiFi.status() != WL_CONNECTED) { syncFail("WiFi lost"); break; }
       syncStep();
