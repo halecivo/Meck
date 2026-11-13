@@ -327,6 +327,9 @@ void DataStore::loadPrefsInt(const char *filename, NodePrefs& _prefs, double& no
     if (file.read((uint8_t *)&_prefs.lock_agenda, sizeof(_prefs.lock_agenda)) != sizeof(_prefs.lock_agenda)) {
       _prefs.lock_agenda = 0;  // default: no agenda on the lock screen
     }
+    if (file.read((uint8_t *)&_prefs.lock_weather, sizeof(_prefs.lock_weather)) != sizeof(_prefs.lock_weather)) {
+      _prefs.lock_weather = 0;  // default: no weather on the lock screen
+    }
 
     // Clamp to valid ranges
     if (_prefs.dark_mode > 1) _prefs.dark_mode = 0;
@@ -354,6 +357,7 @@ void DataStore::loadPrefsInt(const char *filename, NodePrefs& _prefs, double& no
     if (_prefs.notif_vibrate > 1) _prefs.notif_vibrate = 1;
     if (_prefs.lock_keep & 0x80) _prefs.lock_keep = LOCK_KEEP_DEFAULT;
     if (_prefs.lock_agenda > 1) _prefs.lock_agenda = 0;
+    if (_prefs.lock_weather > 1) _prefs.lock_weather = 0;
     // Force NUL termination on each canned message slot in case of garbage
     for (int i = 0; i < (int)(sizeof(_prefs.canned_msgs) / sizeof(_prefs.canned_msgs[0])); i++) {
       _prefs.canned_msgs[i][sizeof(_prefs.canned_msgs[0]) - 1] = '\0';
@@ -436,6 +440,7 @@ void DataStore::savePrefs(const NodePrefs& _prefs, double node_lat, double node_
     file.write((uint8_t *)&_prefs.notif_vibrate, sizeof(_prefs.notif_vibrate));                // 1594
     file.write((uint8_t *)&_prefs.lock_keep, sizeof(_prefs.lock_keep));                        // 1595
     file.write((uint8_t *)&_prefs.lock_agenda, sizeof(_prefs.lock_agenda));                    // 1596
+    file.write((uint8_t *)&_prefs.lock_weather, sizeof(_prefs.lock_weather));                  // 1597
 
     file.close();
   }

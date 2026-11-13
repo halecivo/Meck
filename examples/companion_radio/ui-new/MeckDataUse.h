@@ -17,6 +17,7 @@ enum DataApp : uint8_t {
   DATA_APP_BROWSER,
   DATA_APP_IRC,
   DATA_APP_HA,
+  DATA_APP_WEATHER,
   DATA_APP_COUNT
 };
 #define DATA_APP_NONE 0xFF   // no app tagged right now
