@@ -4026,6 +4026,12 @@ void MyMesh::checkCLIRescueCmd() {
       extern void meckMemCmd(const char* arg);
       meckMemCmd(cli_command[3] ? &cli_command[4] : "");
 #endif
+#ifdef MECK_UI_V2
+    } else if (strcmp(cli_command, "lockdemo") == 0 || memcmp(cli_command, "lockdemo ", 9) == 0) {
+      // Debug: made-up lock screen weather and widgets (RAM only)
+      extern void meckLockDemoCmd(const char* arg);
+      meckLockDemoCmd(cli_command[8] ? &cli_command[9] : "");
+#endif
     } else if (memcmp(cli_command, "uigeo ", 6) == 0) {
       // Debug: what the location parser finds in a text (nothing is stored)
       extern void meckDebugGeo(const char* text);

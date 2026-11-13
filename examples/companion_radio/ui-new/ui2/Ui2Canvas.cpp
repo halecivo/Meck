@@ -254,6 +254,18 @@ void Ui2Canvas::pageDots(int16_t cx, int16_t top, int count, int active, bool in
   }
 }
 
+int16_t Ui2Canvas::cornerBadgeWidth(const char* text) {
+  int16_t w = textWidth(text, UI2_F_NUM9) + 6;
+  return w < 12 ? 12 : w;
+}
+int16_t Ui2Canvas::cornerBadge(int16_t x, int16_t top, const char* s, bool ink) {
+  int16_t w = cornerBadgeWidth(s);
+  fillRoundRect(x - 1, top - 1, w + 2, 14, 7, !ink);
+  fillRoundRect(x, top, w, 12, 6, ink);
+  int16_t tw = textWidth(s, UI2_F_NUM9);
+  text(x + (w - tw) / 2, boxBaseline(UI2_F_NUM9, top, 12), s, UI2_F_NUM9, !ink);
+  return w;
+}
 int16_t Ui2Canvas::battery(int16_t x, int16_t top, int pct, bool ink) {
   if (pct < 0) pct = 0;
   if (pct > 100) pct = 100;
