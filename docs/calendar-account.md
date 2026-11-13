@@ -95,7 +95,8 @@ address holds a random one-time token.
 | `dav test` | Run the discovery for the stored account again |
 | `dav sync` | Sync the contacts now and wait for the end |
 | `dav ls <n>` | List calendar `n` (etags, first ten), read only |
-| `dav events` | Sync the events now, wait for the end, print the agenda |
+| `dav events [days]` | Sync the events now (7 days, or more for this run), wait for the end, print the agenda; per calendar how many items the server sent |
+| `dav dump <n>` | The DTSTART / DTEND / RRULE lines of every event in calendar `n`, no time range, no titles, read only |
 | `dav agenda` | Print the agenda the deck has (no network) |
 | `dav agenda demo <t> <m>` | Made-up agenda, `t` events today and `m` tomorrow, RAM only, to check the lock screen; the next sync or a reboot puts the real one back |
 | `dav forget` | Forget the account |

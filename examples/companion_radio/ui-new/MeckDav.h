@@ -137,6 +137,8 @@ private:
   int _psBefore = 0;             // wifi_ps_type_t to put back when pairing ends
   bool _psSaved = false;
   bool _blocking = false;        // a debug CLI discovery: no way back to the form
+  int _lastGot = 0;               // the last reply: bytes read, Content-Length (-1 none)
+  long _lastSize = 0;
   char* _resp = nullptr;         // reply buffer in PSRAM, only while a discovery or sync runs
   size_t _respCap = 0;
   // Contacts sync
@@ -161,7 +163,7 @@ private:
   uint32_t _evDay = 0;           // local midnight the last good one was for
   uint32_t _evWin = 0;           // window start of the one running
   char _evErr[64] = "";
-  int _evCal = 0, _evN = 0, _evDropped = 0;
+  int _evCal = 0, _evN = 0, _evDropped = 0, _evDays = 7;
   DavEvent* _evList = nullptr;   // PSRAM, EV_BUF
   char* _evBody = nullptr;       // calendar-query body
   uint32_t _now = 0;             // RTC time and local offset, from main.cpp every loop()
@@ -196,7 +198,7 @@ private:
   void syncFail(const char* why);
   bool eventsDue() const;
   void eventsTick(bool locked);
-  void eventsStart();
+  void eventsStart(int days = 7);   // days: MeckAgenda::WINDOW_DAYS, more from the debug CLI
   void eventsStep();
   void eventsEnd();
   void eventsFail(const char* why);

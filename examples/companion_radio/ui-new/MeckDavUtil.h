@@ -531,6 +531,28 @@ static inline int davParseMultistatus(const char* xml, size_t len, DavResponseFn
   return seenMulti ? count : -1;
 }
 
+// A multistatus that arrived whole ends in its closing tag, or is one empty
+// element (`<multistatus xmlns="DAV:" />`: a calendar with nothing in the time
+// range); one cut off on the way (a TLS error halfway) must not count as the
+// whole list
+static inline bool davMultistatusWhole(const char* xml) {
+  if (!xml) return false;
+  const char* end = xml + strlen(xml);
+  while (end > xml && isspace((unsigned char)end[-1])) end--;
+  if (end - xml < 14 || end[-1] != '>') return false;
+  const char* lt = end - 1;
+  while (lt > xml && *lt != '<') lt--;
+  if (*lt != '<') return false;
+  const char* name = lt + 1;
+  bool closing = *name == '/';
+  if (closing) name++;
+  else if (end[-2] != '/') return false;   // an opening tag last: cut off
+  size_t nl = strcspn(name, " \t\r\n/>");
+  char local[40];
+  davXmlLocal(name, nl, local, sizeof(local));
+  return !strcmp(local, "multistatus");
+}
+
 // --- Phone numbers -------------------------------------------------------------------
 
 // A number as the modem shows it: "+420 777-12 34 56" / "tel:00420777123456"

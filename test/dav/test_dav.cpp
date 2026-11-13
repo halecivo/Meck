@@ -450,6 +450,20 @@ SUMMARY:No start
 END:VEVENT
 END:VCALENDAR]]></C:calendar-data></prop><status>HTTP/1.1 200 OK</status></propstat></response></multistatus>)FX";
 
+static void testWhole() {
+  CHECK(davMultistatusWhole(FX_EVENTS));
+  CHECK(davMultistatusWhole(FX_SYNC));
+  CHECK(davMultistatusWhole("<?xml version='1.0' encoding='utf-8'?>\n<multistatus xmlns=\"DAV:\" />\n"));
+  CHECK(davMultistatusWhole("<D:multistatus xmlns:D=\"DAV:\"/>"));
+  CHECK(davMultistatusWhole("<d:multistatus xmlns:d=\"DAV:\"><d:response></d:response></d:multistatus>\r\n"));
+  CHECK(!davMultistatusWhole("<multistatus xmlns=\"DAV:\"><response><href>/a</href></response>"));
+  CHECK(!davMultistatusWhole("<multistatus xmlns=\"DAV:\"><response><href>/a</hr"));
+  CHECK(!davMultistatusWhole("<multistatus xmlns=\"DAV:\">"));
+  CHECK(!davMultistatusWhole("<multistatus xmlns=\"DAV:\"><response/>"));
+  CHECK(!davMultistatusWhole(""));
+  CHECK(!davMultistatusWhole(nullptr));
+}
+
 static void testIcal() {
   char s[20];
   davIcalUtcStamp(0, s, sizeof(s));
@@ -533,6 +547,7 @@ int main() {
   testVcardOddities();
   testMultigetBody();
   testIcal();
+  testWhole();
   printf("%d checks, %d failed\n", checks, failures);
   return failures ? 1 : 0;
 }

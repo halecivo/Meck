@@ -702,18 +702,6 @@ void MeckDav::awake(bool on) {
 
 // --- HTTP ------------------------------------------------------------------------
 
-// A multistatus that arrived whole ends in its closing tag; one cut off on the
-// way (a TLS error halfway) must not count as the whole list
-static bool davMultistatusWhole(const char* xml) {
-  const char* end = xml + strlen(xml);
-  while (end > xml && isspace((unsigned char)end[-1])) end--;
-  const char* lt = end;
-  while (lt > xml && *lt != '<') lt--;
-  if (end - lt < 14 || lt[1] != '/') return false;
-  size_t n = (size_t)(end - lt);
-  return n >= 13 && !strncasecmp(end - 12, "multistatus>", 12);
-}
-
 // While a DAV request runs, mallocs of 256 bytes and more go to PSRAM too
 // (normally only those over 4 kB do): the HTTP client's buffers and strings
 // would take the internal RAM that WiFi frames and the AES engine's DMA
@@ -725,7 +713,13 @@ int MeckDav::request(const char* method, const char* url, int depth, const char*
   int rc = requestOnce(method, url, depth, body, location, locationLen);
   heap_caps_malloc_extmem_enable(CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL);
   if (rc == 207 && !davMultistatusWhole(_resp)) {
-    Serial.println("DAV: reply cut off");
+    size_t l = strlen(_resp);
+    char tail[64];
+    size_t k = l > 60 ? l - 60 : 0, o = 0;
+    for (; k < l && o + 1 < sizeof(tail); k++) tail[o++] = (_resp[k] < 32) ? '.' : _resp[k];
+    tail[o] = 0;
+    Serial.printf("DAV: reply cut off: %u bytes, Content-Length %ld, read %d, ends \"%s\"\n",
+                  (unsigned)l, (long)_lastSize, _lastGot, tail);
     rc = -4;
   }
   return rc;
@@ -783,7 +777,9 @@ int MeckDav::requestOnce(const char* method, const char* url, int depth, const c
     if (location && locationLen && http.hasHeader("Location"))
       snprintf(location, locationLen, "%s", http.header("Location").c_str());
     DavBufStream s(_resp, _respCap);
+    _lastSize = http.getSize();
     int got = http.writeToStream(&s);
+    _lastGot = got;
     if (s.full()) code = -3;
     else if (got < 0) code = -4;   // the connection broke while reading
   }
@@ -1043,7 +1039,7 @@ static void davEventsRespCb(const DavResponse& r, void* c) {
 }
 
 void MeckDav::eventAdd(const DavEvent& e) {
-  uint32_t winEnd = _evWin + MeckAgenda::WINDOW_DAYS * 86400u;
+  uint32_t winEnd = _evWin + _evDays * 86400u;
   // Without expand a server sends a recurring event's first one: outside, left out
   bool in = e.end > e.start ? (e.start < winEnd && e.end > _evWin) : (e.start >= _evWin && e.start < winEnd);
   if (!in) return;
@@ -1071,15 +1067,16 @@ void MeckDav::eventsTick(bool locked) {
   eventsStep();
 }
 
-void MeckDav::eventsStart() {
+void MeckDav::eventsStart(int days) {
   static const uint32_t PSRAM = MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT;
   _evWanted = false;
+  _evDays = days;
   _evList = (DavEvent*)heap_caps_calloc(EV_BUF, sizeof(DavEvent), PSRAM);
   _evBody = (char*)heap_caps_malloc(1024, PSRAM);
   _ev = EV_CAL;
   if (!_evList || !_evBody) { eventsFail("Out of memory"); return; }
   _evWin = MeckAgenda::localMidnight(_now, _utcOff);
-  if (!davCalQueryBody(_evBody, 1024, _evWin, _evWin + MeckAgenda::WINDOW_DAYS * 86400u)) {
+  if (!davCalQueryBody(_evBody, 1024, _evWin, _evWin + _evDays * 86400u)) {
     eventsFail("Request too long");
     return;
   }
@@ -1117,8 +1114,9 @@ void MeckDav::eventsStep() {
     eventsFail(why);
     return;
   }
-  davParseMultistatus(_resp, strlen(_resp), davEventsRespCb, this);
-  Serial.printf("DAV: %s: %d event(s)\n", cal.name, _evN - before);
+  size_t len = strlen(_resp);
+  int items = davParseMultistatus(_resp, len, davEventsRespCb, this);
+  Serial.printf("DAV: %s: %d event(s) from %d item(s), %u bytes\n", cal.name, _evN - before, items, (unsigned)len);
   if (++_evCal < _calCount) return;
   meckAgenda.replace(_evList, _evN, _evWin);
   _evOk = true;
@@ -1126,7 +1124,7 @@ void MeckDav::eventsStep() {
   _evDay = _evWin;
   _evAt = millis();
   if (!_evAt) _evAt = 1;
-  Serial.printf("DAV: events synced, %d in %d days%s\n", meckAgenda.count(), MeckAgenda::WINDOW_DAYS,
+  Serial.printf("DAV: events synced, %d in %d days%s\n", meckAgenda.count(), _evDays,
                 _evDropped || _evN > meckAgenda.count() ? " (some left out)" : "");
   eventsEnd();
   meckAgendaChanged();
@@ -1197,14 +1195,16 @@ void MeckDav::cmd(const char* arg) {
     return;
   }
   // "dav events": the agenda's events now, waiting for the end (blocking); read only
-  if (strcmp(arg, "events") == 0) {
+  if (strcmp(arg, "events") == 0 || strncmp(arg, "events ", 7) == 0) {
     if (!configured() || _calCount == 0) { Serial.println("DAV: no calendar"); return; }
     if (WiFi.status() != WL_CONNECTED) { Serial.println("DAV: no WiFi"); return; }
     if (_now < DAV_CLOCK_VALID) { Serial.println("DAV: the clock is not set"); return; }
     stopPairing();
     syncEnd();
     eventsEnd();
-    eventsStart();
+    // "dav events <days>": a longer window once, to see what the server has
+    int days = arg[6] ? atoi(arg + 7) : MeckAgenda::WINDOW_DAYS;
+    eventsStart(days < MeckAgenda::WINDOW_DAYS ? MeckAgenda::WINDOW_DAYS : days > 400 ? 400 : days);
     while (_ev != EV_IDLE) {
       if (WiFi.status() != WL_CONNECTED) { eventsFail("WiFi lost"); break; }
       eventsStep();
@@ -1257,6 +1257,39 @@ void MeckDav::cmd(const char* arg) {
     _blocking = false;
     Serial.printf("DAV: %s%s%s\n", _phase == PH_DONE ? "ok" : "failed", _error[0] ? ": " : "", _error);
     _phase = PH_OFF;
+    return;
+  }
+  // "dav dump <n>": the times of every event in calendar n (no time range, no
+  // expand, no titles), to see why the agenda finds none; read only
+  if (strncmp(arg, "dump ", 5) == 0) {
+    int i = atoi(arg + 5);
+    if (!configured() || i < 0 || i >= _calCount) { Serial.println("DAV: no such calendar"); return; }
+    syncEnd();
+    eventsEnd();
+    snprintf(_pairUrl, sizeof(_pairUrl), "%s", _url);
+    snprintf(_pairUser, sizeof(_pairUser), "%s", _user);
+    snprintf(_pairPass, sizeof(_pairPass), "%s", _pass);
+    static const char body[] =
+      "<?xml version=\"1.0\" encoding=\"utf-8\"?>"
+      "<c:calendar-query xmlns:d=\"DAV:\" xmlns:c=\"urn:ietf:params:xml:ns:caldav\">"
+      "<d:prop><c:calendar-data/></d:prop>"
+      "<c:filter><c:comp-filter name=\"VCALENDAR\"><c:comp-filter name=\"VEVENT\"/></c:comp-filter></c:filter>"
+      "</c:calendar-query>";
+    _ev = EV_CAL;   // the large reply buffer
+    int rc = request("REPORT", _cals[i].url, 1, body);
+    _ev = EV_IDLE;
+    if (rc != 207) { Serial.printf("DAV: %d\n", rc); endDiscovery(); return; }
+    Serial.printf("DAV: reply %u bytes\n", (unsigned)strlen(_resp));
+    // The lines that say when, as the server has them
+    for (const char* p = _resp; (p = strstr(p, "\n")) != nullptr; p++) {
+      const char* l = p + 1;
+      if (!strncmp(l, "DTSTART", 7) || !strncmp(l, "DTEND", 5) || !strncmp(l, "RRULE", 5) ||
+          !strncmp(l, "BEGIN:VEVENT", 12) || !strncmp(l, "DURATION", 8)) {
+        size_t n = strcspn(l, "\r\n");
+        Serial.printf("  %.*s\n", (int)(n > 100 ? 100 : n), l);
+      }
+    }
+    endDiscovery();
     return;
   }
   // "dav ls <n>": what is in calendar n (sync-collection, read only), the first ten
