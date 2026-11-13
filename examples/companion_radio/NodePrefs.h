@@ -188,6 +188,11 @@ struct NodePrefs {  // persisted to file
   // short-read this field and keep the default 0 (off).
   uint8_t lock_agenda;             // default 0
 
+  // Weather on the lock screen (Experimental, UI v2): the Open-Meteo
+  // forecast for the deck's position, fetched over WiFi or 4G. Older prefs
+  // files short-read this field and keep the default 0 (off).
+  uint8_t lock_weather;            // default 0
+
   // --- Font helpers (inline, no overhead) ---
   // Returns the DisplayDriver text-size index for "small/body" text.
   // T-Deck Pro: 0 = built-in 6×8 (or 7pt with custom fonts), 1 = 9pt.

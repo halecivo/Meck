@@ -181,6 +181,12 @@
   void meckAgendaSetup();
   #endif
 
+  #if defined(MECK_WEATHER) && MECK_WEATHER
+  // Weather next to the lock screen clock (docs/weather.md)
+  #include "MeckWeather.h"
+  void meckWeatherTick();
+  #endif
+
   // SD-backed persistence state
   static bool sdCardReady = false;
 
@@ -3388,6 +3394,9 @@ void setup() {
   meckDav.begin();
   meckAgendaSetup();
 #endif
+#if defined(MECK_WEATHER) && MECK_WEATHER
+  meckWeather.begin();
+#endif
 
   // ---------------------------------------------------------------------------
   // OTA boot validation — confirm new firmware is working after an OTA update.
@@ -5420,6 +5429,9 @@ void loop() {
   #endif
   #if defined(MECK_DAV) && MECK_DAV
   meckDavTick();           // CalDAV account: pairing web server and discovery
+  #endif
+  #if defined(MECK_WEATHER) && MECK_WEATHER
+  meckWeatherTick();       // lock screen weather: requests, and its state before the minute redraw
   #endif
   #ifdef MECK_OTA_UPDATE
   if (!otaRadioPaused) {
@@ -8979,6 +8991,57 @@ void meckAgendaChanged() {
 }
 
 void meckDavCmd(const char* arg) { meckDav.cmd(arg); }
+#endif
+
+#if defined(MECK_WEATHER) && MECK_WEATHER
+// Weather on the lock screen (Settings > Experimental, docs/weather.md)
+static bool meckWeatherDirty = true;
+
+void meckWeatherTick() {
+  NodePrefs* p = the_mesh.getNodePrefs();
+  const uint32_t now = rtc_clock.getCurrentTime();
+  double lat = 0, lon = 0;
+  const bool on = p->lock_weather != 0;
+  const bool pos = on && meckOwnPosition(lat, lon);
+  meckWeather.loop(on, pos, lat, lon, now);
+#ifdef MECK_UI_V2
+  // What the lock screen shows changes by the minute at most; this runs
+  // before the UI in the same loop, so a change rides on the minute redraw
+  static uint32_t lastMin = 0, lastVer = 0;
+  static WxNow shown = {};
+  if (!meckWeatherDirty && now / 60 == lastMin && meckWeather.version() == lastVer) return;
+  // Dirty: the setting or the CLI; also puts it back after "lockdemo"
+  const bool force = meckWeatherDirty;
+  meckWeatherDirty = false;
+  lastMin = now / 60;
+  lastVer = meckWeather.version();
+  WxNow w = {};
+  if (on) w = wxNowAt(meckWeather.forecast(), now, (int32_t)p->utc_offset_hours * 3600);
+  if (!force && wxNowEqual(w, shown)) return;
+  shown = w;
+  static const Ui2Icon kIcon[] = { UI2_IC_SUN, UI2_IC_MOON, UI2_IC_PARTLY, UI2_IC_CLOUD, UI2_IC_FOG,
+                                   UI2_IC_RAIN, UI2_IC_HEAVY, UI2_IC_SNOW, UI2_IC_STORM };
+  Ui2LockWeather lw;
+  lw.valid = w.valid;
+  lw.icon = kIcon[w.icon];
+  lw.tempC = (int8_t)constrain(w.tempC, -99, 99);
+  lw.rain = w.rain == WX_RAIN_STARTS ? Ui2LockWeather::RAIN_STARTS
+          : w.rain == WX_RAIN_ENDS   ? Ui2LockWeather::RAIN_ENDS : Ui2LockWeather::RAIN_NONE;
+  lw.rainMin = w.rainMin;
+  ui_task.setLockWeather(lw);
+#endif
+}
+
+// Settings: the switch changed; switched on, the first request goes at once
+void meckWeatherChanged() {
+  meckWeatherDirty = true;
+  if (the_mesh.getNodePrefs()->lock_weather) meckWeather.fetchSoon();
+}
+
+void meckWeatherCmd(const char* arg) {
+  meckWeather.cmd(arg, rtc_clock.getCurrentTime(), (int32_t)the_mesh.getNodePrefs()->utc_offset_hours * 3600);
+  meckWeatherDirty = true;
+}
 #endif
 
 // SOS channels (Settings > SOS) are kept by the start of the channel's

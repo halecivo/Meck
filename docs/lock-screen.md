@@ -32,6 +32,16 @@ widget interface in `ui-new/ui2/Ui2LockWidgets.h`.
   sides, the widget with the lowest priority is left out, then the next,
   until the rest fit.
 
+## Weather
+
+Settings > Experimental > **Weather on lock screen** (off by default) puts
+the Open-Meteo forecast for the deck's position next to the clock: the
+condition icon with the temperature badge, and the rain line when rain is
+coming within 12 hours (its start) or while it rains (its end). Fetched over
+WiFi or 4G only, never over Bluetooth; see `docs/weather.md`. The group is
+left out when the setting is off, the deck has no position or clock, or the
+forecast is older than 6 hours.
+
 ## Agenda
 
 Settings > Experimental > **Agenda on lock screen** (UI v2 builds with the
@@ -86,5 +96,8 @@ screenshots; it lives in RAM only and nothing is sent or stored.
     lockdemo block <h> [prio] one more dummy widget of h px (up to three)
     lockdemo off              all of it gone
     dav agenda demo <t> <m>   made-up agenda: t events today, m tomorrow
+
+`weather` (any of its commands) puts the real weather back after a
+`lockdemo`.
 
 Then `uigo lock` and `tools/ui2/grab_screen.py`.

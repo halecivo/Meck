@@ -2400,7 +2400,8 @@ void ModemManager::printDataStats() {
   Serial.printf("data: %s, allowed %d, apps %02x, holders %02x, sessions %lu, failures %lu\n",
                 dataStateToString(_dataState), (int)_dataAllowed, (unsigned)_dataAppMask,
                 (unsigned)_dataHolders, (unsigned long)_dataSessions, (unsigned long)_dataFailures);
-  static const char* const names[DATA_APP_COUNT] = { "other", "browser", "irc", "ha" };
+  static const char* const names[] = { "other", "browser", "irc", "ha", "weather" };
+  static_assert(sizeof(names) / sizeof(names[0]) == DATA_APP_COUNT, "a name for every data app");
   Serial.print("data: 24 h");
   for (uint8_t a = 0; a < DATA_APP_COUNT; a++)
     Serial.printf(" %s %lu", names[a], (unsigned long)dataUsage24h(a));

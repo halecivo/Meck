@@ -302,6 +302,9 @@ enum SettingsRowType : uint8_t {
   ROW_CALENDAR_ACCOUNT, // Folder row: opens the calendar account screen (DavScreen)
   ROW_LOCK_AGENDA,      // Toggle: today and tomorrow of the calendars on the lock screen (UI v2)
 #endif
+#if defined(MECK_WEATHER) && MECK_WEATHER && defined(MECK_UI_V2)
+  ROW_LOCK_WEATHER,     // Toggle: the forecast next to the clock on the lock screen
+#endif
 };
 
 // ---------------------------------------------------------------------------
@@ -650,6 +653,9 @@ private:
       addRow(ROW_LOCK_AGENDA);
   #endif
 #endif
+#if defined(MECK_WEATHER) && MECK_WEATHER && defined(MECK_UI_V2)
+      addRow(ROW_LOCK_WEATHER);
+#endif
 #if defined(LilyGo_TDeck_Pro)
     } else if (_subScreen == SUB_SOS) {
       // --- SOS sub-screen: the button, then every channel ---
@@ -668,6 +674,9 @@ private:
   #endif
   #if defined(MECK_HA) && MECK_HA
       addRow(ROW_DATA_APP, DATA_APP_HA);
+  #endif
+  #if defined(MECK_WEATHER) && MECK_WEATHER
+      addRow(ROW_DATA_APP, DATA_APP_WEATHER);
   #endif
       addRow(ROW_DATA_OTHER);
       addRow(ROW_DATA_TOTAL);
@@ -791,6 +800,7 @@ private:
       case DATA_APP_BROWSER: return MECK_TR("Web browser", "Navigateur");
       case DATA_APP_IRC:     return MECK_TR("IRC chat", "Chat IRC");
       case DATA_APP_HA:      return "Home Assistant";
+      case DATA_APP_WEATHER: return MECK_TR("Weather", "MÃ©tÃ©o");
       default:               return MECK_TR("Other", "Autre");
     }
   }
@@ -2937,6 +2947,13 @@ public:
         display.print(tmp);
         break;
   #endif
+#endif
+#if defined(MECK_WEATHER) && MECK_WEATHER && defined(MECK_UI_V2)
+      case ROW_LOCK_WEATHER:
+        snprintf(tmp, sizeof(tmp), MECK_TR("Weather on lock screen: %s", "M\xC3\xA9t\xC3\xA9o \xC3\xA0 l'\xC3\xA9" "cran verrouill\xC3\xA9 : %s"),
+                 _prefs->lock_weather ? MECK_TR("ON", "OUI") : MECK_TR("OFF", "NON"));
+        display.print(tmp);
+        break;
 #endif
 
       case ROW_TELEM_PROMPT: {
@@ -5407,6 +5424,16 @@ public:
           the_mesh.savePrefs();
           meckAgendaChanged();
           Serial.printf("Settings: agenda on lock screen = %s\n", _prefs->lock_agenda ? "ON" : "OFF");
+          break;
+        }
+#endif
+#if defined(MECK_WEATHER) && MECK_WEATHER && defined(MECK_UI_V2)
+        case ROW_LOCK_WEATHER: {
+          extern void meckWeatherChanged();
+          _prefs->lock_weather = _prefs->lock_weather ? 0 : 1;
+          the_mesh.savePrefs();
+          meckWeatherChanged();
+          Serial.printf("Settings: weather on lock screen = %s\n", _prefs->lock_weather ? "ON" : "OFF");
           break;
         }
 #endif
