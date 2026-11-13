@@ -793,3 +793,177 @@ static inline int davVcardParse(const char* data, size_t len, DavContactFn fn, v
   }
   return cards;
 }
+
+// --- iCalendar events (the lock screen agenda) ---------------------------------------
+
+// "20261113T080000Z" for an RTC time (UTC); what CalDAV's time-range and
+// expand take
+static inline void davIcalUtcStamp(uint32_t t, char* out, size_t n) {
+  uint32_t days = t / 86400, sod = t % 86400;
+  // civil_from_days (H. Hinnant), days since 1970-01-01
+  int32_t z = (int32_t)days + 719468;
+  int32_t era = z / 146097;
+  uint32_t doe = (uint32_t)(z - era * 146097);
+  uint32_t yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+  int32_t y = (int32_t)yoe + era * 400;
+  uint32_t doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+  uint32_t mp = (5 * doy + 2) / 153;
+  uint32_t d = doy - (153 * mp + 2) / 5 + 1;
+  uint32_t m = mp < 10 ? mp + 3 : mp - 9;
+  if (m <= 2) y++;
+  snprintf(out, n, "%04ld%02lu%02luT%02lu%02lu%02luZ", (long)y, (unsigned long)m, (unsigned long)d,
+           (unsigned long)(sod / 3600), (unsigned long)(sod / 60 % 60), (unsigned long)(sod % 60));
+}
+
+// Days since 1970-01-01 of a civil date (days_from_civil)
+static inline int32_t davDaysFromCivil(int32_t y, uint32_t m, uint32_t d) {
+  y -= m <= 2;
+  int32_t era = (y >= 0 ? y : y - 399) / 400;
+  uint32_t yoe = (uint32_t)(y - era * 400);
+  uint32_t doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1;
+  uint32_t doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+  return era * 146097 + (int32_t)doe - 719468;
+}
+
+// calendar-query for the events that touch [startUtc, endUtc), recurring
+// ones expanded by the server into instances with UTC times (RFC 4791 9.6.5).
+// Returns the body length, 0 when it does not fit.
+static inline size_t davCalQueryBody(char* out, size_t cap, uint32_t startUtc, uint32_t endUtc) {
+  char s[20], e[20];
+  davIcalUtcStamp(startUtc, s, sizeof(s));
+  davIcalUtcStamp(endUtc, e, sizeof(e));
+  int l = snprintf(out, cap,
+    "<?xml version=\"1.0\" encoding=\"utf-8\"?>"
+    "<c:calendar-query xmlns:d=\"DAV:\" xmlns:c=\"urn:ietf:params:xml:ns:caldav\">"
+    "<d:prop><d:getetag/><c:calendar-data><c:expand start=\"%s\" end=\"%s\"/></c:calendar-data></d:prop>"
+    "<c:filter><c:comp-filter name=\"VCALENDAR\"><c:comp-filter name=\"VEVENT\">"
+    "<c:time-range start=\"%s\" end=\"%s\"/></c:comp-filter></c:comp-filter></c:filter>"
+    "</c:calendar-query>", s, e, s, e);
+  return (l > 0 && (size_t)l < cap) ? (size_t)l : 0;
+}
+
+struct DavEvent {
+  uint32_t start, end;   // RTC seconds (UTC); an all-day event from the deck's local midnight
+  bool allDay;
+  char title[48];
+};
+
+typedef void (*DavEventFn)(const DavEvent& e, void* ctx);
+
+// A DTSTART / DTEND value: "20261113T090000Z" (UTC), "20261113T090000"
+// (floating, or with a TZID: taken as the deck's local time; after expand the
+// server sends UTC) or "20261113" (a date). False when it is none of these.
+static inline bool davIcalTime(const char* v, int32_t utcOffsetSec, uint32_t& out, bool& isDate) {
+  int n = 0;
+  while (isdigit((unsigned char)v[n])) n++;
+  if (n != 8) return false;
+  int32_t y = (v[0] - '0') * 1000 + (v[1] - '0') * 100 + (v[2] - '0') * 10 + (v[3] - '0');
+  uint32_t mo = (uint32_t)((v[4] - '0') * 10 + (v[5] - '0'));
+  uint32_t d = (uint32_t)((v[6] - '0') * 10 + (v[7] - '0'));
+  if (y < 1970 || y > 2105 || mo < 1 || mo > 12 || d < 1 || d > 31) return false;
+  int64_t t = (int64_t)davDaysFromCivil(y, mo, d) * 86400;
+  isDate = v[8] != 'T';
+  bool utc = false;
+  if (!isDate) {
+    const char* hp = v + 9;
+    for (int k = 0; k < 6; k++) if (!isdigit((unsigned char)hp[k])) return false;
+    t += ((hp[0] - '0') * 10 + (hp[1] - '0')) * 3600 + ((hp[2] - '0') * 10 + (hp[3] - '0')) * 60 +
+         (hp[4] - '0') * 10 + (hp[5] - '0');
+    utc = hp[6] == 'Z' || hp[6] == 'z';
+  }
+  if (!utc) t -= utcOffsetSec;
+  if (t < 0) t = 0;
+  out = (uint32_t)t;
+  return true;
+}
+
+// "PT1H30M", "P1D", "P1W": seconds, -1 when not a duration (a negative one
+// included: an event does not end before it starts)
+static inline long davIcalDuration(const char* v) {
+  if (*v == '+') v++;
+  if (*v != 'P' && *v != 'p') return -1;
+  v++;
+  long total = 0;
+  bool time = false;
+  while (*v) {
+    if (*v == 'T' || *v == 't') { time = true; v++; continue; }
+    if (!isdigit((unsigned char)*v)) return -1;
+    long n = 0;
+    while (isdigit((unsigned char)*v)) n = n * 10 + (*v++ - '0');
+    char u = (char)toupper((unsigned char)*v++);
+    if (u == 'W') total += n * 7 * 86400;
+    else if (u == 'D') total += n * 86400;
+    else if (u == 'H' && time) total += n * 3600;
+    else if (u == 'M' && time) total += n * 60;
+    else if (u == 'S' && time) total += n;
+    else return -1;
+  }
+  return total;
+}
+
+// Reads the VEVENTs in a calendar-data text and calls fn for each one that has
+// a start; cancelled ones are skipped, properties of nested components (VALARM)
+// ignored. A missing end is the start (a date: the next day). Returns the
+// number of events handed to fn.
+static inline int davIcalParse(const char* data, size_t len, int32_t utcOffsetSec, DavEventFn fn, void* ctx) {
+  if (!data) return 0;
+  DavRawText t(data, len);
+  char line[200];
+  DavEvent ev;
+  bool in = false, hasStart = false, hasEnd = false, cancelled = false;
+  int nested = 0, events = 0;
+  long dur = -1;
+  while (davVcardLine(t, line, sizeof(line))) {
+    char* colon = nullptr;
+    bool quoted = false;
+    for (char* p = line; *p; p++) {
+      if (*p == '"') quoted = !quoted;
+      else if (*p == ':' && !quoted) { colon = p; break; }
+    }
+    if (!colon) continue;
+    *colon = 0;
+    char* value = colon + 1;
+    char* name = line;
+    char* params = strchr(name, ';');
+    if (params) *params++ = 0;
+
+    if (!strcasecmp(name, "BEGIN")) {
+      if (in) nested++;
+      else if (!strncasecmp(value, "VEVENT", 6)) {
+        in = true;
+        memset(&ev, 0, sizeof(ev));
+        hasStart = hasEnd = cancelled = false;
+        nested = 0;
+        dur = -1;
+      }
+    } else if (!in) {
+      continue;
+    } else if (!strcasecmp(name, "END")) {
+      if (nested) { nested--; continue; }
+      in = false;
+      if (!hasStart || cancelled) continue;
+      if (!hasEnd) ev.end = dur >= 0 ? ev.start + (uint32_t)dur : ev.start + (ev.allDay ? 86400 : 0);
+      if (ev.end < ev.start) ev.end = ev.start;
+      events++;
+      if (fn) fn(ev, ctx);
+    } else if (nested) {
+      continue;
+    } else if (!strcasecmp(name, "DTSTART")) {
+      bool isDate = false;
+      if (davIcalTime(value, utcOffsetSec, ev.start, isDate)) { hasStart = true; ev.allDay = isDate; }
+    } else if (!strcasecmp(name, "DTEND")) {
+      bool isDate = false;
+      if (davIcalTime(value, utcOffsetSec, ev.end, isDate)) hasEnd = true;
+    } else if (!strcasecmp(name, "DURATION")) {
+      dur = davIcalDuration(value);
+    } else if (!strcasecmp(name, "STATUS")) {
+      cancelled = !strncasecmp(value, "CANCELLED", 9);
+    } else if (!strcasecmp(name, "SUMMARY")) {
+      davVcardValue(value, false);
+      davTrimSpaces(value);
+      davCopy(ev.title, sizeof(ev.title), value);
+      davTrimUtf8(ev.title);
+    }
+  }
+  return events;
+}

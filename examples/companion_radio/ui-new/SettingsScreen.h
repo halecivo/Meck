@@ -300,6 +300,7 @@ enum SettingsRowType : uint8_t {
 #endif
 #if defined(MECK_DAV) && MECK_DAV
   ROW_CALENDAR_ACCOUNT, // Folder row: opens the calendar account screen (DavScreen)
+  ROW_LOCK_AGENDA,      // Toggle: today and tomorrow of the calendars on the lock screen (UI v2)
 #endif
 };
 
@@ -645,6 +646,9 @@ private:
 #endif
 #if defined(MECK_DAV) && MECK_DAV
       addRow(ROW_CALENDAR_ACCOUNT);
+  #ifdef MECK_UI_V2
+      addRow(ROW_LOCK_AGENDA);
+  #endif
 #endif
 #if defined(LilyGo_TDeck_Pro)
     } else if (_subScreen == SUB_SOS) {
@@ -2926,6 +2930,13 @@ public:
         display.setColor(selected ? DisplayDriver::DARK : DisplayDriver::GREEN);
         display.print(MECK_TR("Calendar account >>", "Compte agenda >>"));
         break;
+  #ifdef MECK_UI_V2
+      case ROW_LOCK_AGENDA:
+        snprintf(tmp, sizeof(tmp), MECK_TR("Agenda on lock screen: %s", "Agenda \xC3\xA0 l'\xC3\xA9" "cran verrouill\xC3\xA9 : %s"),
+                 _prefs->lock_agenda ? MECK_TR("ON", "OUI") : MECK_TR("OFF", "NON"));
+        display.print(tmp);
+        break;
+  #endif
 #endif
 
       case ROW_TELEM_PROMPT: {
@@ -5388,6 +5399,16 @@ public:
           Serial.printf("Settings: Change Backlight to Alt+B = %s\n",
                         _prefs->backlight_alt_b_only ? "ON" : "OFF");
           break;
+#endif
+#if defined(MECK_DAV) && MECK_DAV && defined(MECK_UI_V2)
+        case ROW_LOCK_AGENDA: {
+          extern void meckAgendaChanged();
+          _prefs->lock_agenda = _prefs->lock_agenda ? 0 : 1;
+          the_mesh.savePrefs();
+          meckAgendaChanged();
+          Serial.printf("Settings: agenda on lock screen = %s\n", _prefs->lock_agenda ? "ON" : "OFF");
+          break;
+        }
 #endif
         case ROW_RX_BOOSTED_GAIN:
           _prefs->rx_boosted_gain = _prefs->rx_boosted_gain ? 0 : 1;

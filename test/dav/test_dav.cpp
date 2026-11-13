@@ -394,6 +394,128 @@ static void testMultigetBody() {
   CHECK(davMultigetBody(b, sizeof(b), hrefs, 0) > 0);
 }
 
+// calendar-query with expand, shaped like Radicale's reply: an expanded weekly
+// event (instances in UTC), an all-day one, a cancelled one, one with
+// DURATION and a VALARM, a folded SUMMARY with escapes
+static const char FX_EVENTS[] = R"FX(<?xml version='1.0' encoding='utf-8'?>
+<multistatus xmlns="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav"><response><href>/deck/test/weekly.ics</href><propstat><prop><getetag>"a"</getetag><C:calendar-data>BEGIN:VCALENDAR
+VERSION:2.0
+BEGIN:VEVENT
+UID:weekly
+DTSTART:20261113T080000Z
+DTEND:20261113T081500Z
+RECURRENCE-ID:20261113T080000Z
+SUMMARY:Standup
+END:VEVENT
+BEGIN:VEVENT
+UID:weekly
+DTSTART:20261114T080000Z
+DTEND:20261114T081500Z
+RECURRENCE-ID:20261114T080000Z
+SUMMARY:Standup
+END:VEVENT
+END:VCALENDAR
+</C:calendar-data></prop><status>HTTP/1.1 200 OK</status></propstat></response><response><href>/deck/test/allday.ics</href><propstat><prop><getetag>"b"</getetag><C:calendar-data>BEGIN:VCALENDAR&#13;
+BEGIN:VEVENT&#13;
+DTSTART;VALUE=DATE:20261114&#13;
+DTEND;VALUE=DATE:20261116&#13;
+SUMMARY:Trip to R&#xED;&#x10D;any&#13;
+END:VEVENT&#13;
+END:VCALENDAR&#13;
+</C:calendar-data></prop><status>HTTP/1.1 200 OK</status></propstat></response><response><href>/deck/test/x.ics</href><propstat><prop><C:calendar-data><![CDATA[BEGIN:VCALENDAR
+BEGIN:VTIMEZONE
+TZID:Europe/Prague
+BEGIN:STANDARD
+DTSTART:19701025T030000
+END:STANDARD
+END:VTIMEZONE
+BEGIN:VEVENT
+DTSTART;TZID=Europe/Prague:20261113T150000
+DURATION:PT1H30M
+SUMMARY:PI planning\, Z
+ ürich call\nroom 2
+BEGIN:VALARM
+TRIGGER:-PT15M
+DESCRIPTION:not this
+SUMMARY:not this either
+END:VALARM
+END:VEVENT
+BEGIN:VEVENT
+DTSTART:20261113T170000Z
+STATUS:CANCELLED
+SUMMARY:Gone
+END:VEVENT
+BEGIN:VEVENT
+SUMMARY:No start
+END:VEVENT
+END:VCALENDAR]]></C:calendar-data></prop><status>HTTP/1.1 200 OK</status></propstat></response></multistatus>)FX";
+
+static void testIcal() {
+  char s[20];
+  davIcalUtcStamp(0, s, sizeof(s));
+  CHECK_STR(s, "19700101T000000Z");
+  davIcalUtcStamp(1794528000u, s, sizeof(s));       // 2026-11-13 00:00 UTC
+  CHECK_STR(s, "20261113T000000Z");
+  davIcalUtcStamp(951782400u + 86399, s, sizeof(s)); // 2000-02-29 23:59:59
+  CHECK_STR(s, "20000229T235959Z");
+  CHECK(davDaysFromCivil(2026, 11, 13) * 86400 == 1794528000);
+
+  char b[700];
+  size_t n = davCalQueryBody(b, sizeof(b), 1794528000u, 1794528000u + 7 * 86400);
+  CHECK(n == strlen(b) && n > 0);
+  CHECK(strstr(b, "<c:expand start=\"20261113T000000Z\" end=\"20261120T000000Z\"/>") != nullptr);
+  CHECK(strstr(b, "<c:time-range start=\"20261113T000000Z\" end=\"20261120T000000Z\"/>") != nullptr);
+  CHECK(davCalQueryBody(b, 100, 0, 1) == 0);
+
+  CHECK(davIcalDuration("PT1H30M") == 5400);
+  CHECK(davIcalDuration("P1D") == 86400);
+  CHECK(davIcalDuration("P1W") == 7 * 86400);
+  CHECK(davIcalDuration("P1DT2H") == 93600);
+  CHECK(davIcalDuration("-PT5M") == -1);
+  CHECK(davIcalDuration("P1H") == -1);
+
+  std::vector<DavEvent> ev;
+  auto fn = [](const DavEvent& e, void* c) { ((std::vector<DavEvent>*)c)->push_back(e); };
+  std::vector<DavResponse> v = parse(FX_EVENTS);
+  CHECK(v.size() == 3);
+  const int32_t off = 3600;   // the deck at UTC+1
+  int total = 0;
+  for (auto& r : v) total += davIcalParse(r.data, r.dataLen, off, fn, &ev);
+  CHECK(total == 4 && ev.size() == 4);
+  if (ev.size() == 4) {
+    const uint32_t day = 1794528000u;
+    CHECK(ev[0].start == day + 8 * 3600 && ev[0].end == day + 8 * 3600 + 900 && !ev[0].allDay);
+    CHECK_STR(ev[0].title, "Standup");
+    CHECK(ev[1].start == day + 86400 + 8 * 3600);
+    CHECK(ev[2].allDay && ev[2].start == day + 86400 - 3600 && ev[2].end == day + 3 * 86400 - 3600);
+    CHECK_STR(ev[2].title, "Trip to R\xC3\xAD\xC4\x8D" "any");
+    CHECK(!ev[3].allDay && ev[3].start == day + 14 * 3600 && ev[3].end == day + 14 * 3600 + 5400);
+    CHECK_STR(ev[3].title, "PI planning, Z\xC3\xBCrich call room 2");
+  }
+
+  // Odd input: no end (a date lasts a day), bad dates, nothing at all
+  ev.clear();
+  const char* odd = "BEGIN:VEVENT\nDTSTART;VALUE=DATE:20261113\nEND:VEVENT\n"
+                    "BEGIN:VEVENT\nDTSTART:2026111\nSUMMARY:bad\nEND:VEVENT\n"
+                    "BEGIN:VEVENT\nDTSTART:20261313T000000Z\nEND:VEVENT\n"
+                    "BEGIN:VEVENT\nDTSTART:20261113T0900Z\nEND:VEVENT\n"
+                    "BEGIN:VEVENT\nDTSTART:20261113T090000Z\nDTEND:20261113T080000Z\nEND:VEVENT\n"
+                    "BEGIN:VEVENT\nDTSTART:20261113T090000Z\n";
+  CHECK(davIcalParse(odd, strlen(odd), 0, fn, &ev) == 2);
+  if (ev.size() == 2) {
+    CHECK(ev[0].allDay && ev[0].end - ev[0].start == 86400 && ev[0].title[0] == 0);
+    CHECK(ev[1].end == ev[1].start);
+  }
+  std::string longTitle = "BEGIN:VEVENT\nDTSTART:20261113T090000Z\nSUMMARY:";
+  for (int k = 0; k < 40; k++) longTitle += "\xC5\x98";   // Ř, two bytes
+  longTitle += "\nEND:VEVENT\n";
+  ev.clear();
+  CHECK(davIcalParse(longTitle.c_str(), longTitle.size(), 0, fn, &ev) == 1);
+  if (ev.size() == 1) CHECK(strlen(ev[0].title) == 46);
+  CHECK(davIcalParse(nullptr, 0, 0, fn, &ev) == 0);
+  CHECK(davIcalParse("&amp&#xZZ;<![CDATA[", 19, 0, fn, &ev) == 0);
+}
+
 int main() {
   testUrls();
   testBasic();
@@ -410,6 +532,7 @@ int main() {
   testMultiget();
   testVcardOddities();
   testMultigetBody();
+  testIcal();
   printf("%d checks, %d failed\n", checks, failures);
   return failures ? 1 : 0;
 }

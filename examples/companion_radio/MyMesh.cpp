@@ -1801,6 +1801,7 @@ MyMesh::MyMesh(mesh::Radio &radio, mesh::RNG &rng, mesh::RTCClock &rtc, SimpleMe
   _prefs.sos_btn = 1;          // SOS on a 3 s hold of the top button
   _prefs.notif_vibrate = 1;    // quick settings: vibration on
   _prefs.lock_keep = LOCK_KEEP_DEFAULT;   // what keeps running while locked
+  _prefs.lock_agenda = 0;      // no agenda on the lock screen until switched on
   _prefs.multi_acks = 1;      // redundant ACKs on by default
   strcpy(_prefs.node_name, "NONAME");
   _prefs.freq = LORA_FREQ;
