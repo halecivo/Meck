@@ -161,6 +161,14 @@ class UITask : public AbstractUITask {
   UIScreen* quick_settings;            // QuickSettingsScreen
   UIScreen* _screenBeforeQuick = nullptr; // where Q on it goes back to
 #endif
+#if defined(MECK_HA) && MECK_HA
+  UIScreen* ha_screen = nullptr;       // Home Assistant pairing / status (HaScreen)
+  UIScreen* _screenBeforeHa = nullptr; // where Q on it goes back to
+#endif
+#if defined(MECK_DAV) && MECK_DAV
+  UIScreen* dav_screen = nullptr;       // calendar account pairing / status (DavScreen)
+  UIScreen* _screenBeforeDav = nullptr; // where Q on it goes back to
+#endif
 
   // --- Message dedup ring buffer (suppress retry spam at UI level) ---
   #define MSG_DEDUP_SIZE 8
@@ -335,6 +343,22 @@ public:
   void sosPulse();
   // Countdown over: motor rail off, for the battery
   void sosPulsesDone();
+#endif
+#if defined(MECK_HA) && MECK_HA
+  // Home Assistant screen (docs/home-assistant.md), opened from Settings >
+  // Experimental; leaveHaScreen() goes back there
+  void gotoHaScreen();
+  void leaveHaScreen();
+  bool isOnHaScreen() const { return curr == ha_screen; }
+  UIScreen* getHaScreen() const { return ha_screen; }
+#endif
+#if defined(MECK_DAV) && MECK_DAV
+  // Calendar account screen (docs/caldav-design.md), opened from Settings >
+  // Experimental; leaveDavScreen() goes back there
+  void gotoDavScreen();
+  void leaveDavScreen();
+  bool isOnDavScreen() const { return curr == dav_screen; }
+  UIScreen* getDavScreen() const { return dav_screen; }
 #endif
 #ifdef MECK_QUICK_SETTINGS
   // Quick settings (docs/ui2-quick-settings.md): opened over the current

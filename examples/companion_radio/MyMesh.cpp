@@ -4012,10 +4012,19 @@ void MyMesh::checkCLIRescueCmd() {
         if (_rxlog_count < RXLOG_SIZE) _rxlog_count++;
       }
 #if defined(LilyGo_TDeck_Pro_Max) && HAS_BQ27220
-    } else if (memcmp(cli_command, "pwr", 3) == 0) {
-      // Debug: power measurement ("pwr", "pwrhiz 0|1", "pwrxl gps|1v8 0|1")
+    } else if (memcmp(cli_command, "pwr", 3) == 0 ||
+               strcmp(cli_command, "data") == 0 || memcmp(cli_command, "data ", 5) == 0) {
+      // Debug: power measurement ("pwr", "pwrhiz 0|1", "pwrxl gps|1v8 0|1"),
+      // and mobile data ("data", "data on|off|dns <host>|get <url>"), which
+      // share meckPowerCmd
       extern void meckPowerCmd(const char* cmd);
       meckPowerCmd(cli_command);
+#endif
+#if defined(BLE_PIN_CODE) && defined(MECK_WIFI_COMPANION)
+    } else if (strcmp(cli_command, "mem") == 0 || memcmp(cli_command, "mem ", 4) == 0) {
+      // Debug: internal / PSRAM free with BLE, WiFi and a TLS session
+      extern void meckMemCmd(const char* arg);
+      meckMemCmd(cli_command[3] ? &cli_command[4] : "");
 #endif
     } else if (memcmp(cli_command, "uigeo ", 6) == 0) {
       // Debug: what the location parser finds in a text (nothing is stored)
@@ -4025,6 +4034,18 @@ void MyMesh::checkCLIRescueCmd() {
       // Debug: SOS state, dry run, simulated hold / fix (docs/sos.md)
       extern void meckSosCmd(const char* arg);
       meckSosCmd(cli_command[3] ? &cli_command[4] : "");
+#if defined(MECK_HA) && MECK_HA
+    } else if (strcmp(cli_command, "ha") == 0 || memcmp(cli_command, "ha ", 3) == 0) {
+      // Debug: Home Assistant link (docs/home-assistant.md); secrets are masked
+      extern void meckHaCmd(const char* arg);
+      meckHaCmd(cli_command[2] ? &cli_command[3] : "");
+#endif
+#if defined(MECK_DAV) && MECK_DAV
+    } else if (strcmp(cli_command, "dav") == 0 || memcmp(cli_command, "dav ", 4) == 0) {
+      // Debug: CalDAV account (docs/caldav-design.md); the password is never printed
+      extern void meckDavCmd(const char* arg);
+      meckDavCmd(cli_command[3] ? &cli_command[4] : "");
+#endif
     } else if (memcmp(cli_command, "uigo ", 5) == 0) {
       // Debug: open a screen directly, e.g. "uigo rxlog", "uigo pathed 3"
       extern void meckDebugGoto(const char* arg);

@@ -23,6 +23,7 @@ struct Ui2Status {
   bool bleConnected = false;  // companion app connected over Bluetooth
   bool wifiOn = false;        // WiFi radio on
   uint8_t wifiLevel = 0;      // 0 = not joined to a network, 1-3 = signal
+  bool mobileData = false;    // traffic goes over 4G: the link is up, WiFi not joined
   bool gpsOn = false;
   bool gpsFix = false;        // the GPS has a fix (the icon gets its centre dot)
   bool alarmOn = false;

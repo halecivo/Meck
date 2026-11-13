@@ -16,9 +16,26 @@
 // Global singleton
 ModemManager modemManager;
 
-// Use Serial1 for modem UART
-#define MODEM_SERIAL Serial1
 #define MODEM_BAUD   115200
+
+#ifdef MODEM_DATA
+  #include "ModemMux.h"
+  #include <Network.h>
+  #include <WiFi.h>
+  #include <esp_netif.h>
+  #include <esp_netif_ppp.h>
+  #include <esp_netif_net_stack.h>   // esp_netif_get_netif_impl(): the lwIP netif
+  #include <esp_event.h>
+  #include <esp_timer.h>
+  #include <lwip/netif.h>
+  #include <lwip/dns.h>
+  // The AT code talks to DLC 1 while the mux is on, to Serial1 otherwise
+  static ModemMux modemMux;
+  static ModemAtPort modemAtPort(Serial1, modemMux);
+  #define MODEM_SERIAL modemAtPort
+#else
+  #define MODEM_SERIAL Serial1
+#endif
 
 // AT response buffer
 #define AT_BUF_SIZE  512
@@ -67,6 +84,8 @@ void ModemManager::begin() {
   _imsi[0] = '\0';
   _apn[0] = '\0';
   strcpy(_apnSource, "none");
+  _dataState = DataState::OFF;
+  _dataHolders = 0;
 
   // FreeRTOS primitives, made once: shutdown() does not delete them, and
   // making them on every begin() leaked ~2.8 kB of internal RAM per 4G off/on
@@ -114,6 +133,14 @@ void ModemManager::shutdown() {
     // Best-effort stop -- task is about to be deleted
     _pendingToneIdx = -1;
   }
+
+#ifdef MODEM_DATA
+  // Out of mux mode first, or AT+CPOF would not reach the modem as AT
+  _dataHolders = 0;
+  if (_dataState != DataState::OFF) {
+    stopDataForShutdown();
+  }
+#endif
 
   // Hang up any active call first
   if (isCallActive()) {
@@ -725,7 +752,12 @@ bool ModemManager::doHangup() {
 
   // AT+CHUP is the 3GPP standard hangup for A76xx family (per TinyGSM)
   if (sendAT("AT+CHUP", "OK", 5000)) {
-    if (wasRinging) {
+    // A NO CARRIER read while waiting for the OK has already ended the call,
+    // logged it and cleared the number: a second event would log it again
+    // as "Unknown"
+    if (!isCallActive()) {
+      MESH_DEBUG_PRINTLN("[Modem] Call already ended during AT+CHUP");
+    } else if (wasRinging) {
       queueCallEvent(CallEventType::MISSED, _callPhone);
     } else {
       queueCallEvent(CallEventType::ENDED, _callPhone, duration);
@@ -1414,9 +1446,29 @@ restart:
       lastCSQPoll = millis();
     }
 
+#ifdef MODEM_DATA
+    // ================================================================
+    // Step 5: Mobile data -- bring up, watch and take down the link
+    // ================================================================
+    if (!dataTick()) {
+      // Stuck in mux mode: power cycle, as for a failed power-on
+      Serial.println("[Modem] no AT after data, power cycling");
+      board.modemPwrkeyRelease();
+      board.modemPowerOff();
+      gpio_hold_dis((gpio_num_t)MODEM_DTR);
+      digitalWrite(MODEM_DTR, LOW);
+      _uartAsleep = false;
+      _sleepEnabled = false;
+      _state = ModemState::OFF;
+      vTaskDelay(pdMS_TO_TICKS(3000));
+      goto restart;
+    }
+#endif
+
 #ifdef MODEM_UART_SLEEP
     // Refused, the modem would keep the deck awake until it restarts
-    if (sleepRefused && !_paused && !isCallActive() && millis() - lastSleepTry > MODEM_SLEEP_RETRY_MS) {
+    if (sleepRefused && !_paused && !isCallActive() && !dataBusy() &&
+        millis() - lastSleepTry > MODEM_SLEEP_RETRY_MS) {
       lastSleepTry = millis();
       _sleepEnabled = sendAT("AT+CSCLK=1", "OK", 2000);
       sleepRefused = !_sleepEnabled;
@@ -1428,6 +1480,11 @@ restart:
     // Shorter delay during active call states for responsive URC handling
     if (isCallActive()) {
       vTaskDelay(pdMS_TO_TICKS(100));  // 100ms -- responsive to URCs
+#ifdef MODEM_DATA
+    } else if (dataBusy()) {
+      // PPP frames: the UART ring holds about 350 ms
+      ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(5));
+#endif
     } else {
       ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(500));  // RI ends it early
     }
@@ -1489,8 +1546,15 @@ bool ModemManager::modemPowerOn() {
   MESH_DEBUG_PRINTLN("[Modem] DTR asserted LOW (GPIO %d)", MODEM_DTR);
 #endif
 
-  // Configure UART
-  MODEM_SERIAL.begin(MODEM_BAUD, SERIAL_8N1, MODEM_TX, MODEM_RX);
+  // Configure UART. Mobile data needs more than the default 256 byte ring:
+  // the task does not read it while it waits between AT commands.
+#ifdef MODEM_DATA
+  Serial1.setRxBufferSize(MODEM_RX_BUFFER);
+#endif
+  Serial1.begin(MODEM_BAUD, SERIAL_8N1, MODEM_TX, MODEM_RX);
+#ifdef MODEM_DATA
+  modemMux.init(&Serial1);
+#endif
   vTaskDelay(pdMS_TO_TICKS(500));
   MESH_DEBUG_PRINTLN("[Modem] UART started (ESP32 RX=%d TX=%d @ %d)", MODEM_TX, MODEM_RX, MODEM_BAUD);
 
@@ -1605,7 +1669,7 @@ bool ModemManager::wakeUart() {
 
 void ModemManager::sleepUartIfIdle() {
 #ifdef MODEM_UART_SLEEP
-  if (!_sleepEnabled || _uartAsleep) return;
+  if (!_sleepEnabled || _uartAsleep || dataBusy()) return;
   if (_state != ModemState::READY || _ringing || _toneActive || _notifTonePlaying) return;
   if (_smsPending || _pendingToneIdx >= 0 || _urcPos > 0) return;
   if (uxQueueMessagesWaiting(_sendQueue) || uxQueueMessagesWaiting(_callCmdQueue)) return;
@@ -1647,7 +1711,7 @@ bool ModemManager::canEspSleep() const {
 #ifdef MODEM_UART_SLEEP
   // DTR high means the task found nothing to do; anything since then (a
   // URC, a queued SMS, call or tone) keeps the ESP32 up until it is done
-  if (!_sleepEnabled || !_uartAsleep || _riFlag) return false;
+  if (!_sleepEnabled || !_uartAsleep || _riFlag || dataBusy()) return false;
   if (_state != ModemState::READY || _ringing || _toneActive || _notifTonePlaying) return false;
   if (_smsPending || _pendingToneIdx >= 0 || _urcPos > 0) return false;
   if (uxQueueMessagesWaiting(_sendQueue) || uxQueueMessagesWaiting(_callCmdQueue)) return false;
@@ -1878,5 +1942,496 @@ bool ModemManager::doSendSMS(const char* phone, const char* body) {
   MESH_DEBUG_PRINTLN("[Modem] SMS send timeout/error: %s", _atBuf);
   return false;
 }
+
+// ---------------------------------------------------------------------------
+// Mobile data
+//
+// startData(): AT+CMUX splits the UART (ModemMux), ATD*99# on DLC 2 starts
+// the packet call and lwIP's PPP runs over it as an esp_netif interface.
+// Its route priority is below WiFi's, so WiFi wins whenever both are up.
+// stopData() closes PPP and the mux and puts UART sleep back.
+// ---------------------------------------------------------------------------
+
+#define DATA_CONFIG_FILE "/sms/data.cfg"
+
+bool ModemManager::_dataAllowed = false;
+uint8_t ModemManager::_dataAppMask = 0xFF;
+
+bool ModemManager::loadDataConfig() {
+  File f = SD.open(DATA_CONFIG_FILE, FILE_READ);
+  char s[DATA_APP_COUNT + 2] = "";
+  if (f) {
+    size_t n = f.read((uint8_t*)s, sizeof(s) - 1);
+    s[n] = 0;
+    f.close();
+  }
+  dataConfigParse(s, _dataAllowed, _dataAppMask);
+  return _dataAllowed;
+}
+
+static void writeDataConfig(bool allowed, uint8_t appMask) {
+  char s[DATA_APP_COUNT + 2];
+  dataConfigFormat(s, sizeof(s), allowed, appMask);
+  if (!SD.exists("/sms")) SD.mkdir("/sms");
+  File f = SD.open(DATA_CONFIG_FILE, FILE_WRITE);
+  if (f) {
+    f.print(s);
+    f.close();
+  }
+}
+
+void ModemManager::saveDataConfig(bool allowed) {
+  _dataAllowed = allowed;
+  writeDataConfig(_dataAllowed, _dataAppMask);
+  if (!allowed) modemManager.releaseAllData();
+}
+
+void ModemManager::setDataAppAllowed(uint8_t app, bool allowed) {
+  if (app == DATA_APP_OTHER || app >= DATA_APP_COUNT) return;
+  if (allowed) _dataAppMask |= dataAppBit(app);
+  else _dataAppMask &= (uint8_t)~dataAppBit(app);
+  writeDataConfig(_dataAllowed, _dataAppMask);
+  if (!allowed) modemManager.releaseData(app);
+}
+
+const char* ModemManager::dataStateToString(DataState s) {
+  switch (s) {
+    case DataState::OFF:      return "off";
+    case DataState::STARTING: return "connecting";
+    case DataState::UP:       return "up";
+    case DataState::STOPPING: return "closing";
+    case DataState::FAILED:   return "failed";
+    default:                  return "?";
+  }
+}
+
+#ifdef MODEM_DATA
+
+// Shorter frames are LCP echoes and the like, not someone using the link
+#define DATA_USE_MIN_BYTES 32
+
+struct PppDriver { esp_netif_driver_base_t base; };
+static PppDriver pppDriver;
+static esp_netif_t* pppNetif = nullptr;
+static volatile bool pppStarted = false;   // esp_netif_action_start() called
+static volatile bool pppGotIp = false;
+static volatile bool pppDown = false;      // ended by an error or lost IP
+static volatile bool pppClosed = false;    // the session is over, any reason
+static esp_netif_dns_info_t pppDns;
+static esp_netif_ip_info_t pppIp;
+static volatile uint32_t pppRxBytes = 0, pppTxBytes = 0;
+static bool muxRequested = false;          // AT+CMUX answered OK this session
+
+// lwIP thread: PPP output into DLC 2
+static esp_err_t pppTransmit(void* h, void* buffer, size_t len) {
+  pppTxBytes += len;
+  modemManager.noteDataTraffic(len);
+  return modemMux.send(2, (const uint8_t*)buffer, len) ? ESP_OK : ESP_FAIL;
+}
+
+static esp_err_t pppPostAttach(esp_netif_t* netif, void* args) {
+  PppDriver* d = (PppDriver*)args;
+  d->base.netif = netif;
+  esp_netif_driver_ifconfig_t cfg = {};
+  cfg.handle = d;
+  cfg.transmit = pppTransmit;
+  return esp_netif_set_driver_config(netif, &cfg);
+}
+
+// Modem task (ModemMux::pump): DLC 2 frames into lwIP, which copies them
+static void pppSink(const uint8_t* data, size_t len) {
+  pppRxBytes += len;
+  modemManager.noteDataTraffic(len);
+  if (pppStarted) esp_netif_receive(pppNetif, (void*)data, len, nullptr);
+}
+
+static void pppEvent(void*, esp_event_base_t base, int32_t id, void* data) {
+  if (base == IP_EVENT) {
+    ip_event_got_ip_t* e = (ip_event_got_ip_t*)data;
+    if (!e || e->esp_netif != pppNetif) return;
+    if (id == IP_EVENT_PPP_GOT_IP) {
+      pppIp = e->ip_info;
+      // The carrier's DNS, set by PPP just now; restoreDataDns() puts it
+      // back after WiFi has overwritten it
+      esp_netif_get_dns_info(pppNetif, ESP_NETIF_DNS_MAIN, &pppDns);
+      Serial.printf("[Data] IP " IPSTR ", DNS " IPSTR "\n",
+                    IP2STR(&pppIp.ip), IP2STR(&pppDns.ip.u_addr.ip4));
+      pppGotIp = true;
+    } else if (id == IP_EVENT_PPP_LOST_IP) {
+      Serial.println("[Data] IP lost");
+      pppDown = true;
+    }
+  } else if (base == NETIF_PPP_STATUS) {
+    // Only one PPP interface exists, so no need to look at which
+    if (id > NETIF_PPP_ERRORNONE && id < NETIF_PP_PHASE_OFFSET) {
+      Serial.printf("[Data] PPP ended (%ld)\n", (long)id);
+      pppClosed = true;
+      if (id != NETIF_PPP_ERRORUSER) pppDown = true;
+    }
+  }
+}
+
+static bool pppCreate() {
+  if (pppNetif) return true;
+  Network.begin();   // esp_netif and the default event loop
+  esp_netif_inherent_config_t base = ESP_NETIF_INHERENT_DEFAULT_PPP();
+  esp_netif_config_t cfg = {};
+  cfg.base = &base;
+  cfg.driver = nullptr;
+  cfg.stack = ESP_NETIF_NETSTACK_DEFAULT_PPP;
+  pppNetif = esp_netif_new(&cfg);
+  if (!pppNetif) return false;
+  esp_netif_ppp_config_t pc = {};
+  pc.ppp_phase_event_enabled = false;
+  pc.ppp_error_event_enabled = true;
+  esp_netif_ppp_set_params(pppNetif, &pc);
+  pppDriver.base.post_attach = pppPostAttach;
+  esp_netif_attach(pppNetif, &pppDriver);
+  esp_event_handler_register(IP_EVENT, IP_EVENT_PPP_GOT_IP, pppEvent, nullptr);
+  esp_event_handler_register(IP_EVENT, IP_EVENT_PPP_LOST_IP, pppEvent, nullptr);
+  esp_event_handler_register(NETIF_PPP_STATUS, ESP_EVENT_ANY_ID, pppEvent, nullptr);
+  modemMux.setDataSink(pppSink);
+  return true;
+}
+
+// esp_netif makes an interface lwIP's default route only when it gets an
+// address with its link up, and lwIP's PPP sets the address (IPCP sifaddr)
+// before the link (sifup). So the PPP netif never became the default and
+// nothing could leave over it: DNS failed without sending a packet. Set it
+// in lwIP directly, and only when no other interface carries the route;
+// esp_netif_set_default_netif() would stick and keep WiFi from taking the
+// route back when it connects.
+static esp_err_t pppSetDefault(void*) {
+  struct netif* n = (struct netif*)esp_netif_get_netif_impl(pppNetif);
+  struct netif* d = netif_default;
+  if (n && d != n && (!d || !netif_is_up(d) || !netif_is_link_up(d))) netif_set_default(n);
+  return ESP_OK;
+}
+
+struct NetRoute { char name[8]; bool up, link, ppp; char dns[40]; };
+
+// lwIP thread, read-only: the route and name server lwIP uses right now
+static esp_err_t pppReadRoute(void* ctx) {
+  NetRoute* r = (NetRoute*)ctx;
+  struct netif* d = netif_default;
+  if (d) snprintf(r->name, sizeof(r->name), "%c%c%u", d->name[0], d->name[1], (unsigned)d->num);
+  else strcpy(r->name, "none");
+  r->up = d && netif_is_up(d);
+  r->link = d && netif_is_link_up(d);
+  r->ppp = d && d == (struct netif*)esp_netif_get_netif_impl(pppNetif);
+  ipaddr_ntoa_r(dns_getserver(0), r->dns, sizeof(r->dns));
+  return ESP_OK;
+}
+
+static void pppPrintRoute(const char* prefix) {
+  NetRoute r = {};
+  if (!pppNetif || esp_netif_tcpip_exec(pppReadRoute, &r) != ESP_OK) return;
+  Serial.printf("%sroute %s%s (up %d, link %d), dns %s\n", prefix, r.name,
+                r.ppp ? " = ppp" : "", (int)r.up, (int)r.link, r.dns);
+}
+
+// Usage buckets: written from the lwIP thread (tx) and the modem task (rx),
+// read from the main loop
+static portMUX_TYPE dataUseMux = portMUX_INITIALIZER_UNLOCKED;
+
+static uint32_t dataUseHour() { return (uint32_t)(esp_timer_get_time() / 3600000000LL); }
+
+void ModemManager::noteDataTraffic(size_t len) {
+  if (len >= DATA_USE_MIN_BYTES) _dataLastUse = millis();
+  uint8_t owner = dataUseOwner(_dataTag, _dataHolders);
+  uint32_t hour = dataUseHour();
+  portENTER_CRITICAL(&dataUseMux);
+  _dataUse.add(owner, (uint32_t)len, hour);
+  portEXIT_CRITICAL(&dataUseMux);
+}
+
+uint32_t ModemManager::dataUsage24h(uint8_t app) {
+  uint32_t hour = dataUseHour();
+  portENTER_CRITICAL(&dataUseMux);
+  uint32_t b = _dataUse.last24h(app, hour);
+  portEXIT_CRITICAL(&dataUseMux);
+  return b;
+}
+
+void ModemManager::requestData(uint8_t app) {
+  if (!_dataAllowed || !dataAppAllowed(app) || app >= DATA_APP_COUNT || !_taskHandle) return;
+  _dataLastUse = millis();
+  uint8_t bit = dataAppBit(app);
+  if (_dataHolders & bit) return;
+  bool first = _dataHolders == 0;
+  _dataHolders |= bit;
+  if (first) {
+    // A new request is a new try after a failure
+    if (_dataState == DataState::FAILED) _dataState = DataState::OFF;
+    xTaskNotifyGive(_taskHandle);
+  }
+}
+
+void ModemManager::releaseData(uint8_t app) {
+  if (app >= DATA_APP_COUNT || !(_dataHolders & dataAppBit(app))) return;
+  _dataHolders &= (uint8_t)~dataAppBit(app);
+  if (_dataHolders == 0 && _taskHandle) xTaskNotifyGive(_taskHandle);
+}
+
+void ModemManager::releaseAllData() {
+  if (_dataHolders == 0) return;
+  _dataHolders = 0;
+  if (_taskHandle) xTaskNotifyGive(_taskHandle);
+}
+
+bool ModemManager::dataTick() {
+  switch (_dataState) {
+    case DataState::OFF:
+    case DataState::FAILED:
+      if (_dataHolders && _state == ModemState::READY && !_battLow) {
+        if (!startData()) return stopData(true);
+      }
+      return true;
+
+    case DataState::STARTING:
+      if (pppGotIp) {
+        pppPrintRoute("[Data] before: ");
+        esp_netif_tcpip_exec(pppSetDefault, nullptr);
+        pppPrintRoute("[Data] ");
+        _dataState = DataState::UP;
+        _dataStateSince = millis();
+        _dataLastUse = millis();
+        _dataSessions++;
+        return true;
+      }
+      if (pppDown || pppClosed || !modemMux.isActive()) {
+        Serial.println("[Data] PPP did not come up");
+        return stopData(true);
+      }
+      if (millis() - _dataStateSince > MODEM_DATA_CONNECT_MS) {
+        Serial.println("[Data] no IP address in time");
+        return stopData(true);
+      }
+      if (!_dataHolders) return stopData(false);
+      return true;
+
+    case DataState::UP: {
+      if (pppDown || pppClosed || !modemMux.isActive()) {
+        Serial.println("[Data] link lost");
+        return stopData(true);
+      }
+      // Not in the middle of a call: closing the mux then is untested
+      if (isCallActive()) return true;
+      if (!_dataHolders) return stopData(false);
+      unsigned long idle = _locked ? MODEM_DATA_IDLE_LOCKED_MS : MODEM_DATA_IDLE_MS;
+      if (millis() - _dataLastUse > idle) {
+        Serial.println("[Data] idle, closing");
+        _dataHolders = 0;
+        return stopData(false);
+      }
+      return true;
+    }
+
+    default:
+      return true;
+  }
+}
+
+bool ModemManager::startData() {
+  Serial.printf("[Data] connecting (APN %s)\n", _apn[0] ? _apn : "(modem default)");
+  _dataState = DataState::STARTING;
+  _dataStateSince = millis();
+  pppGotIp = pppDown = pppClosed = false;
+  muxRequested = false;
+  if (!pppCreate()) {
+    Serial.println("[Data] no PPP interface");
+    return false;
+  }
+
+  wakeUart();
+  holdCpuAwake(true);   // until sleepUartIfIdle() after the link is gone
+#ifdef MODEM_UART_SLEEP
+  // DTR stays low from here: the modem must not sleep with PPP on it
+  _dataSleepWasOn = _sleepEnabled;
+  if (_sleepEnabled) {
+    _sleepEnabled = false;
+    sendAT("AT+CSCLK=0", "OK", 2000);
+  }
+#endif
+
+  // Packet service: usually attached since registration
+  bool attached = false;
+  for (int i = 0; i < 5 && !attached; i++) {
+    if (sendAT("AT+CGATT?", "OK", 3000) && strstr(_atBuf, "+CGATT: 1")) attached = true;
+    else vTaskDelay(pdMS_TO_TICKS(1000));
+  }
+  if (!attached && !sendAT("AT+CGATT=1", "OK", 30000)) {
+    Serial.println("[Data] not attached to packet service");
+    return false;
+  }
+
+  // Frames of up to 127 bytes; the bare command (N1 = 31) if refused
+  size_t n1 = 127;
+  if (!sendAT("AT+CMUX=0,0,5,127", "OK", 3000)) {
+    n1 = 31;
+    if (!sendAT("AT+CMUX=0", "OK", 3000)) {
+      Serial.println("[Data] CMUX refused");
+      return false;
+    }
+  }
+  muxRequested = true;
+  if (!modemMux.open(n1)) return false;
+
+  // DLC 1 is a new AT port with its own settings
+  sendAT("ATE0", "OK");
+  if (!sendAT("AT", "OK", 2000)) {
+    Serial.println("[Data] no AT on DLC 1");
+    return false;
+  }
+  sendAT("AT+CMGF=1", "OK");
+  sendAT("AT+CNMI=2,1,0,0,0", "OK");
+  sendAT("AT+CLIP=1", "OK");
+
+  if (!dialData()) return false;
+  modemMux.setPppMode(true);
+  pppStarted = true;
+  esp_netif_action_start(pppNetif, nullptr, 0, nullptr);
+  Serial.println("[Data] PPP negotiating");
+  return true;
+}
+
+bool ModemManager::dialData() {
+  while (modemMux.dataAvailable()) modemMux.dataRead();
+  static const char dial[] = "ATD*99#\r";
+  Serial.println("[Data] DLC 2: ATD*99#");
+  if (!modemMux.send(2, (const uint8_t*)dial, sizeof(dial) - 1)) return false;
+  char line[64];
+  size_t pos = 0;
+  unsigned long start = millis();
+  while (millis() - start < 20000) {
+    drainURCs();   // pumps the mux: DLC 1 URCs and DLC 2 text
+    int c;
+    while ((c = modemMux.dataRead()) >= 0) {
+      if (c == '\r' || c == '\n') {
+        line[pos] = '\0';
+        if (pos) {
+          Serial.printf("[Data] DLC 2: %s\n", line);
+          if (strncmp(line, "CONNECT", 7) == 0) return true;
+          if (strstr(line, "ERROR") || strstr(line, "NO CARRIER") || strstr(line, "BUSY")) return false;
+        }
+        pos = 0;
+      } else if (pos < sizeof(line) - 1) {
+        line[pos++] = (char)c;
+      }
+    }
+    vTaskDelay(pdMS_TO_TICKS(10));
+  }
+  Serial.println("[Data] no CONNECT");
+  return false;
+}
+
+bool ModemManager::stopData(bool failed) {
+  _dataState = DataState::STOPPING;
+  if (pppStarted) {
+    // LCP terminate goes out through the mux, so keep pumping meanwhile
+    pppClosed = false;
+    esp_netif_action_stop(pppNetif, nullptr, 0, nullptr);
+    unsigned long t = millis();
+    while (!pppClosed && millis() - t < 5000) {
+      modemMux.pump();
+      vTaskDelay(pdMS_TO_TICKS(10));
+    }
+    pppStarted = false;
+  }
+  modemMux.setPppMode(false);
+  if (modemMux.isActive()) modemMux.close();
+
+  bool ok = true;
+  if (muxRequested) {
+    // Back on the plain UART: is the modem there?
+    vTaskDelay(pdMS_TO_TICKS(300));
+    while (Serial1.available()) Serial1.read();
+    ok = false;
+    for (int i = 0; i < 5 && !ok; i++) ok = sendAT("AT", "OK", 1000);
+    muxRequested = false;
+  }
+  if (ok) {
+    sendAT("ATE0", "OK");
+#ifdef MODEM_UART_SLEEP
+    if (_dataSleepWasOn) _sleepEnabled = sendAT("AT+CSCLK=1", "OK", 2000);
+    _dataSleepWasOn = false;
+#endif
+  }
+
+  pppGotIp = pppDown = false;
+  _dataStateSince = millis();
+  if (failed) {
+    _dataFailures++;
+    _dataHolders = 0;   // no retry loop: the next request tries again
+    _dataState = DataState::FAILED;
+  } else {
+    _dataState = DataState::OFF;
+  }
+  Serial.printf("[Data] %s\n", failed ? "failed" : "closed");
+  return ok;
+}
+
+void ModemManager::stopDataForShutdown() {
+  // Main loop, with the task still running: no waiting for the modem, the
+  // power goes off right after
+  if (pppStarted) {
+    esp_netif_action_stop(pppNetif, nullptr, 0, nullptr);
+    pppStarted = false;
+  }
+  modemMux.setPppMode(false);
+  if (modemMux.isActive()) modemMux.close();
+  muxRequested = false;
+  pppGotIp = pppDown = false;
+  _dataState = DataState::OFF;
+}
+
+void ModemManager::restoreDataDns() {
+  if (!isDataUp() || !pppNetif || !pppDns.ip.u_addr.ip4.addr) return;
+  if (WiFi.status() == WL_CONNECTED) return;
+  esp_netif_tcpip_exec(pppSetDefault, nullptr);   // WiFi may have just let go of it
+  esp_netif_dns_info_t cur;
+  if (esp_netif_get_dns_info(pppNetif, ESP_NETIF_DNS_MAIN, &cur) == ESP_OK &&
+      cur.ip.u_addr.ip4.addr == pppDns.ip.u_addr.ip4.addr) return;
+  esp_netif_set_dns_info(pppNetif, ESP_NETIF_DNS_MAIN, &pppDns);
+  Serial.println("[Data] DNS restored");
+}
+
+void ModemManager::printDataStats() {
+  Serial.printf("data: %s, allowed %d, apps %02x, holders %02x, sessions %lu, failures %lu\n",
+                dataStateToString(_dataState), (int)_dataAllowed, (unsigned)_dataAppMask,
+                (unsigned)_dataHolders, (unsigned long)_dataSessions, (unsigned long)_dataFailures);
+  static const char* const names[DATA_APP_COUNT] = { "other", "browser", "irc", "ha" };
+  Serial.print("data: 24 h");
+  for (uint8_t a = 0; a < DATA_APP_COUNT; a++)
+    Serial.printf(" %s %lu", names[a], (unsigned long)dataUsage24h(a));
+  Serial.println();
+  if (isDataUp()) {
+    Serial.printf("data: IP " IPSTR ", DNS " IPSTR ", idle %lu s\n",
+                  IP2STR(&pppIp.ip), IP2STR(&pppDns.ip.u_addr.ip4),
+                  (unsigned long)((millis() - _dataLastUse) / 1000));
+  }
+  Serial.printf("data: ppp rx %lu tx %lu, mux rx %lu tx %lu, bad frames %lu\n",
+                (unsigned long)pppRxBytes, (unsigned long)pppTxBytes,
+                (unsigned long)modemMux.rxBytes(), (unsigned long)modemMux.txBytes(),
+                (unsigned long)modemMux.badFrames());
+  pppPrintRoute("data: ");
+}
+
+#else  // !MODEM_DATA
+
+void ModemManager::requestData(uint8_t) {}
+void ModemManager::releaseData(uint8_t) {}
+void ModemManager::releaseAllData() {}
+uint32_t ModemManager::dataUsage24h(uint8_t) { return 0; }
+void ModemManager::restoreDataDns() {}
+void ModemManager::noteDataTraffic(size_t) {}
+void ModemManager::printDataStats() { Serial.println("data: not built"); }
+bool ModemManager::dataTick() { return true; }
+bool ModemManager::startData() { return false; }
+bool ModemManager::stopData(bool) { return true; }
+bool ModemManager::dialData() { return false; }
+void ModemManager::stopDataForShutdown() {}
+
+#endif // MODEM_DATA
 
 #endif // HAS_4G_MODEM

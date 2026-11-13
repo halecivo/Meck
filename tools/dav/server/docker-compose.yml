@@ -1,0 +1,49 @@
+# Radicale for the deck (CalDAV/CardDAV), behind an existing nginx proxy.
+# Put this next to ./config/config and ./config/users, then: docker compose up -d
+services:
+  radicale:
+    image: tomsquest/docker-radicale:latest
+    container_name: radicale
+    restart: unless-stopped
+    init: true
+    read_only: true
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    cap_add: [SETUID, SETGID, CHOWN, KILL]   # CHOWN: the image hands /data to its user at start
+    pids_limit: 50
+    mem_limit: 256m
+    volumes:
+      - ./data:/data
+      - ./config:/config:ro
+    # Host port for the proxy. Change the left number if 5232 is taken.
+    # 0.0.0.0 = reachable from the LAN (the proxy may run in another
+    # container, so 127.0.0.1 would not work for it). Do not forward this
+    # port on the router: only the proxy's 443 goes outside.
+    ports:
+      - "5232:5232"
+    healthcheck:
+      test: curl -f http://127.0.0.1:5232 || exit 1
+      interval: 30s
+      retries: 3
+
+  # iCloud -> Radicale, one way, every 15 minutes (vdirsyncer/config.example).
+  # Needs ./vdirsyncer/config and ./secrets/{icloud,radicale}; talks to
+  # Radicale inside the compose network, so nothing else is opened.
+  vdirsyncer:
+    build: ./vdirsyncer
+    container_name: vdirsyncer
+    restart: unless-stopped
+    init: true
+    read_only: true
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    pids_limit: 50
+    mem_limit: 256m
+    depends_on: [radicale]
+    environment:
+      SYNC_EVERY: "900"
+    tmpfs: [/tmp]
+    volumes:
+      - ./vdirsyncer/config:/config/config:ro
+      - ./secrets:/secrets:ro
+      - ./status:/status

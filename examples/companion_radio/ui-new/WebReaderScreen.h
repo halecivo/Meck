@@ -12,10 +12,10 @@
 //
 // Network backends:
 //   - WiFi (default): Uses ESP32 WiFi STA mode. Credentials saved to SD.
-//   - 4G/PPP (future): When PPP is established via A7682E modem, the same
-//     HTTPClient code works transparently over cellular. To enable this,
-//     establish PPP before calling fetchPage() and the ESP networking
-//     stack will route through the modem automatically.
+//   - 4G (MODEM_DATA): with no WiFi and mobile data allowed in settings
+//     (and for the browser, or IRC, on its own), tryMobileData() brings up
+//     PPP over the A7682E and the same HTTPClient code runs over it; WiFi
+//     has the higher route priority when both are up. See MeckNet.h.
 //
 // Modes:
 //   WIFI_SETUP   - Connect to a WiFi network (scan + password entry)
@@ -43,6 +43,7 @@
 #ifdef HAS_4G_MODEM
 #include "ModemManager.h"
 #endif
+#include "MeckNet.h"
 #include "Utf8CP437.h"
 #include "../NodePrefs.h"
 
@@ -1408,14 +1409,48 @@ private:
     return WiFi.status() == WL_CONNECTED;
   }
 
-  // Generic network check: returns true if any network interface is up.
-  // Works for WiFi and will also detect PPP (4G modem) connections.
-  bool isNetworkAvailable() {
-    if (WiFi.status() == WL_CONNECTED) return true;
-#ifdef HAS_4G_MODEM
-    // When PPP is active via the A7682E modem, the ESP32 gets an IP on the
-    // ppp netif. Check if we have a non-zero IP on any interface.
-    // TODO: implement PPP status check when modem PPP driver is added
+  // The browser has a network: WiFi, or mobile data it may use (PPP)
+  bool isNetworkAvailable() { return meckNetUp(DATA_APP_BROWSER); }
+
+  // No WiFi: bring up mobile data for the browser (or IRC) if the settings
+  // allow it. Blocks with a status screen until it is up or has failed.
+  bool tryMobileData(uint8_t app = DATA_APP_BROWSER) {
+#ifdef MODEM_DATA
+    if (meckNetUp(app)) {
+      meckNetRequest(app);   // holds it, and keeps it from the idle timeout
+      return true;
+    }
+    if (!meckNet4gAllowed(app)) return false;
+    Serial.printf("WebReader: trying mobile data (app %u)\n", (unsigned)app);
+    if (_display) {
+      _display->startFrame();
+      _display->setColor(DisplayDriver::GREEN);
+      _display->setTextSize(1);
+      _display->setCursor(0, 0);
+      _display->print(MECK_TR("Web Reader", "Navigateur"));
+      _display->drawRect(0, 11, _display->width(), 1);
+      _display->setColor(DisplayDriver::LIGHT);
+      _display->setTextSize(_prefs->smallTextSize());
+      _display->setCursor(0, 18);
+      _display->print(MECK_TR("Connecting mobile data...", "Connexion donn\xC3\xA9" "es mobiles..."));
+      _display->endFrame();
+    }
+    modemManager.requestData(app);
+    unsigned long start = millis();
+    while (millis() - start < 60000) {   // attach, CMUX, dial, PPP
+      if (meckNetUp(app)) {
+        _wifiState = WIFI_CONNECTED;
+        Serial.println("WebReader: mobile data up");
+        return true;
+      }
+      // FAILED stays until the next request, so only after it left OFF
+      if (modemManager.dataFailed() && millis() - start > 1000) break;
+      delay(200);
+    }
+    Serial.println("WebReader: mobile data failed");
+    modemManager.releaseData(app);
+#else
+    (void)app;
 #endif
     return false;
   }
@@ -1983,6 +2018,11 @@ private:
       ~ModemPauseGuard() { modemManager.resumePolling(); Serial.println("WebReader: modem resumed"); }
     } _modemGuard;
 #endif
+
+    // Over 4G: each page keeps the link from the idle timeout, and its bytes
+    // count to the browser
+    if (!isWiFiConnected() && isNetworkAvailable()) meckNetRequest(DATA_APP_BROWSER);
+    MeckNetUse netUse(DATA_APP_BROWSER);
 
     if (!allocateBuffers()) {
       _fetchError = MECK_TR("Out of memory", "M\xC3\xA9moire insuffisante");
@@ -3736,10 +3776,10 @@ private:
           _urlEditing = false;
           if (!isNetworkAvailable()) {
             _mode = WIFI_SETUP;
-            if (!loadAndAutoConnect()) {
-              startWifiScan();
-            } else {
+            if (loadAndAutoConnect() || tryMobileData()) {
               fetchWithSelfRef(_urlBuffer);
+            } else {
+              startWifiScan();
             }
           } else {
             fetchWithSelfRef(_urlBuffer);
@@ -3794,10 +3834,10 @@ private:
           _urlLen = strlen(_urlBuffer);
           if (!isNetworkAvailable()) {
             _mode = WIFI_SETUP;
-            if (!loadAndAutoConnect()) {
-              startWifiScan();
-            } else {
+            if (loadAndAutoConnect() || tryMobileData()) {
               fetchWithSelfRef(_urlBuffer);
+            } else {
+              startWifiScan();
             }
           } else {
             fetchWithSelfRef(_urlBuffer);
@@ -3874,10 +3914,10 @@ private:
         _urlLen = strlen(_urlBuffer);
         if (!isNetworkAvailable()) {
           _mode = WIFI_SETUP;
-          if (!loadAndAutoConnect()) {
-            startWifiScan();
-          } else {
+          if (loadAndAutoConnect() || tryMobileData()) {
             fetchWithSelfRef(_urlBuffer);
+          } else {
+            startWifiScan();
           }
         } else {
           fetchWithSelfRef(_urlBuffer);
@@ -4410,6 +4450,7 @@ private:
 
   void ircSendRaw(const char* line) {
     if (!_ircClient || !_ircClient->connected()) return;
+    MeckNetUse netUse(DATA_APP_IRC);
     _ircClient->print(line);
     _ircClient->print("\r\n");
     Serial.printf("IRC TX: %s\n", line);
@@ -4417,6 +4458,10 @@ private:
 
   bool connectIRC() {
     if (!allocateIRCBuffers()) return false;
+
+    // Over 4G IRC holds the link for as long as it is connected
+    if (meckNetUp(DATA_APP_IRC)) meckNetRequest(DATA_APP_IRC);
+    MeckNetUse netUse(DATA_APP_IRC);
 
     addIRCMessage("*", MECK_TR("Connecting...", "Connexion..."), true);
 
@@ -4478,6 +4523,7 @@ private:
     _ircConnected = false;
     _ircRegistered = false;
     _ircJoined = false;
+    meckNetRelease(DATA_APP_IRC);   // a reconnect asks again
     addIRCMessage("*", MECK_TR("Disconnected", "D\xC3\xA9" "connect\xC3\xA9"), true);
   }
 
@@ -4681,11 +4727,30 @@ private:
     if (!_ircClient || !_ircConnected) {
       // Check for reconnect
       if (_ircReconnectAt > 0 && millis() > _ircReconnectAt) {
+        if (!meckNetUp(DATA_APP_IRC) && meckNet4gAllowed(DATA_APP_IRC)) {
+          // No WiFi and the link went down (idle, lost): ask for it without
+          // blocking and try again in a moment
+          meckNetRequest(DATA_APP_IRC);
+          _ircReconnectAt = millis() + IRC_RECONNECT_MS;
+          return;
+        }
         _ircReconnectAt = 0;
         connectIRC();
       }
       return;
     }
+
+#ifdef MODEM_DATA
+    // Its 4G switch was turned off while it ran over 4G (the link stays up
+    // for others). A lost WiFi is left to the reconnect below as before.
+    if (!isWiFiConnected() && modemManager.isDataUp() && !meckNetUp(DATA_APP_IRC)) {
+      Serial.println("IRC: 4G not allowed for IRC any more");
+      disconnectIRC();
+      return;
+    }
+#endif
+
+    MeckNetUse netUse(DATA_APP_IRC);
 
     if (!_ircClient->connected()) {
       Serial.println("IRC: Connection lost");
@@ -4902,7 +4967,7 @@ private:
       if (_ircSetupField == 4) {
         // Connect button
         saveIRCConfig();
-        if (!isNetworkAvailable()) {
+        if (!meckNetUp(DATA_APP_IRC) && !tryMobileData(DATA_APP_IRC)) {
           addIRCMessage("*", MECK_TR("No network! Connect WiFi first.", "Pas de r\xC3\xA9seau ! Connectez le WiFi."), true);
           _mode = WIFI_SETUP;
           startWifiScan();
@@ -5274,7 +5339,7 @@ public:
       _display->print(MECK_TR("Connecting to WiFi...", "Connexion au WiFi..."));
       _display->endFrame();
     }
-    if (loadAndAutoConnect()) {
+    if (loadAndAutoConnect() || tryMobileData()) {
       Serial.printf("WebReader enter: auto-connect OK\n");
       showConnectedAndGoHome();
       return;
@@ -5314,6 +5379,10 @@ public:
 
     // Free PSRAM buffers (text, links — will be re-allocated on next fetch)
     freeBuffers();
+
+    // Let go of the link; it goes down unless another app holds it
+    meckNetRelease(DATA_APP_BROWSER);
+    meckNetRelease(DATA_APP_IRC);
 
     // Free IRC message ring buffer
     if (_ircMessages) { free(_ircMessages); _ircMessages = nullptr; }

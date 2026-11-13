@@ -110,6 +110,10 @@
 
   #ifdef HAS_4G_MODEM
     #include "ModemManager.h"
+    #ifdef MODEM_DATA
+      #include <WiFi.h>
+      #include <HTTPClient.h>   // debug CLI "data get"
+    #endif
     #include "SMSStore.h"
     #include "SMSContacts.h"
     #include "SMSScreen.h"
@@ -160,6 +164,20 @@
   MeckSos meckSos;
   void meckSosLoop();
   bool meckSosCancelInput();
+
+  #if defined(MECK_HA) && MECK_HA
+  // Home Assistant link (experimental, docs/home-assistant.md)
+  #include "MeckHa.h"
+  #include "HaScreen.h"
+  void meckHaTick();
+  #endif
+
+  #if defined(MECK_DAV) && MECK_DAV
+  // CalDAV account (experimental, docs/caldav-design.md)
+  #include "MeckDav.h"
+  #include "DavScreen.h"
+  void meckDavTick();
+  #endif
 
   // SD-backed persistence state
   static bool sdCardReady = false;
@@ -1006,6 +1024,43 @@ static uint32_t _atoi(const char* sp) {
     if (strcmp(cmd, "pwrchg") == 0) { board.chargerDebugPrint(); return; }   // charger + gauge, read-only
 #ifdef HAS_4G_MODEM
     if (strcmp(cmd, "pwrmodem") == 0) { modemManager.printPowerStats(); return; }   // UART sleep, read-only
+    // Mobile data: "data" is read-only; "data on" opens a real packet
+    // session on the SIM (costs data), so only when the user asks for it
+    if (strcmp(cmd, "data") == 0) { modemManager.printDataStats(); return; }
+    if (strcmp(cmd, "data on") == 0) {
+      if (!ModemManager::dataAllowed()) Serial.println("data: not allowed in settings");
+      modemManager.requestData();
+      return;
+    }
+    if (strcmp(cmd, "data off") == 0) { modemManager.releaseAllData(); return; }   // every app's hold
+#ifdef MODEM_DATA
+    // Small checks over the link (data costs money): a DNS lookup, or the
+    // first 256 bytes of a page (use a small one, e.g. http://example.com/)
+    if (strncmp(cmd, "data dns ", 9) == 0) {
+      IPAddress ip;
+      bool ok = Network.hostByName(cmd + 9, ip);
+      Serial.printf("data: %s -> %s\n", cmd + 9, ok ? ip.toString().c_str() : "failed");
+      return;
+    }
+    if (strncmp(cmd, "data get ", 9) == 0) {
+      HTTPClient http;
+      http.setTimeout(10000);
+      http.begin(cmd + 9);
+      int code = http.GET();
+      int got = 0;
+      if (code > 0) {
+        WiFiClient* st = http.getStreamPtr();
+        unsigned long t = millis();
+        while (got < 256 && millis() - t < 5000) {
+          if (st->available()) { st->read(); got++; } else delay(10);
+        }
+      }
+      Serial.printf("data: GET -> %d, size %d, read %d bytes\n", code, code > 0 ? http.getSize() : 0, got);
+      http.end();
+      modemManager.printDataStats();
+      return;
+    }
+#endif
     if (strncmp(cmd, "pwrmodemmv ", 11) == 0) {
       // Test the low-battery 4G cut-off without draining the cell
       modemManager.setTestMilliVolts((uint16_t)atoi(cmd + 11));
@@ -1226,6 +1281,12 @@ static uint32_t _atoi(const char* sp) {
     if      (strcmp(name, "home") == 0)     ui_task.gotoHomeScreen();
     else if (strcmp(name, "settings") == 0) ui_task.gotoSettingsScreen();
     else if (strcmp(name, "rxlog") == 0)    ui_task.gotoRxLogScreen();
+#if defined(MECK_HA) && MECK_HA
+    else if (strcmp(name, "ha") == 0)       ui_task.gotoHaScreen();
+#endif
+#if defined(MECK_DAV) && MECK_DAV
+    else if (strcmp(name, "dav") == 0)      ui_task.gotoDavScreen();
+#endif
     else if (strcmp(name, "chat") == 0)     ui_task.gotoChannelScreen();
 #ifdef MECK_UI_V2
     else if (strcmp(name, "busy") == 0) {
@@ -1593,6 +1654,56 @@ bool meckCompanionUseWiFi(bool connectSaved) {
   meckLogMemory("WiFi on");
   return true;
 }
+
+#ifdef MECK_UI_SCREENDUMP
+#include <WiFiClientSecure.h>
+
+static void meckMemPrint(const char* when) {
+  Serial.printf("mem %s: internal free=%u largest=%u, DMA free=%u, PSRAM free=%u largest=%u\n", when,
+                (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+                (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+                (unsigned)heap_caps_get_free_size(MALLOC_CAP_DMA),
+                (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
+                (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM));
+}
+
+// Debug CLI "mem": internal RAM with the radios in a given state, to size
+// what a WiFi sync can use. "mem ble 0|1" and "mem wifi 0|1" switch the
+// companion links as Settings does (nothing is saved); "mem tls <host>"
+// holds one TLS session to <host>:443 the way the Web Reader opens it and
+// reports the lowest free internal RAM during the handshake. Nothing is
+// sent over the session.
+void meckMemCmd(const char* arg) {
+  if (!strcmp(arg, "ble 1")) { meckCompanionUseBLE(); }
+  else if (!strcmp(arg, "ble 0")) { meckCompanionBleOff(); }
+  else if (!strcmp(arg, "wifi 1")) { meckCompanionUseWiFi(true); }
+  else if (!strcmp(arg, "wifi 0")) { meckCompanionWifiOff(); }
+  else if (!strncmp(arg, "tls ", 4)) {
+    if (WiFi.status() != WL_CONNECTED) { Serial.println("mem tls: WiFi not connected"); return; }
+    meckMemPrint("before TLS");
+    heap_caps_monitor_local_minimum_free_size_start();
+    WiFiClientSecure* c = new WiFiClientSecure();
+    c->setInsecure();
+    unsigned long t0 = millis();
+    bool ok = c->connect(arg + 4, 443, 10000);
+    unsigned long ms = millis() - t0;
+    unsigned minInt = heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    unsigned minPs = heap_caps_get_minimum_free_size(MALLOC_CAP_SPIRAM);
+    heap_caps_monitor_local_minimum_free_size_stop();
+    Serial.printf("mem tls: %s in %lu ms, lowest during handshake: internal %u, PSRAM %u\n",
+                  ok ? "connected" : "FAILED", ms, minInt, minPs);
+    meckMemPrint("TLS open");
+    c->stop();
+    delete c;
+    meckMemPrint("TLS closed");
+    return;
+  } else if (arg[0]) { Serial.println("mem [ble 0|1 | wifi 0|1 | tls <host>]"); return; }
+  Serial.printf("mem: BLE %s%s, WiFi %s%s\n", meckCompanionIsBLE() ? "on" : "off",
+                meckCompanionBleConnected() ? " (connected)" : "", meckCompanionIsWiFi() ? "on" : "off",
+                WiFi.status() == WL_CONNECTED ? " (connected)" : "");
+  meckMemPrint("now");
+}
+#endif
 
 // App command line (message 66): upstream MeshCore's wifi.* commands, with
 // the network kept in /web/wifi.cfg as Settings keeps it. Replies are worded
@@ -2002,7 +2113,9 @@ static void meckQsOpenMore(int item) {
     case QS_TONES: case QS_VIBRATE:
     case QS_L_TONES: case QS_L_VIBRATE: row = ROW_CHANNELS_SUBMENU; break;   // per-channel sounds
     case QS_LIGHT:                      row = ROW_BACKLIGHT_BRIGHTNESS; break;
-    case QS_KEYS:                       row = ROW_KB_BACKLIGHT; break;
+  #ifdef MODEM_DATA
+    case QS_DATA:                       row = ROW_MODEM_DATA; break;
+  #endif
     case QS_L_WIFI: case QS_L_GPS: case QS_L_MODEM:
     case QS_L_SAVING: case QS_L_USB:    row = ROW_LOCK_SLEEP; break;
   #ifdef MECK_BLE_LOCK_WINDOWS
@@ -2021,7 +2134,10 @@ static void meckQsOpenMore(int item) {
   ui_task.leaveQuickSettings();
   ui_task.gotoSettingsScreen();
   SettingsScreen* ss = (SettingsScreen*)ui_task.getSettingsScreen();
-  if (!ss->selectRowType((SettingsRowType)row)) ss->selectRowType(ROW_LOCK_SLEEP);   // a row shown only sometimes
+  if (!ss->selectRowType((SettingsRowType)row)) {
+    // A row shown only sometimes (Mobile data: with the modem on)
+    if (item != QS_DATA || !ss->selectRowType(ROW_MODEM_TOGGLE)) ss->selectRowType(ROW_LOCK_SLEEP);
+  }
 }
 
 // After a key or touch on the quick settings: close, or open a tile's page
@@ -3263,6 +3379,12 @@ void setup() {
   ui_task.begin(disp, &sensors, the_mesh.getNodePrefs());
   MESH_DEBUG_PRINTLN("setup() - ui_task.begin() done");
 #endif
+#if defined(MECK_HA) && MECK_HA
+  meckHa.begin();
+#endif
+#if defined(MECK_DAV) && MECK_DAV
+  meckDav.begin();
+#endif
 
   // ---------------------------------------------------------------------------
   // OTA boot validation — confirm new firmware is working after an OTA update.
@@ -3407,6 +3529,7 @@ void setup() {
 #else
       bool modemEnabled = ModemManager::loadEnabledConfig();
 #endif
+      ModemManager::loadDataConfig();
 #ifdef MODEM_MIN_MILLIVOLTS
       // A low cell keeps 4G off from the start (it comes on after charging)
       modemManager.checkBattery(board.getBattMilliVolts(), true);
@@ -4020,10 +4143,24 @@ void meckQsState(QsItem item, QsTileState& st) {
       if (st.on) snprintf(st.line, sizeof(st.line), "%d %%", (int)p->backlight_brightness_pct);
       else line(off);
       break;
-    case QS_KEYS:
-      st.on = keyboardBacklightIsOn();
-      if (st.on) snprintf(st.line, sizeof(st.line), "%d %%", (int)p->kb_backlight_pct);
-      else line(off);
+    case QS_DATA:
+      // The switch only allows it; the web reader brings the link up when it
+      // needs one and WiFi is not there. (Keys light left this grid: both
+      // Shifts switch it.)
+#ifdef MODEM_DATA
+      st.on = ModemManager::dataAllowed();
+      if (!st.on) { line(off); break; }
+      if (modemManager.getState() == ModemState::OFF) { line(MECK_TR("4G is off", "4G d\xC3\xA9sactiv\xC3\xA9")); break; }
+      switch (modemManager.getDataState()) {
+        case DataState::STARTING:
+        case DataState::STOPPING: st.pending = true; line(MECK_TR("Connecting\xE2\x80\xA6", "Connexion\xE2\x80\xA6")); break;
+        case DataState::UP:       line(MECK_TR("Connected", "Connect\xC3\xA9")); break;
+        case DataState::FAILED:   line(MECK_TR("Failed", "\xC3\x89" "chec")); break;
+        default:                  line(MECK_TR("When no WiFi", "Sans WiFi")); break;
+      }
+#else
+      st.available = false;
+#endif
       break;
 
     case QS_L_BLE:
@@ -4084,7 +4221,9 @@ void meckQsSwitch(QsItem item) {
     case QS_TONES:    ui_task.setTonesOn(p->buzzer_quiet); break;
     case QS_VIBRATE:  p->notif_vibrate = !p->notif_vibrate; the_mesh.savePrefs(); break;
     case QS_LIGHT:    meckFrontlightToggle(); break;
-    case QS_KEYS:     toggleKeyboardBacklight(); break;
+#ifdef MODEM_DATA
+    case QS_DATA:     ModemManager::saveDataConfig(!ModemManager::dataAllowed()); break;
+#endif
     case QS_L_BLE: {
 #ifdef MECK_BLE_LOCK_WINDOWS
       // Off: sync windows at the last interval used (5 min at first)
@@ -5114,6 +5253,20 @@ static void meckPwrLogTick() {
 }
 #endif
 
+#ifdef HAS_4G_MODEM
+// Key or tap on a call screen (dialing, ringing, in call)
+static void smsCallInput(SMSScreen* smsScr, char key) {
+  smsScr->handleInput(key);
+  if (!smsScr->isInCallView()) {
+    // Hangup just happened — show "Call Ended" alert immediately
+    ui_task.showAlert(MECK_TR("Call Ended", "Appel termin\xC3\xA9"), 2000);
+  }
+  // Force immediate render (call screen updates or return-to-dialer)
+  ui_task.forceRefresh();
+  ui_task.loop();
+}
+#endif
+
 // ---- Phone dialer input ----
 //
 // Typing a number at phone speed puts several digits into one e-ink refresh,
@@ -5143,7 +5296,8 @@ static void pollDialerTouch() {
   if (!smsMode) return;
   SMSScreen* smsScr = (SMSScreen*)ui_task.getSMSScreen();
   if (smsScr && (smsScr->getSubView() == SMSScreen::PHONE_DIALER
-                 || smsScr->getSubView() == SMSScreen::APP_MENU)) {
+                 || smsScr->getSubView() == SMSScreen::APP_MENU
+                 || smsScr->isInCallView())) {
     int16_t tx, ty;
     #if defined(LilyGo_TDeck_Pro_Max) || defined(MECK_PRO_HYN_TOUCH)
     int16_t _htx[1], _hty[1];
@@ -5161,7 +5315,13 @@ static void pollDialerTouch() {
       if (!touchFingerDown && (now - lastTouchAccepted >= DIAL_LIFT_MS)) {
         touchFingerDown = true;
         lastTouchAccepted = now;
-        if (smsScr->handleTouch(tx, ty)) {
+        if (smsScr->isInCallView()) {
+          // Answer / reject / hang up buttons. Only reached from the loop:
+          // the busy-poll path runs while the dialer or menu is drawn.
+          ui_task.keepAlive();
+          char k = smsScr->callTouchKey(tx, ty);
+          if (k) smsCallInput(smsScr, k);
+        } else if (smsScr->handleTouch(tx, ty)) {
           dialerNeedsRefresh = true;
           // Don't reset the gate on touch: COMPOSE_REFRESH_INTERVAL is
           // measured from the last completed render (set at the render
@@ -5221,6 +5381,12 @@ void loop() {
   #endif
   #if defined(DISPLAY_CLASS) && defined(MECK_WIFI_COMPANION)
   meckWifiConnectPoll();   // saved-network connect: Connected / Could not connect popup
+  #endif
+  #if defined(MECK_HA) && MECK_HA
+  meckHaTick();            // Home Assistant: pairing web server, sensor updates
+  #endif
+  #if defined(MECK_DAV) && MECK_DAV
+  meckDavTick();           // CalDAV account: pairing web server and discovery
   #endif
   #ifdef MECK_OTA_UPDATE
   if (!otaRadioPaused) {
@@ -5886,12 +6052,10 @@ void loop() {
       }
 
       if (callEvt.type == CallEventType::INCOMING) {
-        // Incoming call — auto-switch to SMS screen if not already there
-        char alertBuf[48];
-        char dispName[SMS_CONTACT_NAME_LEN];
-        smsContacts.displayName(callEvt.phone, dispName, sizeof(dispName));
-        snprintf(alertBuf, sizeof(alertBuf), MECK_TR("Call: %s", "Appel : %s"), dispName);
-        ui_task.showAlert(alertBuf, 3000);
+        // Incoming call — auto-switch to SMS screen if not already there.
+        // No toast: the ringing screen shows the caller, and the toast
+        // (re-raised by every +CLIP, i.e. every ring) covered the
+        // Answer / Reject buttons.
         ui_task.notify(UIEventType::contactMessage);
 
         // An incoming call drops the lock screen so the call can be answered.
@@ -6183,8 +6347,10 @@ void loop() {
     // SMS dialer has its own dedicated touch handler — don't consume touch data here
     if (smsMode) {
       SMSScreen* smsScr = (SMSScreen*)ui_task.getSMSScreen();
+      // Call screens too: a header tap must not leave a ringing call for Home
       if (smsScr && (smsScr->getSubView() == SMSScreen::PHONE_DIALER
-                     || smsScr->getSubView() == SMSScreen::APP_MENU)) {
+                     || smsScr->getSubView() == SMSScreen::APP_MENU
+                     || smsScr->isInCallView())) {
         touchBlocked = true;
       }
     }
@@ -6491,6 +6657,32 @@ void handleKeyboardInput() {
     }
     return;
   }
+
+#if defined(MECK_HA) && MECK_HA
+  // Home Assistant screen: it takes every key (U, P and X are shortcuts elsewhere)
+  if (ui_task.isOnHaScreen()) {
+    ui_task.injectKey(key);
+    HaScreen* ha = (HaScreen*)ui_task.getHaScreen();
+    if (ha->wantsExit()) {
+      ha->clearExit();
+      ui_task.leaveHaScreen();
+    }
+    return;
+  }
+#endif
+
+#if defined(MECK_DAV) && MECK_DAV
+  // Calendar account screen: it takes every key (P and X are shortcuts elsewhere)
+  if (ui_task.isOnDavScreen()) {
+    ui_task.injectKey(key);
+    DavScreen* dav = (DavScreen*)ui_task.getDavScreen();
+    if (dav->wantsExit()) {
+      dav->clearExit();
+      ui_task.leaveDavScreen();
+    }
+    return;
+  }
+#endif
 
 #ifdef MECK_QUICK_SETTINGS
   // Quick settings: Alt+Space opens and closes it over any screen, text
@@ -6990,10 +7182,11 @@ void handleKeyboardInput() {
   if (ui_task.isOnSettingsScreen()) {
     SettingsScreen* settings = (SettingsScreen*)ui_task.getSettingsScreen();
 
-    // Shift+Del: exit settings (when not editing)
+    // Shift+Del: exit settings (when not editing). Inside a sub-screen it
+    // only goes back to the parent list, which the settings screen handles.
     if (!settings->isEditing() && (key == KEY_CANCEL || key == 'q')) {
-      if (settings->hasRadioChanges()) {
-        // Let settings show "apply changes?" confirm dialog
+      if (settings->inSubScreen() || settings->hasRadioChanges()) {
+        // Back to the parent list, or the "apply changes?" confirm dialog
         ui_task.injectKey(key);
       } else {
         Serial.println("Exiting settings");
@@ -7052,6 +7245,18 @@ void handleKeyboardInput() {
       settings->clearRxLogRequest();
       ui_task.gotoRxLogScreen();
     }
+#if defined(MECK_HA) && MECK_HA
+    if (settings->isHaRequested()) {
+      settings->clearHaRequest();
+      ui_task.gotoHaScreen();
+    }
+#endif
+#if defined(MECK_DAV) && MECK_DAV
+    if (settings->isDavRequested()) {
+      settings->clearDavRequest();
+      ui_task.gotoDavScreen();
+    }
+#endif
     // Check for channel share request from the settings screen
     if (settings->isShareRequested()) {
       int contactIdx = settings->getShareContactIdx();
@@ -7161,14 +7366,7 @@ void handleKeyboardInput() {
       // bypassing injectKey() which normally extends the auto-off timer.
       ui_task.keepAlive();
       if (smsScr->isInCallView()) {
-        smsScr->handleInput(key);
-        if (!smsScr->isInCallView()) {
-          // Hangup just happened — show "Call Ended" alert immediately
-          ui_task.showAlert(MECK_TR("Call Ended", "Appel termin\xC3\xA9"), 2000);
-        }
-        // Force immediate render (call screen updates or return-to-dialer)
-        ui_task.forceRefresh();
-        ui_task.loop();
+        smsCallInput(smsScr, key);
         return;
       }
 
@@ -8663,6 +8861,71 @@ int meckSosBattPct() {
   return mv > 0 ? constrain(((int)mv - 3000) * 100 / 1200, 0, 100) : -1;
 #endif
 }
+
+#if defined(MECK_HA) && MECK_HA
+// Home Assistant (docs/home-assistant.md). The time of the last LoRa packet
+// is taken from the receive counters; plugging the charger in or out sends
+// an update soon instead of at the next 15-minute one.
+static uint32_t meckHaLastRx = 0;
+
+void meckHaTick() {
+  static unsigned long lastCheck = 0;
+  static bool first = true;
+  static uint32_t rxSeen = 0;
+  static bool lastUsb = false;
+  static uint8_t lastChg = 0;
+  unsigned long now = millis();
+  if (now - lastCheck >= 2000) {
+    lastCheck = now;
+    uint32_t rx = the_mesh.getNumRecvFlood() + the_mesh.getNumRecvDirect();
+    bool usb = board.isUsbPowered();
+    uint8_t chg = board.getChargeState();
+    if (!first) {
+      uint32_t t = rtc_clock.getCurrentTime();
+      if (rx != rxSeen && t > 1700000000) meckHaLastRx = t;
+      if (usb != lastUsb || chg != lastChg) meckHa.postSoon(10000);   // let the charger settle
+    }
+    first = false;
+    rxSeen = rx;
+    lastUsb = usb;
+    lastChg = chg;
+  }
+  // The QR code has to stay up while someone is scanning it: no auto-lock
+  if (meckHa.pairingActive() && ui_task.isOnHaScreen()) ui_task.resetIdleTimer();
+  meckHa.loop();
+}
+
+void meckHaSensors(HaSensorValues& v) {
+  v.battPct = meckSosBattPct();
+  v.battMv = board.getBattMilliVolts();
+  v.chargeState = board.getChargeState();
+  v.usb = board.isUsbPowered();
+  uint16_t tte = board.getTimeToEmpty();
+  v.timeLeftMin = (v.usb || tte == 0 || tte == 0xFFFF) ? -1 : (int)tte;
+  v.contacts = (int)the_mesh.getNumContacts();
+  v.unread = ui_task.getUnreadMsgCount();
+  v.rxPackets = the_mesh.getNumRecvFlood() + the_mesh.getNumRecvDirect();
+  v.lastRxEpoch = meckHaLastRx;
+}
+
+void meckHaDeviceName(char* out, size_t n) {
+  const char* name = the_mesh.getNodePrefs()->node_name;
+  snprintf(out, n, "%s", name[0] ? name : "T-Deck MAX");
+}
+
+void meckHaCmd(const char* arg) { meckHa.cmd(arg); }
+#endif
+
+#if defined(MECK_DAV) && MECK_DAV
+// CalDAV account (docs/caldav-design.md)
+void meckDavTick() {
+  // The QR code has to stay up while someone is scanning it: no auto-lock
+  if (meckDav.pairingActive() && ui_task.isOnDavScreen()) ui_task.resetIdleTimer();
+  meckDav.loop(ui_task.isLocked());
+}
+
+void meckDavCmd(const char* arg) { meckDav.cmd(arg); }
+#endif
 
 // SOS channels (Settings > SOS) are kept by the start of the channel's
 // secret: its slot changes when an earlier channel is deleted
