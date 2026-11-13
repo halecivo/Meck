@@ -32,6 +32,23 @@ widget interface in `ui-new/ui2/Ui2LockWidgets.h`.
   sides, the widget with the lowest priority is left out, then the next,
   until the rest fit.
 
+## Agenda
+
+Settings > Experimental > **Agenda on lock screen** (UI v2 builds with the
+calendar account, off by default) adds today and tomorrow of the synced
+calendars (`docs/calendar-account.md`), side by side above the status line:
+
+- **Size** from today's events that have not ended yet: 0-2 → 40 px, 3 → 52 px,
+  4 or more → 70 px, giving 2, 3 or 4 rows per day. A day with more events than
+  rows shows one less and "+n more" in the last row; an empty day says
+  "No events". Tomorrow has the same rows as today.
+- **Today** has the inverted header. All-day events (and ones going on from the
+  day before) come first without a time, then the rest by start, `9:00 Title`.
+  An event leaves today when it ends: the lock screen redraws then.
+- Left out (no block, no gap) when the switch is off, there is no account, or
+  the deck has no agenda that covers today (no sync yet, or a copy older than
+  five days). Priority 20.
+
 ## Adding a widget
 
 A provider (calendar, weather, timetable) owns its data and its widget:
@@ -68,5 +85,6 @@ screenshots; it lives in RAM only and nothing is sent or stored.
     lockdemo raining          rain, -9°, until 18:40
     lockdemo block <h> [prio] one more dummy widget of h px (up to three)
     lockdemo off              all of it gone
+    dav agenda demo <t> <m>   made-up agenda: t events today, m tomorrow
 
 Then `uigo lock` and `tools/ui2/grab_screen.py`.

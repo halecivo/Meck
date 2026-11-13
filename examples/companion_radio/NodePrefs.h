@@ -183,6 +183,11 @@ struct NodePrefs {  // persisted to file
   // the setting (everything kept).
   uint8_t lock_keep;               // default LOCK_KEEP_DEFAULT
 
+  // Agenda on the lock screen (Experimental, UI v2 with a calendar account):
+  // today and tomorrow from the synced calendars. Older prefs files
+  // short-read this field and keep the default 0 (off).
+  uint8_t lock_agenda;             // default 0
+
   // --- Font helpers (inline, no overhead) ---
   // Returns the DisplayDriver text-size index for "small/body" text.
   // T-Deck Pro: 0 = built-in 6×8 (or 7pt with custom fonts), 1 = 9pt.

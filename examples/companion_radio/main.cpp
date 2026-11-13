@@ -176,7 +176,9 @@
   // CalDAV account (experimental, docs/caldav-design.md)
   #include "MeckDav.h"
   #include "DavScreen.h"
+  #include "LockAgendaWidget.h"
   void meckDavTick();
+  void meckAgendaSetup();
   #endif
 
   // SD-backed persistence state
@@ -3384,6 +3386,7 @@ void setup() {
 #endif
 #if defined(MECK_DAV) && MECK_DAV
   meckDav.begin();
+  meckAgendaSetup();
 #endif
 
   // ---------------------------------------------------------------------------
@@ -8951,7 +8954,28 @@ void meckHaCmd(const char* arg) { meckHa.cmd(arg); }
 void meckDavTick() {
   // The QR code has to stay up while someone is scanning it: no auto-lock
   if (meckDav.pairingActive() && ui_task.isOnDavScreen()) ui_task.resetIdleTimer();
+  // The events sync asks for local today and the next days
+  meckDav.setClock(rtc_clock.getCurrentTime(), (int32_t)the_mesh.getNodePrefs()->utc_offset_hours * 3600);
   meckDav.loop(ui_task.isLocked());
+}
+
+#ifdef MECK_UI_V2
+// Agenda on the lock screen (Settings > Experimental, docs/lock-screen.md)
+static LockAgendaWidget meckAgendaWidget;
+#endif
+
+void meckAgendaSetup() {
+#ifdef MECK_UI_V2
+  meckAgendaWidget.enabled = &the_mesh.getNodePrefs()->lock_agenda;
+  meckAgendaWidget.utcHours = &the_mesh.getNodePrefs()->utc_offset_hours;
+  ui_task.addLockWidget(&meckAgendaWidget);
+#endif
+}
+
+void meckAgendaChanged() {
+#ifdef MECK_UI_V2
+  ui_task.lockContentChanged();
+#endif
 }
 
 void meckDavCmd(const char* arg) { meckDav.cmd(arg); }

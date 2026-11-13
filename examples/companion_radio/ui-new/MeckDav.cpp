@@ -2,6 +2,7 @@
 #if defined(MECK_DAV) && MECK_DAV
 
 #include "MeckDav.h"
+#include "MeckAgenda.h"
 #include "MeckHaUtil.h"      // haHostIsLocal: the one place a self-signed certificate is accepted
 #if defined(MECK_HA) && MECK_HA
   #include "MeckHa.h"
@@ -50,6 +51,9 @@ MeckDav& meckDavGet() {
 #define DAV_SYNC_EVERY_MS  (6UL * 3600 * 1000)
 #define DAV_SYNC_RETRY_MS  (15UL * 60 * 1000)
 #define DAV_SYNC_FIRST_MS  (60UL * 1000)        // after boot: let WiFi and the rest settle
+#define DAV_EV_EVERY_MS    (3600UL * 1000)      // events: the agenda should not lag an hour behind
+#define DAV_EV_FIRST_MS    (90UL * 1000)        // after boot, after the contacts had their turn
+#define DAV_CLOCK_VALID    1700000000u
 
 // --- Small helpers ------------------------------------------------------------
 
@@ -185,6 +189,7 @@ static const char* davErrText(int rc) {
 
 void MeckDav::begin() {
   load();
+  if (configured()) meckAgenda.load();   // the SD card is up by now
   Serial.printf("DAV: state %u bytes in %s\n", (unsigned)sizeof(MeckDav),
                 esp_ptr_external_ram(this) ? "PSRAM" : "internal RAM");
 }
@@ -262,6 +267,12 @@ void MeckDav::forget() {
   _syncAt = 0;
   _syncErr[0] = 0;
   _syncWanted = false;
+  eventsEnd();
+  _evAt = _evDay = 0;
+  _evOk = _evWanted = false;
+  _evErr[0] = 0;
+  meckAgenda.clear();
+  meckAgendaChanged();
 #ifdef HAS_4G_MODEM
   smsContacts.clearSynced();
 #endif
@@ -643,6 +654,7 @@ void MeckDav::workStep() {
       _doneAt = millis();
       _phase = PH_DONE;
       _syncWanted = _bookCount > 0;
+      _evWanted = _calCount > 0;
       Serial.printf("DAV: account saved, %d calendar(s), %d address book(s)\n", _calCount, _bookCount);
     }
   }
@@ -650,7 +662,10 @@ void MeckDav::workStep() {
 
 void MeckDav::loop(bool locked) {
   if (_server) DAV_SRV->handleClient();
-  if (!pairingActive() && !_blocking) syncTick(locked);
+  if (!pairingActive() && !_blocking) {
+    syncTick(locked);
+    if (_sy == SY_IDLE) eventsTick(locked);   // one sync at a time: they share the reply buffer
+  }
   if (_phase == PH_SCAN) {
     if (pairLeftMs() == 0) fail("Timed out");
     else if (WiFi.status() != WL_CONNECTED) fail("WiFi lost");
@@ -687,18 +702,6 @@ void MeckDav::awake(bool on) {
 
 // --- HTTP ------------------------------------------------------------------------
 
-// A multistatus that arrived whole ends in its closing tag; one cut off on the
-// way (a TLS error halfway) must not count as the whole list
-static bool davMultistatusWhole(const char* xml) {
-  const char* end = xml + strlen(xml);
-  while (end > xml && isspace((unsigned char)end[-1])) end--;
-  const char* lt = end;
-  while (lt > xml && *lt != '<') lt--;
-  if (end - lt < 14 || lt[1] != '/') return false;
-  size_t n = (size_t)(end - lt);
-  return n >= 13 && !strncasecmp(end - 12, "multistatus>", 12);
-}
-
 // While a DAV request runs, mallocs of 256 bytes and more go to PSRAM too
 // (normally only those over 4 kB do): the HTTP client's buffers and strings
 // would take the internal RAM that WiFi frames and the AES engine's DMA
@@ -710,7 +713,13 @@ int MeckDav::request(const char* method, const char* url, int depth, const char*
   int rc = requestOnce(method, url, depth, body, location, locationLen);
   heap_caps_malloc_extmem_enable(CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL);
   if (rc == 207 && !davMultistatusWhole(_resp)) {
-    Serial.println("DAV: reply cut off");
+    size_t l = strlen(_resp);
+    char tail[64];
+    size_t k = l > 60 ? l - 60 : 0, o = 0;
+    for (; k < l && o + 1 < sizeof(tail); k++) tail[o++] = (_resp[k] < 32) ? '.' : _resp[k];
+    tail[o] = 0;
+    Serial.printf("DAV: reply cut off: %u bytes, Content-Length %ld, read %d, ends \"%s\"\n",
+                  (unsigned)l, (long)_lastSize, _lastGot, tail);
     rc = -4;
   }
   return rc;
@@ -719,7 +728,7 @@ int MeckDav::request(const char* method, const char* url, int depth, const char*
 int MeckDav::requestOnce(const char* method, const char* url, int depth, const char* body,
                          char* location, size_t locationLen) {
   if (location && locationLen) location[0] = 0;
-  size_t want = _sy != SY_IDLE ? DAV_SYNC_LEN : DAV_RESP_LEN;
+  size_t want = (_sy != SY_IDLE || _ev != EV_IDLE) ? DAV_SYNC_LEN : DAV_RESP_LEN;
   if (_resp && _respCap != want) { heap_caps_free(_resp); _resp = nullptr; }
   if (!_resp) {
     _resp = (char*)heap_caps_malloc(want, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
@@ -768,7 +777,9 @@ int MeckDav::requestOnce(const char* method, const char* url, int depth, const c
     if (location && locationLen && http.hasHeader("Location"))
       snprintf(location, locationLen, "%s", http.header("Location").c_str());
     DavBufStream s(_resp, _respCap);
+    _lastSize = http.getSize();
     int got = http.writeToStream(&s);
+    _lastGot = got;
     if (s.full()) code = -3;
     else if (got < 0) code = -4;   // the connection broke while reading
   }
@@ -869,7 +880,7 @@ bool MeckDav::syncDue() const {
 
 void MeckDav::syncTick(bool locked) {
   if (_sy == SY_IDLE) {
-    if (locked || !syncDue() || WiFi.status() != WL_CONNECTED || !(WiFi.getMode() & WIFI_STA)) return;
+    if (locked || _ev != EV_IDLE || !syncDue() || WiFi.status() != WL_CONNECTED || !(WiFi.getMode() & WIFI_STA)) return;
     syncStart();
     return;
   }
@@ -1014,6 +1025,137 @@ void MeckDav::syncAdd(const char*, const char*) {}
 
 #endif
 
+// --- Events sync (CalDAV, read only) ---------------------------------------------
+//
+// One calendar-query per calendar and loop() pass, for local today 00:00 and
+// the next MeckAgenda::WINDOW_DAYS days. Recurring events come whole and the
+// deck expands them (davIcalParse): the server's expand gets series across a
+// daylight saving change wrong. The query asks for a day more on both sides,
+// since the server's own filter has the same trouble near the edges. The
+// agenda is replaced only when every calendar answered; otherwise it keeps
+// what it had.
+
+static void davEventCb(const DavEvent& e, void* c) { ((MeckDav*)c)->eventAdd(e); }
+
+static void davEventsRespCb(const DavResponse& r, void* c) {
+  if (r.data && r.status != 404) ((MeckDav*)c)->eventsRead(r.data, r.dataLen);
+}
+
+void MeckDav::eventsRead(const char* data, size_t len) {
+  davIcalParse(data, len, _utcOff, _evWin, _evWin + _evDays * 86400u, _evWork, davEventCb, this);
+}
+
+void MeckDav::eventAdd(const DavEvent& e) {
+  uint32_t winEnd = _evWin + _evDays * 86400u;
+  bool in = e.end > e.start ? (e.start < winEnd && e.end > _evWin) : (e.start >= _evWin && e.start < winEnd);
+  if (!in) return;
+  if (!_evList || _evN >= EV_BUF) { _evDropped++; return; }
+  _evList[_evN++] = e;
+}
+
+bool MeckDav::eventsDue() const {
+  if (!configured() || _calCount == 0 || _now < DAV_CLOCK_VALID) return false;
+  if (_evWanted) return true;
+  uint32_t ms = millis();
+  if (_evAt == 0) return ms > DAV_EV_FIRST_MS;
+  if (_evOk && MeckAgenda::localMidnight(_now, _utcOff) != _evDay) return true;   // a new day
+  return ms - _evAt >= (_evOk ? DAV_EV_EVERY_MS : DAV_SYNC_RETRY_MS);
+}
+
+void MeckDav::eventsTick(bool locked) {
+  if (_ev == EV_IDLE) {
+    if (locked || !eventsDue() || WiFi.status() != WL_CONNECTED || !(WiFi.getMode() & WIFI_STA)) return;
+    eventsStart();
+    return;
+  }
+  if (locked) return;   // goes on after the unlock
+  if (WiFi.status() != WL_CONNECTED) { eventsFail("WiFi lost"); return; }
+  eventsStep();
+}
+
+void MeckDav::eventsStart(int days, int back) {
+  static const uint32_t PSRAM = MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT;
+  _evWanted = false;
+  _evDays = days;
+  _evList = (DavEvent*)heap_caps_calloc(EV_BUF, sizeof(DavEvent), PSRAM);
+  _evBody = (char*)heap_caps_malloc(1024, PSRAM);
+  _evWork = (DavIcalWork*)heap_caps_malloc(sizeof(DavIcalWork), PSRAM);
+  _ev = EV_CAL;
+  if (!_evList || !_evBody || !_evWork) { eventsFail("Out of memory"); return; }
+  _evWin = MeckAgenda::localMidnight(_now, _utcOff) - (uint32_t)back * 86400u;
+  if (!davCalQueryBody(_evBody, 1024, _evWin - 86400u, _evWin + (_evDays + 1) * 86400u)) {
+    eventsFail("Request too long");
+    return;
+  }
+  snprintf(_pairUrl, sizeof(_pairUrl), "%s", _url);
+  snprintf(_pairUser, sizeof(_pairUser), "%s", _user);
+  snprintf(_pairPass, sizeof(_pairPass), "%s", _pass);
+  _evCal = _evN = _evDropped = 0;
+  Serial.printf("DAV: events sync, %d calendar(s)\n", _calCount);
+}
+
+void MeckDav::eventsEnd() {
+  if (_evList) { heap_caps_free(_evList); _evList = nullptr; }
+  if (_evBody) { heap_caps_free(_evBody); _evBody = nullptr; }
+  if (_evWork) { heap_caps_free(_evWork); _evWork = nullptr; }
+  if (_ev != EV_IDLE) endDiscovery();   // the reply buffer and the copied password
+  _ev = EV_IDLE;
+}
+
+void MeckDav::eventsFail(const char* why) {
+  snprintf(_evErr, sizeof(_evErr), "%s", why);
+  Serial.printf("DAV: events sync failed: %s\n", why);
+  _evOk = false;
+  _evAt = millis();
+  if (!_evAt) _evAt = 1;
+  eventsEnd();
+}
+
+void MeckDav::eventsStep() {
+  if (_ev != EV_CAL) { eventsEnd(); return; }
+  const Cal& cal = _cals[_evCal];
+  int before = _evN;
+  int rc = request("REPORT", cal.url, 1, _evBody);
+  if (rc != 207) {
+    char why[64];
+    snprintf(why, sizeof(why), "%s: %s", cal.name, davErrText(rc));
+    eventsFail(why);
+    return;
+  }
+  size_t len = strlen(_resp);
+  int items = davParseMultistatus(_resp, len, davEventsRespCb, this);
+  Serial.printf("DAV: %s: %d event(s) from %d item(s), %u bytes\n", cal.name, _evN - before, items, (unsigned)len);
+  if (++_evCal < _calCount) return;
+  meckAgenda.replace(_evList, _evN, _evWin);
+  _evOk = true;
+  _evErr[0] = 0;
+  _evDay = _evWin;
+  _evAt = millis();
+  if (!_evAt) _evAt = 1;
+  Serial.printf("DAV: events synced, %d in %d days%s\n", meckAgenda.count(), _evDays,
+                _evDropped || _evN > meckAgenda.count() ? " (some left out)" : "");
+  eventsEnd();
+  meckAgendaChanged();
+}
+
+void MeckDav::eventsPrint() const {
+  Serial.printf("  agenda: %d event(s), %s", meckAgenda.count(),
+                meckAgenda.valid(_now, _utcOff) ? "covers today and tomorrow" : "nothing for today");
+  if (eventsSyncing()) Serial.print(", syncing now");
+  else if (_evAt) Serial.printf(", last sync %lu min ago %s%s", (unsigned long)((millis() - _evAt) / 60000),
+                                _evOk ? "ok" : "failed: ", _evOk ? "" : _evErr);
+  else Serial.print(", no sync since boot");
+  Serial.println();
+  for (int i = 0; i < meckAgenda.count() && i < 40; i++) {
+    const DavEvent& e = meckAgenda.event(i);
+    char sd[20], ed[20];
+    davIcalUtcStamp(e.start + _utcOff, sd, sizeof(sd));
+    davIcalUtcStamp(e.end + _utcOff, ed, sizeof(ed));
+    sd[13] = ed[13] = 0;   // local, to the minute: "20261113T0900"
+    Serial.printf("  %s %s - %s  %s\n", e.allDay ? "all-day" : "       ", sd + 4, ed + 4, e.title);
+  }
+}
+
 // --- Debug CLI -------------------------------------------------------------------
 
 static void davLsCb(const DavResponse& r, void* c) {
@@ -1039,6 +1181,7 @@ void MeckDav::cmd(const char* arg) {
                                                _syncOk ? "ok" : "failed: ", _syncOk ? "" : _syncErr);
       Serial.println();
 #endif
+      eventsPrint();
     }
     davHeap("heap");
     if (pairingActive()) Serial.printf("  page %s, %lu s left\n", _pageUrl, (unsigned long)(pairLeftMs() / 1000));
@@ -1050,12 +1193,46 @@ void MeckDav::cmd(const char* arg) {
     if (WiFi.status() != WL_CONNECTED) { Serial.println("DAV: no WiFi"); return; }
     stopPairing();
     syncEnd();
+    eventsEnd();
     syncStart();
     _syForce = true;
     while (_sy != SY_IDLE) {
       if (WiFi.status() != WL_CONNECTED) { syncFail("WiFi lost"); break; }
       syncStep();
     }
+    return;
+  }
+  // "dav events": the agenda's events now, waiting for the end (blocking); read only
+  if (strcmp(arg, "events") == 0 || strncmp(arg, "events ", 7) == 0) {
+    if (!configured() || _calCount == 0) { Serial.println("DAV: no calendar"); return; }
+    if (WiFi.status() != WL_CONNECTED) { Serial.println("DAV: no WiFi"); return; }
+    if (_now < DAV_CLOCK_VALID) { Serial.println("DAV: the clock is not set"); return; }
+    stopPairing();
+    syncEnd();
+    eventsEnd();
+    // "dav events <days> [back]": a longer window once, starting `back` days
+    // ago, to see what the server has (the agenda then covers today only
+    // when the window does; the next sync puts it right)
+    int days = MeckAgenda::WINDOW_DAYS, back = 0;
+    if (arg[6]) sscanf(arg + 7, "%d %d", &days, &back);
+    if (back < 0 || back > 2000) back = 0;
+    eventsStart(days < MeckAgenda::WINDOW_DAYS ? MeckAgenda::WINDOW_DAYS : days > 2400 ? 2400 : days, back);
+    while (_ev != EV_IDLE) {
+      if (WiFi.status() != WL_CONNECTED) { eventsFail("WiFi lost"); break; }
+      eventsStep();
+    }
+    eventsPrint();
+    return;
+  }
+  if (strcmp(arg, "agenda") == 0) { eventsPrint(); return; }
+  // "dav agenda demo <today> <tomorrow>": made-up events, RAM only, to check the lock screen
+  if (strncmp(arg, "agenda demo", 11) == 0) {
+    int t = 0, m = 0;
+    sscanf(arg + 11, "%d %d", &t, &m);
+    if (_now < DAV_CLOCK_VALID) { Serial.println("DAV: the clock is not set"); return; }
+    meckAgenda.demo(t < 0 ? 0 : t > 6 ? 6 : t, m < 0 ? 0 : m > 6 ? 6 : m, _now, _utcOff);
+    meckAgendaChanged();
+    eventsPrint();
     return;
   }
   if (strcmp(arg, "pair") == 0) { startPairing(); Serial.printf("DAV: phase %s, page %s\n", kPhase[_phase], _pageUrl); return; }
@@ -1070,6 +1247,7 @@ void MeckDav::cmd(const char* arg) {
     }
     stopPairing();
     syncEnd();   // shares the credentials and the reply buffer
+    eventsEnd();
     _blocking = true;
     work(url, n, p);
     while (_phase == PH_WORKING) workStep();
@@ -1084,6 +1262,7 @@ void MeckDav::cmd(const char* arg) {
     if (!configured()) { Serial.println("DAV: no account"); return; }
     stopPairing();
     syncEnd();   // shares the credentials and the reply buffer
+    eventsEnd();
     _blocking = true;
     work(_url, _user, _pass);
     while (_phase == PH_WORKING) workStep();
@@ -1092,11 +1271,45 @@ void MeckDav::cmd(const char* arg) {
     _phase = PH_OFF;
     return;
   }
+  // "dav dump <n>": the times of every event in calendar n (no time range, no
+  // expand, no titles), to see why the agenda finds none; read only
+  if (strncmp(arg, "dump ", 5) == 0) {
+    int i = atoi(arg + 5);
+    if (!configured() || i < 0 || i >= _calCount) { Serial.println("DAV: no such calendar"); return; }
+    syncEnd();
+    eventsEnd();
+    snprintf(_pairUrl, sizeof(_pairUrl), "%s", _url);
+    snprintf(_pairUser, sizeof(_pairUser), "%s", _user);
+    snprintf(_pairPass, sizeof(_pairPass), "%s", _pass);
+    static const char body[] =
+      "<?xml version=\"1.0\" encoding=\"utf-8\"?>"
+      "<c:calendar-query xmlns:d=\"DAV:\" xmlns:c=\"urn:ietf:params:xml:ns:caldav\">"
+      "<d:prop><c:calendar-data/></d:prop>"
+      "<c:filter><c:comp-filter name=\"VCALENDAR\"><c:comp-filter name=\"VEVENT\"/></c:comp-filter></c:filter>"
+      "</c:calendar-query>";
+    _ev = EV_CAL;   // the large reply buffer
+    int rc = request("REPORT", _cals[i].url, 1, body);
+    _ev = EV_IDLE;
+    if (rc != 207) { Serial.printf("DAV: %d\n", rc); endDiscovery(); return; }
+    Serial.printf("DAV: reply %u bytes\n", (unsigned)strlen(_resp));
+    // The lines that say when, as the server has them
+    for (const char* p = _resp; (p = strstr(p, "\n")) != nullptr; p++) {
+      const char* l = p + 1;
+      if (!strncmp(l, "DTSTART", 7) || !strncmp(l, "DTEND", 5) || !strncmp(l, "RRULE", 5) ||
+          !strncmp(l, "BEGIN:VEVENT", 12) || !strncmp(l, "DURATION", 8)) {
+        size_t n = strcspn(l, "\r\n");
+        Serial.printf("  %.*s\n", (int)(n > 100 ? 100 : n), l);
+      }
+    }
+    endDiscovery();
+    return;
+  }
   // "dav ls <n>": what is in calendar n (sync-collection, read only), the first ten
   if (strncmp(arg, "ls ", 3) == 0) {
     int i = atoi(arg + 3);
     if (!configured() || i < 0 || i >= _calCount) { Serial.println("DAV: no such calendar"); return; }
     syncEnd();
+    eventsEnd();
     snprintf(_pairUrl, sizeof(_pairUrl), "%s", _url);
     snprintf(_pairUser, sizeof(_pairUser), "%s", _user);
     snprintf(_pairPass, sizeof(_pairPass), "%s", _pass);
@@ -1109,7 +1322,7 @@ void MeckDav::cmd(const char* arg) {
     endDiscovery();
     return;
   }
-  Serial.println("DAV: dav [status] | pair | stop | forget | test | sync | ls <n> | login <url> <user> <password>");
+  Serial.println("DAV: dav [status] | pair | stop | forget | test | sync | events | agenda | ls <n> | login <url> <user> <password>");
 }
 
 #endif
