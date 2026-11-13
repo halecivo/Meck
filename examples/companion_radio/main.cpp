@@ -4591,16 +4591,11 @@ bool meckBlockerSleeps() {
 #endif
 }
 
-// What stays on while the locked deck sleeps ("app, Wi-Fi, 4G, GPS", empty
-// with nothing), so the lock screen does not name only the one that chose
-// the automatic sleep. Before locking, without what the "When locked"
-// switches will pause.
-void meckSleepKeepsText(char* buf, size_t len) {
-  buf[0] = 0;
-  auto add = [&](const char* name) {
-    if (buf[0]) strlcat(buf, ", ", len);
-    strlcat(buf, name, len);
-  };
+// What stays on while the locked deck sleeps (MECK_KEEP_* bits), so the
+// lock screen does not name only the one that chose the automatic sleep.
+// Before locking, without what the "When locked" switches will pause.
+uint8_t meckSleepKeepsMask() {
+  uint8_t m = 0;
 #ifdef MECK_QUICK_SETTINGS
   const NodePrefs* p = the_mesh.getNodePrefs();
   const bool unlocked = !ui_task.isLocked();
@@ -4615,12 +4610,35 @@ void meckSleepKeepsText(char* buf, size_t len) {
 #ifdef MECK_BLE_LOCK_WINDOWS
   if (meckBleWindowed()) phone = false;   // the sync windows decide
 #endif
-  if (phone) add(MECK_TR("app", "appli"));
-  if (WiFi.getMode() != WIFI_MODE_NULL && !wifiPauses) add("Wi-Fi");
-#ifdef HAS_4G_MODEM
-  if (modemManager.getState() != ModemState::OFF && !modemPauses) add("4G");
+  if (phone) {
+    m |= MECK_KEEP_APP;
+    // Over BLE keeps the BLE radio up; over WiFi the WiFi bit says it already
+#if defined(BLE_PIN_CODE) && defined(MECK_WIFI_COMPANION)
+    if (meckCompanionBleConnected()) m |= MECK_KEEP_BLE;
+#elif defined(BLE_PIN_CODE)
+    m |= MECK_KEEP_BLE;
 #endif
-  if (ui_task.getGPSState() && !gpsPauses) add("GPS");
+  }
+  if (WiFi.getMode() != WIFI_MODE_NULL && !wifiPauses) m |= MECK_KEEP_WIFI;
+#ifdef HAS_4G_MODEM
+  if (modemManager.getState() != ModemState::OFF && !modemPauses) m |= MECK_KEEP_MODEM;
+#endif
+  if (ui_task.getGPSState() && !gpsPauses) m |= MECK_KEEP_GPS;
+  return m;
+}
+
+// The same as text: "app, Wi-Fi, 4G, GPS", empty with nothing
+void meckSleepKeepsText(char* buf, size_t len) {
+  buf[0] = 0;
+  auto add = [&](const char* name) {
+    if (buf[0]) strlcat(buf, ", ", len);
+    strlcat(buf, name, len);
+  };
+  const uint8_t m = meckSleepKeepsMask();
+  if (m & MECK_KEEP_APP) add(MECK_TR("app", "appli"));
+  if (m & MECK_KEEP_WIFI) add("Wi-Fi");
+  if (m & MECK_KEEP_MODEM) add("4G");
+  if (m & MECK_KEEP_GPS) add("GPS");
 }
 
 // Called at the end of loop() instead of the plain locked-loop delay
@@ -9289,6 +9307,67 @@ void meckDebugGeo(const char* text) {
   if (!found) { Serial.println("uigeo: no location"); return; }
   Serial.printf("uigeo: %.6f, %.6f tagged=%d waypoint=%d label='%s' share=%d\n",
                 g.lat, g.lon, g.tagged, g.waypoint, g.label, share);
+}
+#endif
+
+#ifdef MECK_UI_V2
+// Debug CLI "lockdemo ...": made-up lock screen content to check the layout
+// on screenshots (RAM only, nothing stored or sent, gone at reboot)
+struct MeckLockDemoBlock : Ui2LockWidget {
+  int16_t h = 0;
+  uint8_t prio = 0;
+  uint8_t priority() const override { return prio; }
+  int16_t height(int16_t, uint32_t) override { return h; }
+  void draw(Ui2Canvas& c, int16_t x, int16_t top, int16_t w, uint32_t) override {
+    c.hline(x, top, w);
+    char t[24];
+    snprintf(t, sizeof(t), "demo %d px, prio %d", h, prio);
+    c.text(x + 3, Ui2Canvas::lineBaseline(UI2_F_META, top + 1, 12), t, UI2_F_META);
+    c.dashedRect(x, top + 1, w, h - 1);
+  }
+};
+static MeckLockDemoBlock meckLockDemo[3];
+
+void meckLockDemoCmd(const char* arg) {
+  Ui2LockWeather w;
+  if (strcmp(arg, "weather") == 0) {
+    w.valid = true; w.icon = UI2_IC_SUN; w.tempC = 4;
+    ui_task.setLockWeather(w);
+  } else if (strcmp(arg, "rain") == 0) {
+    w.valid = true; w.icon = UI2_IC_PARTLY; w.tempC = 6;
+    w.rain = Ui2LockWeather::RAIN_STARTS; w.rainMin = 15 * 60 + 20;
+    ui_task.setLockWeather(w);
+  } else if (strcmp(arg, "raining") == 0) {
+    w.valid = true; w.icon = UI2_IC_RAIN; w.tempC = -9;
+    w.rain = Ui2LockWeather::RAIN_ENDS; w.rainMin = 18 * 60 + 40;
+    ui_task.setLockWeather(w);
+  } else if (memcmp(arg, "block ", 6) == 0) {
+    // "block <h> [prio]": one more demo widget, up to three
+    int h = atoi(arg + 6);
+    const char* sp = strchr(arg + 6, ' ');
+    int prio = sp ? atoi(sp + 1) : 0;
+    for (auto& b : meckLockDemo) {
+      if (b.h) continue;
+      b.h = (int16_t)constrain(h, 1, 200);
+      b.prio = (uint8_t)constrain(prio, 0, 255);
+      if (!ui_task.addLockWidget(&b)) { b.h = 0; break; }
+      ui_task.lockContentChanged();
+      Serial.printf("lockdemo: block %d px, prio %d\n", b.h, b.prio);
+      return;
+    }
+    Serial.println("lockdemo: no free demo block");
+    return;
+  } else if (strcmp(arg, "off") == 0) {
+    ui_task.setLockWeather(w);
+    for (auto& b : meckLockDemo) {
+      if (b.h) ui_task.removeLockWidget(&b);
+      b.h = 0;
+    }
+  } else {
+    Serial.println("lockdemo weather|rain|raining|block <h> [prio]|off");
+    return;
+  }
+  Serial.printf("lockdemo: %s\n", arg);
 }
 #endif
 

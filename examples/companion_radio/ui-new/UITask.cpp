@@ -58,6 +58,7 @@
 extern int meckSleepBlockerShown();
 extern bool meckBlockerSleeps();
 extern void meckSleepKeepsText(char* buf, size_t len);
+extern uint8_t meckSleepKeepsMask();
 
 // The device sleeps while locked: "Power saving", with what stays on
 // ("Power saving · app, Wi-Fi, GPS")
@@ -2249,6 +2250,9 @@ class LockScreen : public UIScreen {
   bool _snapUsb = false;
   int _snapPct = 0;
   char _snapEst[40] = "";
+  // What providers put on the screen besides the clock (ui2/Ui2LockWidgets.h)
+  Ui2LockWidget* _widgets[UI2_LOCK_MAX_WIDGETS] = {};
+  Ui2LockWeather _weather;
 #endif
 
 public:
@@ -2256,136 +2260,326 @@ public:
     : _task(task), _rtc(rtc), _node_prefs(node_prefs) {}
 
 #ifdef MECK_UI_V2
-  // UI v2 lock screen: large clock and date, battery and unread counts as
-  // chips, missed SMS / calls, and the node name at the top
+  bool addWidget(Ui2LockWidget* w) {
+    for (int i = 0; i < UI2_LOCK_MAX_WIDGETS; i++) {
+      if (_widgets[i] == w) return true;
+      if (!_widgets[i]) { _widgets[i] = w; return true; }
+    }
+    return false;
+  }
+  void removeWidget(Ui2LockWidget* w) {
+    int j = 0;
+    for (int i = 0; i < UI2_LOCK_MAX_WIDGETS; i++)
+      if (_widgets[i] && _widgets[i] != w) _widgets[j++] = _widgets[i];
+    while (j < UI2_LOCK_MAX_WIDGETS) _widgets[j++] = nullptr;
+  }
+  void setWeather(const Ui2LockWeather& w) { _weather = w; }
+
+private:
+  // Layout of the UI v2 lock screen (docs/lock-screen.md), 240 x 320:
+  //   y   6-22   lock + node name; radio column at the right edge from y 6
+  //   middle     clock (+ weather group), date, notifications: centred in
+  //              what the widgets leave
+  //   above the status line: widgets, stacked upwards
+  //   y 298-320  status line: power saving, estimate, battery
+  static constexpr int16_t TOP_Y = 6, TOP_H = 16;
+  static constexpr int16_t RADIO_X = ui2::SCREEN_W - 6 - 12;
+  static constexpr int16_t STATUS_Y = 298, STATUS_H = 18;   // + 4 px below
+  static constexpr int16_t CLOCK_H = 44;                    // Montserrat 40 line
+  static constexpr int16_t DATE_GAP = 2, DATE_H = 15;
+  static constexpr int16_t NOTIF_GAP = 12, NOTIF_H = 24;
+  static constexpr int16_t WIDGET_GAP = 8;
+
+  void snapBattery(uint32_t now, bool usb) {
+    if (now / 60 == _snapMinute && usb == _snapUsb) return;
+    _snapMinute = now / 60;
+    _snapUsb = usb;
+#if HAS_BQ27220
+    _snapPct = _task->getBatteryPercent();
+#else
+    uint16_t mv = _task->getBattMilliVolts();
+    _snapPct = mv > 0 ? constrain(((int)mv - 3000) * 100 / 1200, 0, 100) : 0;
+#endif
+    _snapEst[0] = 0;
+#if defined(LilyGo_TDeck_Pro_Max) && !defined(MECK_40MHZ_TEST)
+    if (usb) {
+      snprintf(_snapEst, sizeof(_snapEst), "%s", _snapPct >= 100 ? MECK_TR("battery full", "batterie pleine")
+                                                                 : MECK_TR("charging", "en charge"));
+    } else {
+      uint16_t tte = board.getTimeToEmpty();     // minutes, 0xFFFF = not discharging
+      if (tte != 0xFFFF && tte > 0) {
+        if (tte >= 48 * 60) snprintf(_snapEst, sizeof(_snapEst), MECK_TR("about %u days left", "environ %u jours"), (tte + 720) / 1440);
+        else if (tte >= 120) snprintf(_snapEst, sizeof(_snapEst), MECK_TR("about %u h left", "environ %u h"), (tte + 30) / 60);
+        else snprintf(_snapEst, sizeof(_snapEst), MECK_TR("about %u min left", "environ %u min"), tte);
+      }
+    }
+#endif
+  }
+
+  // "7:12" and "Wednesday 11. 11." (no date before the clock is set)
+  void formatTime(uint32_t now, char* timeBuf, size_t tlen, char* dateBuf, size_t dlen) {
+    if (now <= 1700000000) {
+      snprintf(timeBuf, tlen, "--:--");
+      dateBuf[0] = 0;
+      return;
+    }
+    int32_t local = (int32_t)now + ((int32_t)_node_prefs->utc_offset_hours * 3600);
+    int hrs = ((local / 3600) % 24 + 24) % 24;
+    int mins = ((local / 60) % 60 + 60) % 60;
+    snprintf(timeBuf, tlen, "%d:%02d", hrs, mins);
+    // Civil date from days since 1970-01-01 (Howard Hinnant's algorithm)
+    int32_t z = local / 86400 + 719468;
+    int32_t era = z / 146097, doe = z - era * 146097;
+    int32_t yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    int32_t doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    int32_t mp = (5 * doy + 2) / 153;
+    int d = doy - (153 * mp + 2) / 5 + 1, m = mp < 10 ? mp + 3 : mp - 9;
+    static const char* const wd_en[] = {"Thursday", "Friday", "Saturday", "Sunday", "Monday", "Tuesday", "Wednesday"};
+    static const char* const wd_fr[] = {"jeudi", "vendredi", "samedi", "dimanche", "lundi", "mardi", "mercredi"};
+    int wd = (int)((local / 86400) % 7);
+    snprintf(dateBuf, dlen, "%s %d. %d.", MECK_TR(wd_en[wd], wd_fr[wd]), d, m);
+  }
+
+  // One line at the top: lock icon and the node name, centred, clear of the
+  // radio column on both sides
+  void drawTopLine(Ui2Canvas& c) {
+    const int16_t maxW = RADIO_X - 4 - (ui2::SCREEN_W - RADIO_X + 4) - 16;
+    const char* name = _node_prefs->node_name;
+    int16_t nw = Ui2Canvas::textWidth(name, UI2_F_CHIP);
+    if (nw > maxW) nw = maxW;
+    int16_t x = (ui2::SCREEN_W - 16 - nw) / 2;
+    c.icon(x, TOP_Y + (TOP_H - 12) / 2, UI2_IC_LOCK, 12);
+    c.textFit(x + 16, Ui2Canvas::lineBaseline(UI2_F_CHIP, TOP_Y, TOP_H), maxW, name, UI2_F_CHIP);
+  }
+
+  // Radios that stay on while the deck sleeps, top down: BLE, WiFi, GPS, 4G,
+  // MeshCore (LoRa receives whenever the deck runs). Off = not drawn.
+  void drawRadioColumn(Ui2Canvas& c) {
+    uint8_t keeps = 0;
+#if defined(LilyGo_TDeck_Pro_Max) && !defined(MECK_40MHZ_TEST)
+    keeps = meckSleepKeepsMask();
+#endif
+    int16_t y = TOP_Y;
+    if (keeps & MECK_KEEP_BLE) { c.icon(RADIO_X, y, UI2_IC_BLE, 12); y += 16; }
+    if (keeps & MECK_KEEP_WIFI) { c.icon(RADIO_X, y, UI2_IC_WIFI, 12); y += 16; }
+    if (keeps & MECK_KEEP_GPS) { c.icon(RADIO_X, y, UI2_IC_GPS, 12); y += 16; }
+    if (keeps & MECK_KEEP_MODEM) {
+      int16_t tw = Ui2Canvas::textWidth("4G", UI2_F_NUM9);
+      c.text(RADIO_X + (12 - tw) / 2, Ui2Canvas::boxBaseline(UI2_F_NUM9, y, 12), "4G", UI2_F_NUM9);
+      y += 16;
+    }
+    c.icon(RADIO_X, y, UI2_IC_MESH, 12);
+  }
+
+  // Status line: why the deck sleeps or not, the estimate, battery and %
+  void drawStatusLine(Ui2Canvas& c) {
+    char pct[8];
+    snprintf(pct, sizeof(pct), "%d %%", _snapPct);
+    const int16_t pw = Ui2Canvas::textWidth(pct, UI2_F_META);
+    const int16_t battTop = STATUS_Y + (STATUS_H - 10) / 2;
+    const int16_t base = Ui2Canvas::boxBaseline(UI2_F_META, STATUS_Y, STATUS_H);
+    char line[96] = "";
+    Ui2Icon ic = UI2_NO_ICON;
+#if defined(LilyGo_TDeck_Pro_Max) && !defined(MECK_40MHZ_TEST)
+    int reason = meckSleepBlockerShown();
+    bool sleeps = reason == MECK_SLEEP_OK || meckBlockerSleeps();
+    char status[48];
+    if (sleeps)   // what stays on is the radio column's to say
+      snprintf(status, sizeof(status), "%s", MECK_TR("Power saving", "\xC3\x89" "conomie d'\xC3\xA9nergie"));
+    else if (reason == MECK_SLEEP_OFF || reason == MECK_SLEEP_USB)
+      snprintf(status, sizeof(status), "%s", meckSleepBlockText(reason));
+    else
+      snprintf(status, sizeof(status), MECK_TR("Awake: %s", "\xC3\x89veill\xC3\xA9 : %s"), meckSleepBlockText(reason));
+    ic = sleeps ? UI2_IC_MOON : reason == MECK_SLEEP_USB ? UI2_IC_BOLT : UI2_IC_WARN;
+
+    char est[sizeof(_snapEst) + 16];
+    snprintf(est, sizeof(est), "%s", _snapEst);
+  #ifdef HAS_4G_MODEM
+    // A low cell stops 4G about half way down, with many hours left for LoRa:
+    // the estimate stays, and only someone who has 4G on needs to hear of it
+    if (modemManager.isBatteryLow() && ModemManager::enabledInSettings()) {
+      if (est[0]) strlcat(est, " \xC2\xB7 ", sizeof(est));
+      strlcat(est, MECK_TR("4G off", "4G coup\xC3\xA9"), sizeof(est));
+    }
+  #endif
+    // The estimate goes when status and estimate do not fit on one line
+    const int16_t maxW = ui2::SCREEN_W - 2 * ui2::PAD - 16 - 4 - 24 - pw;
+    if (est[0]) {
+      snprintf(line, sizeof(line), "%s \xC2\xB7 %s \xC2\xB7", status, est);
+      if (Ui2Canvas::textWidth(line, UI2_F_META) > maxW) est[0] = 0;
+    }
+    if (!est[0]) snprintf(line, sizeof(line), "%s \xC2\xB7", status);
+#else
+    const int16_t maxW = 0;
+#endif
+    int16_t tw = line[0] ? Ui2Canvas::textWidth(line, UI2_F_META) : 0;
+    if (tw > maxW) tw = maxW;
+    const int16_t iw = ic != UI2_NO_ICON ? 16 : 0;
+    const int16_t total = iw + (tw ? tw + 4 : 0) + 24 + pw;
+    int16_t x = (ui2::SCREEN_W - total) / 2;
+    if (iw) { c.icon(x, STATUS_Y + (STATUS_H - 12) / 2, ic, 12); x += iw; }
+    if (tw) { c.textFit(x, base, maxW, line, UI2_F_META); x += tw + 4; }
+    c.battery(x, battTop, _snapPct);
+    c.text(x + 24, base, pct, UI2_F_META);
+  }
+
+  struct Notif { Ui2Icon ic; int n; };
+
+  // Messages, SMS, missed calls with a count each; returns how many to show
+  int collectNotifs(Notif* out) {
+    int k = 0;
+    int u = _task->getUnreadMsgCount();
+    if (u > 0) out[k++] = { UI2_IC_MSG, u };
+#ifdef HAS_4G_MODEM
+    SMSScreen* smsScr = _task->getSMSScreen();
+    int sms = smsScr ? smsScr->getUnreadSmsCount() : 0;
+    int missed = smsScr ? smsScr->getUnseenMissedCount() : 0;
+    if (sms > 0) out[k++] = { UI2_IC_SMS, sms };
+    if (missed > 0) out[k++] = { UI2_IC_PHONE, missed };
+#endif
+    return k;
+  }
+
+  // 16 px icons 22 px apart, each with its count on the top right corner
+  void drawNotifs(Ui2Canvas& c, int16_t top, const Notif* nf, int k) {
+    const int16_t w = k * 16 + (k - 1) * 22;
+    int16_t x = (ui2::SCREEN_W - w) / 2;
+    const int16_t iy = top + (NOTIF_H - 16) / 2;
+    for (int i = 0; i < k; i++, x += 16 + 22) {
+      c.icon(x, iy, nf[i].ic, 16);
+      char n[6];
+      if (nf[i].n > 99) snprintf(n, sizeof(n), "99+");
+      else snprintf(n, sizeof(n), "%d", nf[i].n);
+      c.cornerBadge(x + 16 + 9 - Ui2Canvas::cornerBadgeWidth(n), iy - 6, n);
+    }
+  }
+
+  // Rain line under the weather icon: "15:20" when rain starts, an arrow
+  // and "18:40" while it rains; width 0 without rain
+  int16_t rainLine(char* buf, size_t len) {
+    buf[0] = 0;
+    if (_weather.rain == Ui2LockWeather::RAIN_NONE) return 0;
+    snprintf(buf, len, "%u:%02u", (unsigned)(_weather.rainMin / 60) % 24, (unsigned)_weather.rainMin % 60);
+    return 12 + 2 + (_weather.rain == Ui2LockWeather::RAIN_ENDS ? 12 : 0) + Ui2Canvas::textWidth(buf, UI2_F_CHIP);
+  }
+
+  int16_t heroHeight() {
+    if (!_weather.valid) return CLOCK_H;
+    char rain[8];
+    int16_t colH = 32 + (rainLine(rain, sizeof(rain)) ? 2 + 12 : 0);
+    return colH > CLOCK_H ? colH : CLOCK_H;
+  }
+
+  // The clock, with the weather group on its left when there is weather:
+  // the two centred together as one block, the clock alone centred without
+  void drawHero(Ui2Canvas& c, int16_t top, int16_t h, const char* timeBuf) {
+    const int16_t cw = Ui2Canvas::textWidth(timeBuf, UI2_F_NUM40);
+    int16_t gw = 0, rw = 0;
+    char rain[8];
+    if (_weather.valid) {
+      rw = rainLine(rain, sizeof(rain));
+      gw = rw > 32 ? rw : 32;
+    }
+    const int16_t blockW = gw ? gw + 12 + cw : cw;
+    int16_t x = (ui2::SCREEN_W - blockW) / 2;
+    if (gw) {
+      const int16_t colH = 32 + (rw ? 2 + 12 : 0);
+      const int16_t iy = top + (h - colH) / 2;
+      const int16_t ix = x + (gw - 32) / 2;
+      c.icon(ix, iy, _weather.icon, 32);
+      char t[8];
+      snprintf(t, sizeof(t), "%d\xC2\xB0", _weather.tempC);
+      c.cornerBadge(ix + 32 + 8 - Ui2Canvas::cornerBadgeWidth(t), iy - 4, t);
+      if (rw) {
+        int16_t rx = x + (gw - rw) / 2, ry = iy + 32 + 2;
+        c.icon(rx, ry, UI2_IC_RAIN, 12);
+        rx += 14;
+        if (_weather.rain == Ui2LockWeather::RAIN_ENDS) { c.icon(rx, ry, UI2_IC_RIGHT, 12); rx += 12; }
+        c.text(rx, Ui2Canvas::lineBaseline(UI2_F_CHIP, ry, 12), rain, UI2_F_CHIP);
+      }
+      x += gw + 12;
+    }
+    c.text(x, Ui2Canvas::lineBaseline(UI2_F_NUM40, top + (h - CLOCK_H) / 2, CLOCK_H), timeBuf, UI2_F_NUM40);
+  }
+
+public:
+  // UI v2 lock screen (Lock screen v3): clock first, small stackable widgets
   int renderV2(DisplayDriver& display) {
     using namespace ui2;
     Ui2Canvas c(display);
     uint32_t now = _rtc->getCurrentTime();
 
-    // Battery snapshot: once per clock minute, or when USB power changes
     bool usb = false;
 #if defined(LilyGo_TDeck_Pro_Max) && !defined(MECK_40MHZ_TEST)
     usb = board.isUsbPowered();
 #endif
-    if (now / 60 != _snapMinute || usb != _snapUsb) {
-      _snapMinute = now / 60;
-      _snapUsb = usb;
-#if HAS_BQ27220
-      _snapPct = _task->getBatteryPercent();
-#else
-      uint16_t mv = _task->getBattMilliVolts();
-      _snapPct = mv > 0 ? constrain(((int)mv - 3000) * 100 / 1200, 0, 100) : 0;
-#endif
-      _snapEst[0] = 0;
-#if defined(LilyGo_TDeck_Pro_Max) && !defined(MECK_40MHZ_TEST)
-      if (usb) {
-        snprintf(_snapEst, sizeof(_snapEst), "%s", _snapPct >= 100 ? MECK_TR("Battery full", "Batterie pleine")
-                                                                   : MECK_TR("Charging", "En charge"));
-      } else {
-        uint16_t tte = board.getTimeToEmpty();     // minutes, 0xFFFF = not discharging
-        if (tte != 0xFFFF && tte > 0) {
-          if (tte >= 48 * 60) snprintf(_snapEst, sizeof(_snapEst), MECK_TR("About %u days left", "Environ %u jours"), (tte + 720) / 1440);
-          else if (tte >= 120) snprintf(_snapEst, sizeof(_snapEst), MECK_TR("About %u h left", "Environ %u h"), (tte + 30) / 60);
-          else snprintf(_snapEst, sizeof(_snapEst), MECK_TR("About %u min left", "Environ %u min"), tte);
-        }
-      }
-#endif
+    snapBattery(now, usb);
+
+    char timeBuf[8], dateBuf[24];
+    formatTime(now, timeBuf, sizeof(timeBuf), dateBuf, sizeof(dateBuf));
+
+    drawTopLine(c);
+    drawRadioColumn(c);
+    drawStatusLine(c);
+
+    // Middle block: clock (+ weather), date, notifications
+    Notif nf[3];
+    const int nk = collectNotifs(nf);
+    const int16_t heroH = heroHeight();
+    const int16_t midH = heroH + (dateBuf[0] ? DATE_GAP + DATE_H : 0) + (nk ? NOTIF_GAP + NOTIF_H : 0);
+    const int16_t midTop = TOP_Y + TOP_H + WIDGET_GAP;
+
+    // Widgets stack upwards from the status line; while they do not fit
+    // under the middle block, the lowest priority one is left out
+    int16_t wh[UI2_LOCK_MAX_WIDGETS] = {};
+    const int16_t ww = SCREEN_W - 2 * PAD;
+    int16_t stackH = 0;
+    for (int i = 0; i < UI2_LOCK_MAX_WIDGETS && _widgets[i]; i++) {
+      wh[i] = _widgets[i]->height(ww, now);
+      if (wh[i] < 0) wh[i] = 0;
+      if (wh[i]) stackH += wh[i] + WIDGET_GAP;
+    }
+    const int16_t room = STATUS_Y - midTop - midH - WIDGET_GAP;
+    while (stackH > room) {
+      int drop = -1;
+      for (int i = 0; i < UI2_LOCK_MAX_WIDGETS && _widgets[i]; i++)
+        if (wh[i] && (drop < 0 || _widgets[i]->priority() < _widgets[drop]->priority())) drop = i;
+      if (drop < 0) break;
+      stackH -= wh[drop] + WIDGET_GAP;
+      wh[drop] = 0;
+    }
+    int16_t y = STATUS_Y - stackH;
+    uint32_t wake = 0;
+    for (int i = 0; i < UI2_LOCK_MAX_WIDGETS && _widgets[i]; i++) {
+      if (!wh[i]) continue;
+      _widgets[i]->draw(c, PAD, y, ww, now);
+      y += wh[i] + WIDGET_GAP;
+      uint32_t t = _widgets[i]->nextChange(now);
+      if (t > now && (!wake || t < wake)) wake = t;
     }
 
-    char timeBuf[6] = "--:--", dateBuf[24] = "";
+    // The middle block centred in what is left between the top line and
+    // the widgets (or the status line)
+    const int16_t midBottom = STATUS_Y - (stackH ? stackH : WIDGET_GAP);
+    int16_t my = midTop + (midBottom - midTop - midH) / 2;
+    if (my < midTop) my = midTop;
+    drawHero(c, my, heroH, timeBuf);
+    my += heroH;
+    if (dateBuf[0]) {
+      c.textFit(PAD, Ui2Canvas::lineBaseline(UI2_F_BODY, my + DATE_GAP, DATE_H), SCREEN_W - 2 * PAD,
+                dateBuf, UI2_F_BODY, true, UI2_CENTER);
+      my += DATE_GAP + DATE_H;
+    }
+    if (nk) drawNotifs(c, my + NOTIF_GAP, nf, nk);
+
+    // Next redraw at the next minute boundary (or when a widget changes),
+    // not on a fixed period: a wake for a LoRa packet mid-minute then has
+    // nothing to redraw.
     if (now > 1700000000) {
-      int32_t local = (int32_t)now + ((int32_t)_node_prefs->utc_offset_hours * 3600);
-      int hrs = ((local / 3600) % 24 + 24) % 24;
-      int mins = ((local / 60) % 60 + 60) % 60;
-      snprintf(timeBuf, sizeof(timeBuf), "%02d:%02d", hrs, mins);
-      // Civil date from days since 1970-01-01 (Howard Hinnant's algorithm)
-      int32_t z = local / 86400 + 719468;
-      int32_t era = z / 146097, doe = z - era * 146097;
-      int32_t yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
-      int32_t doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-      int32_t mp = (5 * doy + 2) / 153;
-      int d = doy - (153 * mp + 2) / 5 + 1, m = mp < 10 ? mp + 3 : mp - 9;
-      static const char* const wd_en[] = {"Thursday", "Friday", "Saturday", "Sunday", "Monday", "Tuesday", "Wednesday"};
-      static const char* const wd_fr[] = {"jeudi", "vendredi", "samedi", "dimanche", "lundi", "mardi", "mercredi"};
-      int wd = (int)((local / 86400) % 7);
-      snprintf(dateBuf, sizeof(dateBuf), "%s %d. %d.", MECK_TR(wd_en[wd], wd_fr[wd]), d, m);
+      uint32_t next = now + (60 - now % 60);
+      if (wake && wake < next) next = wake;
+      return (int)(next - now) * 1000 + 300;
     }
-
-    c.textFit(PAD, 30, SCREEN_W - 2 * PAD, _node_prefs->node_name, UI2_F_NODE, true, UI2_CENTER);
-    c.icon((SCREEN_W - 16) / 2, 52, UI2_IC_LOCK, 16);
-    c.textFit(0, 146, SCREEN_W, timeBuf, UI2_F_NUM40, true, UI2_CENTER);
-    if (dateBuf[0]) c.textFit(PAD, 174, SCREEN_W - 2 * PAD, dateBuf, UI2_F_BODY, true, UI2_CENTER);
-
-    // Battery (minute snapshot) and unread messages (live)
-    int pct = _snapPct;
-    char batt[8], unread[24];
-    snprintf(batt, sizeof(batt), "%d%%", pct);
-    int u = _task->getUnreadMsgCount();
-    snprintf(unread, sizeof(unread), MECK_TR("%d unread", "%d non lus"), u);
-    int16_t bw = 20 + 4 + Ui2Canvas::textWidth(batt, UI2_F_SMALL);
-    int16_t uw = u > 0 ? Ui2Canvas::chipWidth(unread, UI2_IC_MSG) : 0;
-    int16_t x = (SCREEN_W - bw - (u > 0 ? uw + 12 : 0)) / 2;
-    c.battery(x, 208, pct);
-    c.text(x + 24, 217, batt, UI2_F_SMALL);
-    if (u > 0) c.chip(x + bw + 12, 206, unread, UI2_IC_MSG, true);
-
-#ifdef HAS_4G_MODEM
-    SMSScreen* smsScr = _task->getSMSScreen();
-    int sms = smsScr ? smsScr->getUnreadSmsCount() : 0;
-    int missed = smsScr ? smsScr->getUnseenMissedCount() : 0;
-    if (sms > 0 || missed > 0) {
-      char a[16] = "", b[24] = "";
-      if (sms > 0) snprintf(a, sizeof(a), "%d SMS", sms);
-      if (missed > 0) snprintf(b, sizeof(b), MECK_TR("%d missed", "%d manqu\xC3\xA9s"), missed);
-      int16_t aw = sms > 0 ? Ui2Canvas::chipWidth(a, UI2_IC_SMS) : 0;
-      int16_t mw = missed > 0 ? Ui2Canvas::chipWidth(b, UI2_IC_PHONE) : 0;
-      int16_t gap = (sms > 0 && missed > 0) ? 8 : 0;
-      int16_t sx = (SCREEN_W - aw - mw - gap) / 2;
-      if (sms > 0) c.chip(sx, 236, a, UI2_IC_SMS, true);
-      if (missed > 0) c.chip(sx + aw + gap, 236, b, UI2_IC_PHONE, true);
-    }
-#endif
-
-#if defined(LilyGo_TDeck_Pro_Max) && !defined(MECK_40MHZ_TEST)
-    // Power saving: either "Power saving" with what stays on or what keeps
-    // the device awake, then the gauge's battery estimate (time to empty at
-    // the average draw)
-    {
-      int reason = meckSleepBlockerShown();
-      bool sleeps = reason == MECK_SLEEP_OK || meckBlockerSleeps();
-      char line[64];
-      if (sleeps)
-        meckSleepStatusText(line, sizeof(line));
-      else if (reason == MECK_SLEEP_OFF || reason == MECK_SLEEP_USB)
-        snprintf(line, sizeof(line), "%s", meckSleepBlockText(reason));
-      else
-        snprintf(line, sizeof(line), MECK_TR("Awake: %s", "\xC3\x89veill\xC3\xA9 : %s"), meckSleepBlockText(reason));
-      Ui2Icon ic = sleeps ? UI2_IC_MOON
-                 : reason == MECK_SLEEP_USB ? UI2_IC_BOLT : UI2_IC_WARN;
-      const int16_t maxW = SCREEN_W - 2 * PAD - 16;
-      int16_t tw = Ui2Canvas::textWidth(line, UI2_F_SMALL);
-      if (tw > maxW) tw = maxW;
-      int16_t lx = (SCREEN_W - tw - 16) / 2;
-      c.icon(lx, 262, ic, 12);
-      c.textFit(lx + 16, 273, maxW, line, UI2_F_SMALL);
-
-      char est[sizeof(_snapEst) + 16];
-      snprintf(est, sizeof(est), "%s", _snapEst);
-  #ifdef HAS_4G_MODEM
-      // A low cell stops 4G about half way down, with many hours left for LoRa:
-      // the estimate stays, and only someone who has 4G on needs to hear of it
-      if (modemManager.isBatteryLow() && ModemManager::enabledInSettings()) {
-        if (est[0]) strlcat(est, " \xC2\xB7 ", sizeof(est));
-        strlcat(est, MECK_TR("4G off", "4G coup\xC3\xA9"), sizeof(est));
-      }
-  #endif
-      if (est[0]) c.textFit(PAD, 290, SCREEN_W - 2 * PAD, est, UI2_F_META, true, UI2_CENTER);
-    }
-#endif
-    // Next redraw at the next minute boundary, not on a fixed period: a
-    // wake for a LoRa packet mid-minute then has nothing to redraw.
-    if (now > 1700000000) return (int)(60 - now % 60) * 1000 + 300;
     return 30000;
   }
 #endif
@@ -3625,6 +3819,32 @@ char UITask::handleTripleClick(char c) {
 }
 
 #if defined(LilyGo_TDeck_Pro)
+#ifdef MECK_UI_V2
+bool UITask::addLockWidget(Ui2LockWidget* w) {
+  return w && ((LockScreen*)lock_screen)->addWidget(w);
+}
+
+void UITask::removeLockWidget(Ui2LockWidget* w) {
+  ((LockScreen*)lock_screen)->removeWidget(w);
+  lockContentChanged();
+}
+
+void UITask::setLockWeather(const Ui2LockWeather& w) {
+  ((LockScreen*)lock_screen)->setWeather(w);
+  lockContentChanged();
+}
+
+void UITask::lockContentChanged() {
+  // Only while the lock screen shows: it is drawn afresh when locking
+  if (!_locked || curr != lock_screen || _display == NULL) return;
+  if (!_display->isOn()) {   // as the minute redraw: on just long enough to draw
+    _display->turnOn();
+    _auto_off = millis() + 5000;
+  }
+  _next_refresh = 0;
+}
+#endif
+
 void UITask::lockScreen() {
   if (_locked) return;
   _locked = true;
