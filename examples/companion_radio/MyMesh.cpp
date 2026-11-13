@@ -4020,6 +4020,12 @@ void MyMesh::checkCLIRescueCmd() {
       extern void meckPowerCmd(const char* cmd);
       meckPowerCmd(cli_command);
 #endif
+#if defined(BLE_PIN_CODE) && defined(MECK_WIFI_COMPANION)
+    } else if (strcmp(cli_command, "mem") == 0 || memcmp(cli_command, "mem ", 4) == 0) {
+      // Debug: internal / PSRAM free with BLE, WiFi and a TLS session
+      extern void meckMemCmd(const char* arg);
+      meckMemCmd(cli_command[3] ? &cli_command[4] : "");
+#endif
     } else if (memcmp(cli_command, "uigeo ", 6) == 0) {
       // Debug: what the location parser finds in a text (nothing is stored)
       extern void meckDebugGeo(const char* text);
