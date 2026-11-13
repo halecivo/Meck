@@ -1023,6 +1023,14 @@ static uint32_t _atoi(const char* sp) {
     extern void meckTxLogPrint();
     extern bool meckTxLogFlush();
     if (strcmp(cmd, "pwrlog") == 0) { meckPwrLogPrint(); return; }
+#ifndef MECK_40MHZ_TEST
+    if (strncmp(cmd, "pwreinksleep ", 13) == 0) {
+      extern bool meckEinkBusySleep;
+      meckEinkBusySleep = cmd[13] != '0';
+      Serial.printf("pwreinksleep: %d (until reset)\n", (int)meckEinkBusySleep);
+      return;
+    }
+#endif
     if (strcmp(cmd, "pwrchg") == 0) { board.chargerDebugPrint(); return; }   // charger + gauge, read-only
 #ifdef HAS_4G_MODEM
     if (strcmp(cmd, "pwrmodem") == 0) { modemManager.printPowerStats(); return; }   // UART sleep, read-only
@@ -3380,6 +3388,12 @@ void setup() {
   MESH_DEBUG_PRINTLN("setup() - about to call ui_task.begin()");
   ui_task.begin(disp, &sensors, the_mesh.getNodePrefs());
   MESH_DEBUG_PRINTLN("setup() - ui_task.begin() done");
+  #if defined(LilyGo_TDeck_Pro_Max) && !defined(MECK_40MHZ_TEST)
+  {
+    extern void meckEinkBusyWaitInstall();
+    meckEinkBusyWaitInstall();
+  }
+  #endif
 #endif
 #if defined(MECK_HA) && MECK_HA
   meckHa.begin();
@@ -4001,6 +4015,41 @@ static void meckMeasureSlowClock() {
 // Sleep statistics for the power log, reset with each logged minute
 static uint64_t meckSleptUs = 0;
 static uint16_t meckWakeLora = 0, meckWakeBtn = 0, meckWakeTimer = 0;
+
+// The panel draws by itself once it has the frame (0.42 s for a partial
+// refresh, 1.1 s for a full one) and the ESP32 only watches its BUSY line, so
+// the locked device can sleep through that too. Same wake sources as the
+// sleep in meckLockSleepStep(), plus BUSY; what wakes the device is handled
+// after the refresh, as when it blocked here awake. Not with the modem on:
+// its sleep needs the DTR and RI handling of the main sleep. "pwreinksleep
+// 0|1" on the debug CLI switches this for a comparison.
+bool meckEinkBusySleep = true;
+static bool meckDeckMaySleep = false;        // from the last meckLockSleepStep()
+
+static void meckEinkBusyWait(const void*) {
+  if (!ui_task.isLocked()) { delay(1); return; }
+  bool sleep = meckEinkBusySleep && meckDeckMaySleep && !the_mesh.hasPendingWork()
+               && digitalRead(P_LORA_DIO_1) == LOW && digitalRead(PIN_USER_BTN) == HIGH;
+#ifdef HAS_4G_MODEM
+  if (modemManager.getState() != ModemState::OFF) sleep = false;
+#endif
+  if (!sleep) { delay(1); return; }
+  gpio_int_type_t done = digitalRead(PIN_DISPLAY_BUSY) == HIGH ? GPIO_INTR_LOW_LEVEL : GPIO_INTR_HIGH_LEVEL;
+  esp_sleep_enable_timer_wakeup(200000ULL);  // not to depend on BUSY alone
+  esp_sleep_enable_ext1_wakeup(1ULL << P_LORA_DIO_1, ESP_EXT1_WAKEUP_ANY_HIGH);
+  gpio_wakeup_enable((gpio_num_t)PIN_USER_BTN, GPIO_INTR_LOW_LEVEL);
+  gpio_wakeup_enable((gpio_num_t)PIN_DISPLAY_BUSY, done);
+  esp_sleep_enable_gpio_wakeup();
+  Serial.flush();
+  int64_t sleepStart = esp_timer_get_time();
+  esp_light_sleep_start();
+  meckSleptUs += (uint64_t)(esp_timer_get_time() - sleepStart);
+  gpio_wakeup_disable((gpio_num_t)PIN_USER_BTN);
+  gpio_wakeup_disable((gpio_num_t)PIN_DISPLAY_BUSY);
+  esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
+}
+
+void meckEinkBusyWaitInstall() { display.setBusyWait(meckEinkBusyWait); }
 
 // Why the device does not sleep while locked (MeckSleepBlock in UITask.h),
 // MECK_SLEEP_OK when it can. Shown on the lock screen and in the lock warning.
@@ -4716,6 +4765,7 @@ static void meckLockSleepStep() {
     meckBleStoppedForSleep = false;
     Serial.println("[Power] BLE advertising resumed");
   }
+  meckDeckMaySleep = canSleep;   // Bluetooth is off by now if it should be
 
   bool gpsDutyAwake = meckGpsDutyStep(locked, dutyBlocker);
 #ifdef MECK_AUTO_LIGHT_SLEEP
