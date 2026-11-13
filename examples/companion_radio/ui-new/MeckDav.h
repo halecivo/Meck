@@ -25,7 +25,7 @@
 // user typed in only (iCloud's partition hosts excepted, davSameSite).
 //
 // Events (the lock screen agenda, MeckAgenda): the next days of every
-// calendar, recurring events expanded by the server, every hour and after
+// calendar, recurring events expanded on the deck, every hour and after
 // local midnight, on WiFi while the deck is unlocked. Read only too.
 //
 // The password stays in NVS, never on the SD card, and never in a log.
@@ -89,10 +89,10 @@ public:
 
   // --- Events sync (the agenda) ---
   void setClock(uint32_t now, int32_t utcOffsetSec) { _now = now; _utcOff = utcOffsetSec; }
-  int32_t utcOffset() const { return _utcOff; }
   void eventsNow() { if (configured() && _calCount) _evWanted = true; }
   bool eventsSyncing() const { return _ev != EV_IDLE; }
   void eventAdd(const DavEvent& e);                 // iCalendar reader callback
+  void eventsRead(const char* data, size_t len);    // one calendar object of a reply
 
   void cmd(const char* arg);    // debug CLI "dav ..."
   static constexpr int EV_BUF = 256;                // events of one sync, before the agenda keeps the earliest
@@ -166,6 +166,7 @@ private:
   int _evCal = 0, _evN = 0, _evDropped = 0, _evDays = 7;
   DavEvent* _evList = nullptr;   // PSRAM, EV_BUF
   char* _evBody = nullptr;       // calendar-query body
+  DavIcalWork* _evWork = nullptr;   // the reader's room for one series (PSRAM)
   uint32_t _now = 0;             // RTC time and local offset, from main.cpp every loop()
   int32_t _utcOff = 0;
 
@@ -198,7 +199,7 @@ private:
   void syncFail(const char* why);
   bool eventsDue() const;
   void eventsTick(bool locked);
-  void eventsStart(int days = 7);   // days: MeckAgenda::WINDOW_DAYS, more from the debug CLI
+  void eventsStart(int days = 7, int back = 0);   // days: MeckAgenda::WINDOW_DAYS; the debug CLI asks for others
   void eventsStep();
   void eventsEnd();
   void eventsFail(const char* why);

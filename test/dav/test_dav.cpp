@@ -477,7 +477,8 @@ static void testIcal() {
   char b[700];
   size_t n = davCalQueryBody(b, sizeof(b), 1794528000u, 1794528000u + 7 * 86400);
   CHECK(n == strlen(b) && n > 0);
-  CHECK(strstr(b, "<c:expand start=\"20261113T000000Z\" end=\"20261120T000000Z\"/>") != nullptr);
+  CHECK(strstr(b, "expand") == nullptr);   // the deck expands (davIcalParse)
+  CHECK(strstr(b, "<c:calendar-data/>") != nullptr);
   CHECK(strstr(b, "<c:time-range start=\"20261113T000000Z\" end=\"20261120T000000Z\"/>") != nullptr);
   CHECK(davCalQueryBody(b, 100, 0, 1) == 0);
 
@@ -490,11 +491,12 @@ static void testIcal() {
 
   std::vector<DavEvent> ev;
   auto fn = [](const DavEvent& e, void* c) { ((std::vector<DavEvent>*)c)->push_back(e); };
+  static DavIcalWork work;
   std::vector<DavResponse> v = parse(FX_EVENTS);
   CHECK(v.size() == 3);
   const int32_t off = 3600;   // the deck at UTC+1
   int total = 0;
-  for (auto& r : v) total += davIcalParse(r.data, r.dataLen, off, fn, &ev);
+  for (auto& r : v) total += davIcalParse(r.data, r.dataLen, off, 0, 0, &work, fn, &ev);
   CHECK(total == 4 && ev.size() == 4);
   if (ev.size() == 4) {
     const uint32_t day = 1794528000u;
@@ -515,7 +517,7 @@ static void testIcal() {
                     "BEGIN:VEVENT\nDTSTART:20261113T0900Z\nEND:VEVENT\n"
                     "BEGIN:VEVENT\nDTSTART:20261113T090000Z\nDTEND:20261113T080000Z\nEND:VEVENT\n"
                     "BEGIN:VEVENT\nDTSTART:20261113T090000Z\n";
-  CHECK(davIcalParse(odd, strlen(odd), 0, fn, &ev) == 2);
+  CHECK(davIcalParse(odd, strlen(odd), 0, 0, 0, &work, fn, &ev) == 2);
   if (ev.size() == 2) {
     CHECK(ev[0].allDay && ev[0].end - ev[0].start == 86400 && ev[0].title[0] == 0);
     CHECK(ev[1].end == ev[1].start);
@@ -524,10 +526,261 @@ static void testIcal() {
   for (int k = 0; k < 40; k++) longTitle += "\xC5\x98";   // Ř, two bytes
   longTitle += "\nEND:VEVENT\n";
   ev.clear();
-  CHECK(davIcalParse(longTitle.c_str(), longTitle.size(), 0, fn, &ev) == 1);
+  CHECK(davIcalParse(longTitle.c_str(), longTitle.size(), 0, 0, 0, &work, fn, &ev) == 1);
   if (ev.size() == 1) CHECK(strlen(ev[0].title) == 46);
-  CHECK(davIcalParse(nullptr, 0, 0, fn, &ev) == 0);
-  CHECK(davIcalParse("&amp&#xZZ;<![CDATA[", 19, 0, fn, &ev) == 0);
+  CHECK(davIcalParse(nullptr, 0, 0, 0, 0, &work, fn, &ev) == 0);
+  CHECK(davIcalParse("&amp&#xZZ;<![CDATA[", 19, 0, 0, 0, &work, fn, &ev) == 0);
+}
+
+// calendar-query without expand from Radicale 3.9.0 (tools/dav/seed.py plus
+// three events shaped like a Google feed): whole series with their rules,
+// EXDATEs, a moved instance and the time zone
+static const char FX_NOEXPAND[] = R"FX(<?xml version='1.0' encoding='utf-8'?>
+<multistatus xmlns="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav"><response><href>/deck/test/allday.ics</href><propstat><prop><getetag>"992df706a0214110a23c32f2bff2eee1e1006cc3dd4d5046ed5a5da43127df91"</getetag><C:calendar-data>BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//meck//seed//EN
+BEGIN:VEVENT
+UID:allday@seed
+DTSTART;VALUE=DATE:20261114
+DTEND;VALUE=DATE:20261115
+DTSTAMP:20261101T000000Z
+SUMMARY:All day
+END:VEVENT
+END:VCALENDAR
+</C:calendar-data></prop><status>HTTP/1.1 200 OK</status></propstat></response><response><href>/deck/test/bday.ics</href><propstat><prop><getetag>"190e9202b77b1a6aa3356ff7e1e4fec76445d382563e721e24d874c10c6c8495"</getetag><C:calendar-data>BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//Google Inc//EN
+BEGIN:VEVENT
+UID:bday@google.com
+DTSTART;VALUE=DATE:20101114
+DTEND;VALUE=DATE:20101115
+DTSTAMP:20261113T200710Z
+RRULE:FREQ=YEARLY
+SUMMARY:Narozeniny
+END:VEVENT
+END:VCALENDAR
+</C:calendar-data></prop><status>HTTP/1.1 200 OK</status></propstat></response><response><href>/deck/test/family.ics</href><propstat><prop><getetag>"38acc294eca84c3d4d76bfe5447c7a3d5cf42dbd4543d3cf3add9374ee3e9a93"</getetag><C:calendar-data>BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//Google Inc//Google Calendar 70.9054//EN
+BEGIN:VTIMEZONE
+TZID:Europe/Prague
+BEGIN:STANDARD
+DTSTART:19701025T030000
+RRULE:FREQ=YEARLY;BYMONTH=10;BYDAY=-1SU
+TZNAME:CET
+TZOFFSETFROM:+0200
+TZOFFSETTO:+0100
+END:STANDARD
+BEGIN:DAYLIGHT
+DTSTART:19700329T020000
+RRULE:FREQ=YEARLY;BYMONTH=3;BYDAY=-1SU
+TZNAME:CEST
+TZOFFSETFROM:+0100
+TZOFFSETTO:+0200
+END:DAYLIGHT
+END:VTIMEZONE
+BEGIN:VEVENT
+UID:family@google.com
+DTSTART;TZID=Europe/Prague:20261002T170000
+DTEND;TZID=Europe/Prague:20261002T180000
+DTSTAMP:20261113T200710Z
+EXDATE;TZID=Europe/Prague:20261114T170000
+RRULE:FREQ=WEEKLY;BYDAY=FR,SA
+SUMMARY:Kroužek
+END:VEVENT
+BEGIN:VEVENT
+UID:family@google.com
+RECURRENCE-ID;TZID=Europe/Prague:20261113T170000
+DTSTART;TZID=Europe/Prague:20261113T190000
+DTEND;TZID=Europe/Prague:20261113T200000
+DTSTAMP:20261113T200710Z
+SUMMARY:Kroužek (later)
+END:VEVENT
+END:VCALENDAR
+</C:calendar-data></prop><status>HTTP/1.1 200 OK</status></propstat></response><response><href>/deck/test/night.ics</href><propstat><prop><getetag>"64b592b5a7c2a30e927f75666d930b8ab789ce07a33503f0e763e0955e06d5a0"</getetag><C:calendar-data>BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//Google Inc//EN
+BEGIN:VTIMEZONE
+TZID:Europe/Prague
+BEGIN:STANDARD
+DTSTART:19701025T030000
+RRULE:FREQ=YEARLY;BYMONTH=10;BYDAY=-1SU
+TZNAME:CET
+TZOFFSETFROM:+0200
+TZOFFSETTO:+0100
+END:STANDARD
+BEGIN:DAYLIGHT
+DTSTART:19700329T020000
+RRULE:FREQ=YEARLY;BYMONTH=3;BYDAY=-1SU
+TZNAME:CEST
+TZOFFSETFROM:+0100
+TZOFFSETTO:+0200
+END:DAYLIGHT
+END:VTIMEZONE
+BEGIN:VEVENT
+UID:night@google.com
+DTSTART;TZID=Europe/Prague:20250704T003000
+DTEND;TZID=Europe/Prague:20250704T013000
+DTSTAMP:20261113T200710Z
+RRULE:FREQ=WEEKLY;BYDAY=FR
+SUMMARY:Night
+END:VEVENT
+END:VCALENDAR
+</C:calendar-data></prop><status>HTTP/1.1 200 OK</status></propstat></response><response><href>/deck/test/utc.ics</href><propstat><prop><getetag>"0423cfab62e7bdc3b67f2fa8a0ea24419085c85a30f114c0f808b91d09a15f97"</getetag><C:calendar-data>BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//meck//seed//EN
+BEGIN:VEVENT
+UID:utc@seed
+DTSTART:20261113T120000Z
+DTEND:20261113T130000Z
+DTSTAMP:20261101T000000Z
+SUMMARY:UTC event
+END:VEVENT
+END:VCALENDAR
+</C:calendar-data></prop><status>HTTP/1.1 200 OK</status></propstat></response><response><href>/deck/test/weekly.ics</href><propstat><prop><getetag>"cdc10afb539ea41de1b240c5b8a487a427fc3c2e8cd6a136d51752bfc7226681"</getetag><C:calendar-data>BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//meck//seed//EN
+BEGIN:VTIMEZONE
+TZID:Europe/Prague
+BEGIN:STANDARD
+DTSTART:20001029T030000
+RRULE:FREQ=YEARLY;BYDAY=-1SU;BYMONTH=10
+TZNAME:CET
+TZOFFSETFROM:+0200
+TZOFFSETTO:+0100
+END:STANDARD
+BEGIN:DAYLIGHT
+DTSTART:20000326T020000
+RRULE:FREQ=YEARLY;BYDAY=-1SU;BYMONTH=3
+TZNAME:CEST
+TZOFFSETFROM:+0100
+TZOFFSETTO:+0200
+END:DAYLIGHT
+END:VTIMEZONE
+BEGIN:VEVENT
+UID:weekly@seed
+DTSTART;TZID=Europe/Prague:20261109T180000
+DTEND;TZID=Europe/Prague:20261109T190000
+DTSTAMP:20261101T000000Z
+EXDATE;TZID=Europe/Prague:20261116T180000
+RRULE:FREQ=WEEKLY;BYDAY=MO,TH;COUNT=20
+SUMMARY:Weekly Mon+Thu
+BEGIN:VALARM
+ACTION:DISPLAY
+DESCRIPTION:x
+TRIGGER:-PT15M
+END:VALARM
+END:VEVENT
+END:VCALENDAR
+</C:calendar-data></prop><status>HTTP/1.1 200 OK</status></propstat></response></multistatus>)FX";
+
+struct EvList { std::vector<std::string> v; };
+static void gotEvent(const DavEvent& e, void* c) {
+  char s[20], t[20];
+  davIcalUtcStamp(e.start + 3600, s, sizeof(s));   // as the deck at UTC+1 shows it
+  davIcalUtcStamp(e.end + 3600, t, sizeof(t));
+  s[13] = t[13] = 0;
+  ((EvList*)c)->v.push_back(std::string(e.allDay ? "D " : "") + s + "-" + t + " " + e.title);
+}
+
+static const uint32_t WIN = 1794524400u;   // 2026-11-13 00:00 at UTC+1
+
+// One VEVENT (lines joined by \n) in the 7 days from WIN, or [ws, we)
+static std::vector<std::string> expandOne(const std::string& body, uint32_t ws = WIN, uint32_t we = WIN + 7 * 86400) {
+  static DavIcalWork work;
+  std::string ics = "BEGIN:VCALENDAR\nBEGIN:VEVENT\nUID:x\nSUMMARY:E\n" + body + "\nEND:VEVENT\nEND:VCALENDAR\n";
+  EvList g;
+  davIcalParse(ics.c_str(), ics.size(), 3600, ws, we, &work, gotEvent, &g);
+  return g.v;
+}
+
+static std::string joined(const std::vector<std::string>& v) {
+  std::string s;
+  for (auto& x : v) s += (s.empty() ? "" : " | ") + x;
+  return s;
+}
+
+static void testExpand() {
+  static DavIcalWork work;
+  EvList g;
+  std::vector<DavResponse> v = parse(FX_NOEXPAND);
+  CHECK(v.size() == 6);
+  for (auto& r : v) davIcalParse(r.data, r.dataLen, 3600, WIN, WIN + 7 * 86400, &work, gotEvent, &g);
+  CHECK_STR(joined(g.v).c_str(),
+            "D 20261114T0000-20261115T0000 All day | "
+            "D 20261114T0000-20261115T0000 Narozeniny | "
+            "20261113T1900-20261113T2000 Krou\xC5\xBE" "ek (later) | "     // moved; Saturday's is an EXDATE
+            "20261113T0030-20261113T0130 Night | "                          // weekly since July 2025, summer start
+            "20261113T1300-20261113T1400 UTC event | "
+            "20261119T1800-20261119T1900 Weekly Mon+Thu");                  // Monday the 16th is an EXDATE
+
+  // The rules one by one (WIN is Friday 2026-11-13)
+  CHECK_STR(joined(expandOne("DTSTART;TZID=Europe/Prague:20260601T080000\nDTEND;TZID=Europe/Prague:20260601T083000\n"
+                             "RRULE:FREQ=DAILY", WIN, WIN + 2 * 86400)).c_str(),
+            "20261113T0800-20261113T0830 E | 20261114T0800-20261114T0830 E");
+  CHECK_STR(joined(expandOne("DTSTART:20100101T070000Z\nRRULE:FREQ=DAILY;INTERVAL=3", WIN, WIN + 4 * 86400)).c_str(),
+            "20261115T0800-20261115T0800 E");   // every 3rd day since 2010: 6160 days to the 13th
+  CHECK_STR(joined(expandOne("DTSTART;TZID=X:20261030T170000\nRRULE:FREQ=WEEKLY;INTERVAL=2;BYDAY=FR,MO")).c_str(),
+            "20261113T1700-20261113T1700 E");   // weeks of 26 Oct, 9 Nov, 23 Nov
+  CHECK_STR(joined(expandOne("DTSTART;VALUE=DATE:20260130\nRRULE:FREQ=MONTHLY;BYDAY=-1FR", WIN, WIN + 30 * 86400)).c_str(),
+            "D 20261127T0000-20261128T0000 E");   // last Friday
+  CHECK_STR(joined(expandOne("DTSTART;VALUE=DATE:20260131\nRRULE:FREQ=MONTHLY;BYMONTHDAY=-1", WIN, WIN + 20 * 86400)).c_str(),
+            "D 20261130T0000-20261201T0000 E");
+  CHECK(expandOne("DTSTART;VALUE=DATE:20260131\nRRULE:FREQ=MONTHLY", WIN, WIN + 20 * 86400).empty());   // no 31 Nov
+  CHECK_STR(joined(expandOne("DTSTART;VALUE=DATE:20200510\nRRULE:FREQ=YEARLY;BYMONTH=5;BYDAY=2SU",
+                             1809900000u, 1809900000u + 10 * 86400)).c_str(),
+            "D 20270509T0000-20270510T0000 E");   // second Sunday of May 2027
+  CHECK_STR(joined(expandOne("DTSTART;VALUE=DATE:20200229\nRRULE:FREQ=YEARLY", 1835391600u, 1835391600u + 2 * 86400)).c_str(),
+            "D 20280229T0000-20280301T0000 E");   // leap years only
+  CHECK(expandOne("DTSTART;VALUE=DATE:20200229\nRRULE:FREQ=YEARLY", 1803769200u, 1803769200u + 2 * 86400).empty());   // 2027
+
+  // COUNT and UNTIL end it; counted from the start, EXDATEs included
+  CHECK_STR(joined(expandOne("DTSTART;TZID=X:20261109T090000\nRRULE:FREQ=DAILY;COUNT=5\nEXDATE;TZID=X:20261112T090000")).c_str(),
+            "20261113T0900-20261113T0900 E");
+  CHECK(expandOne("DTSTART;TZID=X:20261109T090000\nRRULE:FREQ=DAILY;COUNT=4").empty());
+  CHECK_STR(joined(expandOne("DTSTART;TZID=X:20261109T090000\nRRULE:FREQ=DAILY;UNTIL=20261114T080000Z")).c_str(),
+            "20261113T0900-20261113T0900 E | 20261114T0900-20261114T0900 E");   // 08:00Z is 09:00 here
+  CHECK_STR(joined(expandOne("DTSTART;VALUE=DATE:20261101\nRRULE:FREQ=DAILY;UNTIL=20261113\nEXDATE;VALUE=DATE:20261112,20261111")).c_str(),
+            "D 20261113T0000-20261114T0000 E");
+
+  // Several EXDATEs on one line, UTC ones against a wall-clock series
+  CHECK_STR(joined(expandOne("DTSTART;TZID=X:20261110T100000\nRRULE:FREQ=DAILY\nEXDATE:20261113T090000Z,20261115T090000Z",
+                             WIN, WIN + 3 * 86400)).c_str(),
+            "20261114T1000-20261114T1000 E");
+
+  // A moved instance that is cancelled hides the one it moved; one moved
+  // out of the window takes its instance along
+  std::string ics = "BEGIN:VCALENDAR\n"
+    "BEGIN:VEVENT\nUID:a\nSUMMARY:S\nDTSTART;TZID=X:20261101T170000\nDURATION:PT1H\nRRULE:FREQ=DAILY\nEND:VEVENT\n"
+    "BEGIN:VEVENT\nUID:a\nSUMMARY:S\nRECURRENCE-ID;TZID=X:20261113T170000\nDTSTART;TZID=X:20261113T170000\nSTATUS:CANCELLED\nEND:VEVENT\n"
+    "BEGIN:VEVENT\nUID:a\nSUMMARY:S\nRECURRENCE-ID;TZID=X:20261114T170000\nDTSTART;TZID=X:20261201T170000\nDURATION:PT1H\nEND:VEVENT\n"
+    "BEGIN:VEVENT\nUID:b\nSUMMARY:other\nRECURRENCE-ID;TZID=X:20261115T170000\nDTSTART;TZID=X:20261115T100000\nEND:VEVENT\n"
+    "END:VCALENDAR\n";
+  EvList g2;
+  davIcalParse(ics.c_str(), ics.size(), 3600, WIN, WIN + 3 * 86400, &work, gotEvent, &g2);
+  CHECK_STR(joined(g2.v).c_str(),
+            "20261115T1700-20261115T1800 S | 20261115T1000-20261115T1000 other");   // b is not a's
+
+  // Unsupported parts: the first instance only, never a wrong series
+  CHECK(expandOne("DTSTART;TZID=X:20261101T090000\nRRULE:FREQ=MONTHLY;BYDAY=MO,TU;BYSETPOS=-1").empty());
+  CHECK(expandOne("DTSTART;TZID=X:20261101T090000\nRRULE:FREQ=HOURLY").empty());
+  CHECK_STR(joined(expandOne("DTSTART;TZID=X:20261113T090000\nRRULE:FREQ=YEARLY;BYDAY=20MO")).c_str(),
+            "20261113T0900-20261113T0900 E");
+  // A cancelled series is gone
+  CHECK(expandOne("DTSTART;TZID=X:20261101T090000\nRRULE:FREQ=DAILY\nSTATUS:CANCELLED").empty());
+  // An instance that started before the window and runs into it counts
+  CHECK_STR(joined(expandOne("DTSTART;TZID=X:20261105T230000\nDTEND;TZID=X:20261106T010000\nRRULE:FREQ=WEEKLY",
+                             WIN, WIN + 86400)).c_str(),
+            "20261112T2300-20261113T0100 E");
+  // A daily series from 1990 with no end does not walk 13000 days to get here
+  CHECK(expandOne("DTSTART:19900101T120000Z\nRRULE:FREQ=DAILY").size() == 7);
+
+  CHECK(davWeekday(davDaysFromCivil(2026, 11, 13)) == 4);   // Friday
+  int32_t y; uint32_t m, d;
+  davCivil(davDaysFromCivil(2028, 2, 29), y, m, d);
+  CHECK(y == 2028 && m == 2 && d == 29);
+  davCivil(-1, y, m, d);
+  CHECK(y == 1969 && m == 12 && d == 31);
 }
 
 int main() {
@@ -548,6 +801,7 @@ int main() {
   testMultigetBody();
   testIcal();
   testWhole();
+  testExpand();
   printf("%d checks, %d failed\n", checks, failures);
   return failures ? 1 : 0;
 }

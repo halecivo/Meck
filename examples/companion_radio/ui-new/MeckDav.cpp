@@ -1028,19 +1028,25 @@ void MeckDav::syncAdd(const char*, const char*) {}
 // --- Events sync (CalDAV, read only) ---------------------------------------------
 //
 // One calendar-query per calendar and loop() pass, for local today 00:00 and
-// the next MeckAgenda::WINDOW_DAYS days, with expand: the server turns
-// recurring events into their instances, in UTC. The agenda is replaced only
-// when every calendar answered; otherwise it keeps what it had.
+// the next MeckAgenda::WINDOW_DAYS days. Recurring events come whole and the
+// deck expands them (davIcalParse): the server's expand gets series across a
+// daylight saving change wrong. The query asks for a day more on both sides,
+// since the server's own filter has the same trouble near the edges. The
+// agenda is replaced only when every calendar answered; otherwise it keeps
+// what it had.
 
 static void davEventCb(const DavEvent& e, void* c) { ((MeckDav*)c)->eventAdd(e); }
 
 static void davEventsRespCb(const DavResponse& r, void* c) {
-  if (r.data && r.status != 404) davIcalParse(r.data, r.dataLen, ((MeckDav*)c)->utcOffset(), davEventCb, c);
+  if (r.data && r.status != 404) ((MeckDav*)c)->eventsRead(r.data, r.dataLen);
+}
+
+void MeckDav::eventsRead(const char* data, size_t len) {
+  davIcalParse(data, len, _utcOff, _evWin, _evWin + _evDays * 86400u, _evWork, davEventCb, this);
 }
 
 void MeckDav::eventAdd(const DavEvent& e) {
   uint32_t winEnd = _evWin + _evDays * 86400u;
-  // Without expand a server sends a recurring event's first one: outside, left out
   bool in = e.end > e.start ? (e.start < winEnd && e.end > _evWin) : (e.start >= _evWin && e.start < winEnd);
   if (!in) return;
   if (!_evList || _evN >= EV_BUF) { _evDropped++; return; }
@@ -1067,16 +1073,17 @@ void MeckDav::eventsTick(bool locked) {
   eventsStep();
 }
 
-void MeckDav::eventsStart(int days) {
+void MeckDav::eventsStart(int days, int back) {
   static const uint32_t PSRAM = MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT;
   _evWanted = false;
   _evDays = days;
   _evList = (DavEvent*)heap_caps_calloc(EV_BUF, sizeof(DavEvent), PSRAM);
   _evBody = (char*)heap_caps_malloc(1024, PSRAM);
+  _evWork = (DavIcalWork*)heap_caps_malloc(sizeof(DavIcalWork), PSRAM);
   _ev = EV_CAL;
-  if (!_evList || !_evBody) { eventsFail("Out of memory"); return; }
-  _evWin = MeckAgenda::localMidnight(_now, _utcOff);
-  if (!davCalQueryBody(_evBody, 1024, _evWin, _evWin + _evDays * 86400u)) {
+  if (!_evList || !_evBody || !_evWork) { eventsFail("Out of memory"); return; }
+  _evWin = MeckAgenda::localMidnight(_now, _utcOff) - (uint32_t)back * 86400u;
+  if (!davCalQueryBody(_evBody, 1024, _evWin - 86400u, _evWin + (_evDays + 1) * 86400u)) {
     eventsFail("Request too long");
     return;
   }
@@ -1090,6 +1097,7 @@ void MeckDav::eventsStart(int days) {
 void MeckDav::eventsEnd() {
   if (_evList) { heap_caps_free(_evList); _evList = nullptr; }
   if (_evBody) { heap_caps_free(_evBody); _evBody = nullptr; }
+  if (_evWork) { heap_caps_free(_evWork); _evWork = nullptr; }
   if (_ev != EV_IDLE) endDiscovery();   // the reply buffer and the copied password
   _ev = EV_IDLE;
 }
@@ -1202,9 +1210,13 @@ void MeckDav::cmd(const char* arg) {
     stopPairing();
     syncEnd();
     eventsEnd();
-    // "dav events <days>": a longer window once, to see what the server has
-    int days = arg[6] ? atoi(arg + 7) : MeckAgenda::WINDOW_DAYS;
-    eventsStart(days < MeckAgenda::WINDOW_DAYS ? MeckAgenda::WINDOW_DAYS : days > 400 ? 400 : days);
+    // "dav events <days> [back]": a longer window once, starting `back` days
+    // ago, to see what the server has (the agenda then covers today only
+    // when the window does; the next sync puts it right)
+    int days = MeckAgenda::WINDOW_DAYS, back = 0;
+    if (arg[6]) sscanf(arg + 7, "%d %d", &days, &back);
+    if (back < 0 || back > 2000) back = 0;
+    eventsStart(days < MeckAgenda::WINDOW_DAYS ? MeckAgenda::WINDOW_DAYS : days > 2400 ? 2400 : days, back);
     while (_ev != EV_IDLE) {
       if (WiFi.status() != WL_CONNECTED) { eventsFail("WiFi lost"); break; }
       eventsStep();

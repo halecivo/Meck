@@ -847,8 +847,31 @@ static inline int32_t davDaysFromCivil(int32_t y, uint32_t m, uint32_t d) {
   return era * 146097 + (int32_t)doe - 719468;
 }
 
-// calendar-query for the events that touch [startUtc, endUtc), recurring
-// ones expanded by the server into instances with UTC times (RFC 4791 9.6.5).
+// Civil date of a day number (days since 1970-01-01), civil_from_days
+static inline void davCivil(int64_t days, int32_t& y, uint32_t& m, uint32_t& d) {
+  int64_t z = days + 719468;
+  int64_t era = (z >= 0 ? z : z - 146096) / 146097;
+  uint32_t doe = (uint32_t)(z - era * 146097);
+  uint32_t yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+  uint32_t doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+  uint32_t mp = (5 * doy + 2) / 153;
+  d = doy - (153 * mp + 2) / 5 + 1;
+  m = mp < 10 ? mp + 3 : mp - 9;
+  y = (int32_t)(yoe + era * 400) + (m <= 2);
+}
+
+// Day of the week of a day number, 0 = Monday
+static inline int davWeekday(int64_t days) { return (int)(((days + 3) % 7 + 7) % 7); }
+
+static inline int davDaysInMonth(int32_t y, uint32_t m) {
+  return m == 12 ? 31 : davDaysFromCivil(y, m + 1, 1) - davDaysFromCivil(y, m, 1);
+}
+
+// calendar-query for the events that touch [startUtc, endUtc), as stored:
+// a recurring event comes whole (its rule, exceptions and moved instances),
+// the deck expands it (davIcalParse). Not the server's expand: Radicale 3.9
+// gives the instances of a series that crosses a daylight saving change the
+// offset of its first one, and then misses its EXDATEs and moved instances.
 // Returns the body length, 0 when it does not fit.
 static inline size_t davCalQueryBody(char* out, size_t cap, uint32_t startUtc, uint32_t endUtc) {
   char s[20], e[20];
@@ -857,10 +880,10 @@ static inline size_t davCalQueryBody(char* out, size_t cap, uint32_t startUtc, u
   int l = snprintf(out, cap,
     "<?xml version=\"1.0\" encoding=\"utf-8\"?>"
     "<c:calendar-query xmlns:d=\"DAV:\" xmlns:c=\"urn:ietf:params:xml:ns:caldav\">"
-    "<d:prop><d:getetag/><c:calendar-data><c:expand start=\"%s\" end=\"%s\"/></c:calendar-data></d:prop>"
+    "<d:prop><d:getetag/><c:calendar-data/></d:prop>"
     "<c:filter><c:comp-filter name=\"VCALENDAR\"><c:comp-filter name=\"VEVENT\">"
     "<c:time-range start=\"%s\" end=\"%s\"/></c:comp-filter></c:comp-filter></c:filter>"
-    "</c:calendar-query>", s, e, s, e);
+    "</c:calendar-query>", s, e);
   return (l > 0 && (size_t)l < cap) ? (size_t)l : 0;
 }
 
@@ -872,30 +895,30 @@ struct DavEvent {
 
 typedef void (*DavEventFn)(const DavEvent& e, void* ctx);
 
-// A DTSTART / DTEND value: "20261113T090000Z" (UTC), "20261113T090000"
-// (floating, or with a TZID: taken as the deck's local time; after expand the
-// server sends UTC) or "20261113" (a date). False when it is none of these.
-static inline bool davIcalTime(const char* v, int32_t utcOffsetSec, uint32_t& out, bool& isDate) {
+// A date-time as written: "20261113T090000Z" (UTC), "20261113T090000"
+// (floating, or with a TZID) or "20261113" (a date), as seconds of that
+// wall-clock time counted as if it were UTC ("naive"). With a TZID or
+// floating it is the wall clock of the event's zone, which the deck takes as
+// its own (UTC + its offset): a weekly 17:00 stays 17:00 across a daylight
+// saving change, as on the phone. False when it is none of these.
+static inline bool davIcalNaive(const char* v, int64_t& out, bool& isDate, bool& utc) {
   int n = 0;
   while (isdigit((unsigned char)v[n])) n++;
   if (n != 8) return false;
   int32_t y = (v[0] - '0') * 1000 + (v[1] - '0') * 100 + (v[2] - '0') * 10 + (v[3] - '0');
   uint32_t mo = (uint32_t)((v[4] - '0') * 10 + (v[5] - '0'));
   uint32_t d = (uint32_t)((v[6] - '0') * 10 + (v[7] - '0'));
-  if (y < 1970 || y > 2105 || mo < 1 || mo > 12 || d < 1 || d > 31) return false;
-  int64_t t = (int64_t)davDaysFromCivil(y, mo, d) * 86400;
+  if (y < 1900 || y > 2105 || mo < 1 || mo > 12 || d < 1 || d > 31) return false;
+  out = (int64_t)davDaysFromCivil(y, mo, d) * 86400;
   isDate = v[8] != 'T';
-  bool utc = false;
+  utc = false;
   if (!isDate) {
     const char* hp = v + 9;
     for (int k = 0; k < 6; k++) if (!isdigit((unsigned char)hp[k])) return false;
-    t += ((hp[0] - '0') * 10 + (hp[1] - '0')) * 3600 + ((hp[2] - '0') * 10 + (hp[3] - '0')) * 60 +
-         (hp[4] - '0') * 10 + (hp[5] - '0');
+    out += ((hp[0] - '0') * 10 + (hp[1] - '0')) * 3600 + ((hp[2] - '0') * 10 + (hp[3] - '0')) * 60 +
+           (hp[4] - '0') * 10 + (hp[5] - '0');
     utc = hp[6] == 'Z' || hp[6] == 'z';
   }
-  if (!utc) t -= utcOffsetSec;
-  if (t < 0) t = 0;
-  out = (uint32_t)t;
   return true;
 }
 
@@ -923,18 +946,318 @@ static inline long davIcalDuration(const char* v) {
   return total;
 }
 
-// Reads the VEVENTs in a calendar-data text and calls fn for each one that has
-// a start; cancelled ones are skipped, properties of nested components (VALARM)
-// ignored. A missing end is the start (a date: the next day). Returns the
-// number of events handed to fn.
-static inline int davIcalParse(const char* data, size_t len, int32_t utcOffsetSec, DavEventFn fn, void* ctx) {
-  if (!data) return 0;
-  DavRawText t(data, len);
-  char line[200];
+// One VEVENT of a calendar-data text, before expansion
+struct DavIcalComp {
+  int64_t start, end, recur;   // naive (davIcalNaive)
+  long dur;                    // DURATION, -1 none
+  uint32_t uid;                // hash of UID
+  bool hasStart, hasEnd, allDay, utc, endUtc, hasRecur, recurUtc, cancelled;
+  uint8_t nex;
+  int64_t ex[24];              // EXDATEs, naive
+  bool exUtc[24];
+  char rrule[160];
+  char title[48];
+};
+
+// Room for the VEVENTs of one calendar object (a series and its moved
+// instances); a caller keeps it off the stack (PSRAM on the deck)
+static const int DAV_ICAL_MAX_COMPS = 40;
+struct DavIcalWork {
+  DavIcalComp c[DAV_ICAL_MAX_COMPS];
+};
+
+static inline uint32_t davFnv(const char* s) {
+  uint32_t h = 2166136261u;
+  for (; *s; s++) { h ^= (uint8_t)*s; h *= 16777619u; }
+  return h;
+}
+
+// The parts of an RRULE the deck expands
+struct DavRrule {
+  enum Freq : uint8_t { NONE, DAILY, WEEKLY, MONTHLY, YEARLY };
+  Freq freq = NONE;
+  int interval = 1;
+  long count = -1;             // -1: no COUNT
+  int64_t until = INT64_MAX;   // naive, in the series' frame
+  int nday = 0;
+  int8_t dayWd[14], dayN[14];  // BYDAY: weekday (0 = MO) and ordinal (0: every)
+  int nmday = 0;
+  int8_t mday[31];             // BYMONTHDAY, negative from the end
+  uint16_t months = 0;         // BYMONTH, bit m (1..12)
+  bool unsupported = false;    // BYSETPOS, BYWEEKNO, BYYEARDAY, HOURLY...: first one only
+};
+
+// A time in the frame of a series: UTC and wall clock differ by the offset
+static inline int64_t davToFrame(int64_t t, bool tUtc, bool frameUtc, int32_t off) {
+  if (tUtc == frameUtc) return t;
+  return tUtc ? t + off : t - off;
+}
+
+static inline void davParseRrule(const char* s, bool frameUtc, bool startIsDate, int32_t off, DavRrule& r) {
+  char buf[160];
+  davCopy(buf, sizeof(buf), s);
+  char* save = nullptr;
+  for (char* tok = strtok_r(buf, ";", &save); tok; tok = strtok_r(nullptr, ";", &save)) {
+    char* eq = strchr(tok, '=');
+    if (!eq) continue;
+    *eq = 0;
+    const char* k = tok;
+    char* v = eq + 1;
+    if (!strcasecmp(k, "FREQ")) {
+      r.freq = !strcasecmp(v, "DAILY") ? DavRrule::DAILY : !strcasecmp(v, "WEEKLY") ? DavRrule::WEEKLY
+             : !strcasecmp(v, "MONTHLY") ? DavRrule::MONTHLY : !strcasecmp(v, "YEARLY") ? DavRrule::YEARLY
+             : DavRrule::NONE;
+      if (r.freq == DavRrule::NONE) r.unsupported = true;
+    } else if (!strcasecmp(k, "INTERVAL")) {
+      r.interval = atoi(v);
+      if (r.interval < 1) r.interval = 1;
+    } else if (!strcasecmp(k, "COUNT")) {
+      r.count = atol(v);
+    } else if (!strcasecmp(k, "UNTIL")) {
+      int64_t u; bool isDate, uUtc;
+      if (davIcalNaive(v, u, isDate, uUtc)) {
+        if (isDate) u += startIsDate ? 0 : 86399;   // the whole of that day
+        r.until = davToFrame(u, uUtc, frameUtc, off);
+      }
+    } else if (!strcasecmp(k, "BYDAY")) {
+      static const char* const wd[] = { "MO", "TU", "WE", "TH", "FR", "SA", "SU" };
+      for (char* d = v; *d && r.nday < 14;) {
+        char* end = strchr(d, ',');
+        if (end) *end = 0;
+        int n = atoi(d);   // "+1", "-1", "2" or nothing
+        const char* name = d;
+        while (*name == '+' || *name == '-' || isdigit((unsigned char)*name)) name++;
+        for (int i = 0; i < 7; i++)
+          if (!strncasecmp(name, wd[i], 2)) { r.dayWd[r.nday] = (int8_t)i; r.dayN[r.nday] = (int8_t)n; r.nday++; }
+        if (!end) break;
+        d = end + 1;
+      }
+    } else if (!strcasecmp(k, "BYMONTHDAY")) {
+      for (char* p = v; p && r.nmday < 31;) {
+        r.mday[r.nmday++] = (int8_t)atoi(p);
+        p = strchr(p, ',');
+        if (p) p++;
+      }
+    } else if (!strcasecmp(k, "BYMONTH")) {
+      for (char* p = v; p;) {
+        int m = atoi(p);
+        if (m >= 1 && m <= 12) r.months |= (uint16_t)(1u << m);
+        p = strchr(p, ',');
+        if (p) p++;
+      }
+    } else if (!strcasecmp(k, "BYSETPOS") || !strcasecmp(k, "BYWEEKNO") || !strcasecmp(k, "BYYEARDAY") ||
+               !strcasecmp(k, "BYHOUR") || !strcasecmp(k, "BYMINUTE") || !strcasecmp(k, "BYSECOND")) {
+      r.unsupported = true;
+    }
+  }
+}
+
+// The days of month y/m a MONTHLY (or YEARLY, per month) rule gives, sorted;
+// returns how many. With neither BYMONTHDAY nor BYDAY: the start's day.
+static inline int davMonthDays(const DavRrule& r, int32_t y, uint32_t m, uint32_t startDay, uint8_t* out) {
+  int dim = davDaysInMonth(y, m);
+  bool hit[32] = {};
+  int64_t first = davDaysFromCivil(y, m, 1);
+  int fwd = davWeekday(first);
+  if (r.nmday) {
+    for (int i = 0; i < r.nmday; i++) {
+      int d = r.mday[i] > 0 ? r.mday[i] : dim + r.mday[i] + 1;
+      if (d < 1 || d > dim) continue;
+      bool ok = r.nday == 0;
+      for (int k = 0; k < r.nday && !ok; k++) ok = davWeekday(first + d - 1) == r.dayWd[k];
+      if (ok) hit[d] = true;
+    }
+  } else if (r.nday) {
+    for (int k = 0; k < r.nday; k++) {
+      int d1 = 1 + ((r.dayWd[k] - fwd) + 7) % 7;   // first such weekday
+      if (r.dayN[k] == 0) {
+        for (int d = d1; d <= dim; d += 7) hit[d] = true;
+      } else if (r.dayN[k] > 0) {
+        int d = d1 + (r.dayN[k] - 1) * 7;
+        if (d <= dim) hit[d] = true;
+      } else {
+        int last = d1 + ((dim - d1) / 7) * 7;
+        int d = last + (r.dayN[k] + 1) * 7;
+        if (d >= 1) hit[d] = true;
+      }
+    }
+  } else if ((int)startDay <= dim) {
+    hit[startDay] = true;
+  }
+  int n = 0;
+  for (int d = 1; d <= dim; d++) if (hit[d]) out[n++] = (uint8_t)d;
+  return n;
+}
+
+// Hands one instance (naive start in the series' frame) to fn when it
+// touches [winStart, winEnd) (UTC; winEnd 0: no window)
+static inline bool davIcalEmit(const DavIcalComp& c, int64_t naive, long dur, int32_t off,
+                               uint32_t winStart, uint32_t winEnd, DavEventFn fn, void* ctx) {
+  int64_t s = c.utc ? naive : naive - off;
+  int64_t e = s + dur;
+  if (s < 0 || e > 0xFFFFFFFFLL) return false;
+  if (winEnd) {
+    bool in = e > s ? (s < (int64_t)winEnd && e > (int64_t)winStart) : (s >= (int64_t)winStart && s < (int64_t)winEnd);
+    if (!in) return false;
+  }
   DavEvent ev;
-  bool in = false, hasStart = false, hasEnd = false, cancelled = false;
-  int nested = 0, events = 0;
-  long dur = -1;
+  memset(&ev, 0, sizeof(ev));
+  ev.start = (uint32_t)s;
+  ev.end = (uint32_t)e;
+  ev.allDay = c.allDay;
+  davCopy(ev.title, sizeof(ev.title), c.title);
+  if (fn) fn(ev, ctx);
+  return true;
+}
+
+static inline long davIcalCompDur(const DavIcalComp& c, int32_t off) {
+  long dur;
+  if (c.hasEnd) dur = (long)(davToFrame(c.end, c.endUtc, c.utc, off) - c.start);
+  else if (c.dur >= 0) dur = c.dur;
+  else dur = c.allDay ? 86400 : 0;
+  return dur < 0 ? 0 : dur;
+}
+
+// The instances of series `m` in the window: its rule from its start, less its
+// EXDATEs and the instances moved elsewhere (RECURRENCE-ID of the same UID)
+static inline int davIcalExpand(const DavIcalWork& w, int n, int mi, int32_t off,
+                                uint32_t winStart, uint32_t winEnd, DavEventFn fn, void* ctx) {
+  const DavIcalComp& m = w.c[mi];
+  const long dur = davIcalCompDur(m, off);
+  DavRrule r;
+  davParseRrule(m.rrule, m.utc, m.allDay, off, r);
+  if (r.unsupported || r.freq == DavRrule::NONE || !winEnd)
+    return davIcalEmit(m, m.start, dur, off, winStart, winEnd, fn, ctx) ? 1 : 0;
+
+  // The window in the series' frame; an instance ending in it counts too
+  const int64_t wS = davToFrame(winStart, true, m.utc, off) - dur;
+  const int64_t wE = davToFrame(winEnd, true, m.utc, off);
+  const int64_t day0 = (m.start >= 0 ? m.start : m.start - 86399) / 86400;
+  const int64_t tod = m.start - day0 * 86400;
+  int32_t y0; uint32_t m0, d0;
+  davCivil(day0, y0, m0, d0);
+
+  int emitted = 0;
+  long seen = 0;
+  bool stop = false;
+  // One candidate day of the rule, in order; false: the series ends here
+  auto take = [&](int64_t day) -> bool {
+    int64_t t = day * 86400 + tod;
+    if (t < m.start) return true;
+    if (r.count >= 0 && seen >= r.count) return false;
+    if (t > r.until || t >= wE) return false;
+    seen++;
+    if (t < wS) return true;
+    for (int i = 0; i < m.nex; i++) {
+      int64_t x = davToFrame(m.ex[i], m.exUtc[i], m.utc, off);
+      if (m.allDay ? x / 86400 == day : x == t) return true;
+    }
+    for (int i = 0; i < n; i++) {
+      const DavIcalComp& o = w.c[i];
+      if (!o.hasRecur || o.uid != m.uid) continue;
+      int64_t x = davToFrame(o.recur, o.recurUtc, m.utc, off);
+      if (m.allDay ? x / 86400 == day : x == t) return true;
+    }
+    if (davIcalEmit(m, t, dur, off, winStart, winEnd, fn, ctx)) emitted++;
+    return true;
+  };
+
+  // Without COUNT the early periods are of no interest: start a little
+  // before the window (the period stays aligned to the interval)
+  const int64_t wDay = wS / 86400;
+  if (r.freq == DavRrule::DAILY || r.freq == DavRrule::WEEKLY) {
+    const int64_t step = (r.freq == DavRrule::DAILY ? 1 : 7) * (int64_t)r.interval;
+    int64_t first = r.freq == DavRrule::DAILY ? day0 : day0 - davWeekday(day0);
+    if (r.count < 0 && wDay - 7 > first) first += ((wDay - 7 - first) / step) * step;
+    for (int64_t p = first, guard = 0; !stop && guard < 2000; p += step, guard++) {
+      if (r.freq == DavRrule::DAILY) {
+        int32_t y; uint32_t mo, d;
+        davCivil(p, y, mo, d);
+        bool ok = !r.months || (r.months & (1u << mo));
+        if (ok && r.nmday) {
+          int dim = davDaysInMonth(y, mo);
+          ok = false;
+          for (int i = 0; i < r.nmday && !ok; i++) ok = (r.mday[i] > 0 ? r.mday[i] : dim + r.mday[i] + 1) == (int)d;
+        }
+        if (ok && r.nday) {
+          ok = false;
+          for (int k = 0; k < r.nday && !ok; k++) ok = r.dayWd[k] == davWeekday(p);
+        }
+        if (ok) stop = !take(p);
+      } else {
+        for (int wd = 0; wd < 7 && !stop; wd++) {
+          bool ok = false;
+          if (!r.nday) ok = wd == davWeekday(day0);
+          for (int k = 0; k < r.nday && !ok; k++) ok = r.dayWd[k] == wd;
+          if (!ok) continue;
+          if (r.months) {
+            int32_t y; uint32_t mo, d;
+            davCivil(p + wd, y, mo, d);
+            if (!(r.months & (1u << mo))) continue;
+          }
+          stop = !take(p + wd);
+        }
+      }
+    }
+  } else if (r.freq == DavRrule::MONTHLY) {
+    int64_t idx = (int64_t)y0 * 12 + (m0 - 1);
+    if (r.count < 0) {
+      int32_t wy; uint32_t wm, wd;
+      davCivil(wDay, wy, wm, wd);
+      int64_t widx = (int64_t)wy * 12 + (wm - 1) - 2;
+      if (widx > idx) idx += ((widx - idx) / r.interval) * r.interval;
+    }
+    uint8_t days[31];
+    for (int guard = 0; !stop && guard < 2000; idx += r.interval, guard++) {
+      int32_t y = (int32_t)(idx / 12);
+      uint32_t mo = (uint32_t)(idx % 12) + 1;
+      if (r.months && !(r.months & (1u << mo))) continue;
+      int k = davMonthDays(r, y, mo, d0, days);
+      for (int i = 0; i < k && !stop; i++) stop = !take(davDaysFromCivil(y, mo, days[i]));
+      if (davDaysFromCivil(y, mo, 1) * 86400LL > wE) break;
+    }
+  } else {   // YEARLY
+    if (r.nday && !r.months) {   // "the 20th Monday of the year": not here
+      return davIcalEmit(m, m.start, dur, off, winStart, winEnd, fn, ctx) ? 1 : 0;
+    }
+    int32_t y = y0;
+    if (r.count < 0) {
+      int32_t wy; uint32_t wm, wd;
+      davCivil(wDay, wy, wm, wd);
+      if (wy - 1 > y) y += ((wy - 1 - y) / r.interval) * r.interval;
+    }
+    uint8_t days[31];
+    for (int guard = 0; !stop && guard < 500; y += r.interval, guard++) {
+      for (uint32_t mo = 1; mo <= 12 && !stop; mo++) {
+        if (r.months ? !(r.months & (1u << mo)) : mo != m0) continue;
+        int k = davMonthDays(r, y, mo, d0, days);
+        for (int i = 0; i < k && !stop; i++) stop = !take(davDaysFromCivil(y, mo, days[i]));
+      }
+      if (davDaysFromCivil(y, 1, 1) * 86400LL > wE) break;
+    }
+  }
+  return emitted;
+}
+
+// Reads the VEVENTs in a calendar-data text and calls fn for every instance
+// that touches [winStart, winEnd) (UTC): a recurring event is expanded on its
+// rule (DAILY / WEEKLY / MONTHLY / YEARLY with INTERVAL, COUNT, UNTIL, BYDAY
+// with ordinals, BYMONTHDAY, BYMONTH; anything else: its first one only),
+// less its EXDATEs; a moved instance (RECURRENCE-ID) replaces the one it
+// moves. Cancelled ones are left out, properties of nested components
+// (VALARM) ignored. A missing end is the start (a date: the next day).
+// Times with a TZID or floating are wall clock, taken as the deck's local
+// time (UTC + utcOffsetSec). winEnd 0: no window, a series gives its first
+// instance only. `w` holds the components (DAV_ICAL_MAX_COMPS; more are
+// left out). Returns the number of events handed to fn.
+static inline int davIcalParse(const char* data, size_t len, int32_t utcOffsetSec, uint32_t winStart,
+                               uint32_t winEnd, DavIcalWork* w, DavEventFn fn, void* ctx) {
+  if (!data || !w) return 0;
+  DavRawText t(data, len);
+  char line[512];
+  int n = 0, nested = 0;
+  bool in = false;
+  DavIcalComp* c = nullptr;
   while (davVcardLine(t, line, sizeof(line))) {
     char* colon = nullptr;
     bool quoted = false;
@@ -953,39 +1276,57 @@ static inline int davIcalParse(const char* data, size_t len, int32_t utcOffsetSe
       if (in) nested++;
       else if (!strncasecmp(value, "VEVENT", 6)) {
         in = true;
-        memset(&ev, 0, sizeof(ev));
-        hasStart = hasEnd = cancelled = false;
         nested = 0;
-        dur = -1;
+        c = n < DAV_ICAL_MAX_COMPS ? &w->c[n] : nullptr;
+        if (c) { memset(c, 0, sizeof(*c)); c->dur = -1; }
       }
     } else if (!in) {
       continue;
     } else if (!strcasecmp(name, "END")) {
       if (nested) { nested--; continue; }
       in = false;
-      if (!hasStart || cancelled) continue;
-      if (!hasEnd) ev.end = dur >= 0 ? ev.start + (uint32_t)dur : ev.start + (ev.allDay ? 86400 : 0);
-      if (ev.end < ev.start) ev.end = ev.start;
-      events++;
-      if (fn) fn(ev, ctx);
-    } else if (nested) {
+      if (c && c->hasStart) n++;
+      c = nullptr;
+    } else if (nested || !c) {
       continue;
     } else if (!strcasecmp(name, "DTSTART")) {
-      bool isDate = false;
-      if (davIcalTime(value, utcOffsetSec, ev.start, isDate)) { hasStart = true; ev.allDay = isDate; }
+      bool isDate;
+      if (davIcalNaive(value, c->start, isDate, c->utc)) { c->hasStart = true; c->allDay = isDate; }
     } else if (!strcasecmp(name, "DTEND")) {
-      bool isDate = false;
-      if (davIcalTime(value, utcOffsetSec, ev.end, isDate)) hasEnd = true;
+      bool isDate;
+      if (davIcalNaive(value, c->end, isDate, c->endUtc)) c->hasEnd = true;
     } else if (!strcasecmp(name, "DURATION")) {
-      dur = davIcalDuration(value);
+      c->dur = davIcalDuration(value);
+    } else if (!strcasecmp(name, "RECURRENCE-ID")) {
+      bool isDate;
+      if (davIcalNaive(value, c->recur, isDate, c->recurUtc)) c->hasRecur = true;
+    } else if (!strcasecmp(name, "RRULE")) {
+      davCopy(c->rrule, sizeof(c->rrule), value);
+    } else if (!strcasecmp(name, "EXDATE")) {
+      for (char* p = value; p && *p && c->nex < 24;) {
+        bool isDate;
+        if (davIcalNaive(p, c->ex[c->nex], isDate, c->exUtc[c->nex])) c->nex++;
+        p = strchr(p, ',');
+        if (p) p++;
+      }
+    } else if (!strcasecmp(name, "UID")) {
+      c->uid = davFnv(value);
     } else if (!strcasecmp(name, "STATUS")) {
-      cancelled = !strncasecmp(value, "CANCELLED", 9);
+      c->cancelled = !strncasecmp(value, "CANCELLED", 9);
     } else if (!strcasecmp(name, "SUMMARY")) {
       davVcardValue(value, false);
       davTrimSpaces(value);
-      davCopy(ev.title, sizeof(ev.title), value);
-      davTrimUtf8(ev.title);
+      davCopy(c->title, sizeof(c->title), value);
+      davTrimUtf8(c->title);
     }
+  }
+
+  int events = 0;
+  for (int i = 0; i < n; i++) {
+    const DavIcalComp& e = w->c[i];
+    if (e.cancelled) continue;   // a cancelled moved instance still hides the one it moved
+    if (e.rrule[0] && !e.hasRecur) events += davIcalExpand(*w, n, i, utcOffsetSec, winStart, winEnd, fn, ctx);
+    else if (davIcalEmit(e, e.start, davIcalCompDur(e, utcOffsetSec), utcOffsetSec, winStart, winEnd, fn, ctx)) events++;
   }
   return events;
 }
