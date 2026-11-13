@@ -752,7 +752,12 @@ bool ModemManager::doHangup() {
 
   // AT+CHUP is the 3GPP standard hangup for A76xx family (per TinyGSM)
   if (sendAT("AT+CHUP", "OK", 5000)) {
-    if (wasRinging) {
+    // A NO CARRIER read while waiting for the OK has already ended the call,
+    // logged it and cleared the number: a second event would log it again
+    // as "Unknown"
+    if (!isCallActive()) {
+      MESH_DEBUG_PRINTLN("[Modem] Call already ended during AT+CHUP");
+    } else if (wasRinging) {
       queueCallEvent(CallEventType::MISSED, _callPhone);
     } else {
       queueCallEvent(CallEventType::ENDED, _callPhone, duration);
