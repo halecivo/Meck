@@ -27,6 +27,7 @@
 #include "ApnDatabase.h"
 #include "ModemBundledSounds.h"
 #include "MeckDataUse.h"
+#include "MeckCellDb.h"
 
 // ---------------------------------------------------------------------------
 // Modem pins (from variant.h, always defined for reference)
@@ -58,6 +59,7 @@
 // one whose URC got lost, e.g. inside an AT response
 #define MODEM_SMS_SAFETY_POLL_MS   (10UL * 60 * 1000)
 #define MODEM_CSQ_POLL_MS          30000   // only while the screen is unlocked
+#define MODEM_CELL_POLL_MS        300000   // serving cell, unlocked; locked only when asked
 
 // UART sleep (AT+CSCLK=1): with DTR high the A7682E sleeps between paging
 // slots (about 2 mA instead of 12 mA in LTE idle, per the hardware design
@@ -223,6 +225,12 @@ public:
            _state == ModemState::RINGING_IN;
   }
   const char* getOperator() const { return _operator; }
+  // Serving cell (AT+CPSI?), for a position from the cell database
+  // (docs/position.md). requestCellInfo() asks for a fresh read on the
+  // modem task; cellInfo() gives the last one and when it was read (millis),
+  // false while there is none or the modem had no service.
+  void requestCellInfo() { _cellDue = true; }
+  bool cellInfo(CellId& id, uint32_t& atMs);
   const char* getCallPhone() const { return _callPhone; }
   uint32_t getCallStartTime() const { return _callStartTime; }
 
@@ -358,6 +366,11 @@ private:
   uint8_t _battLowCount = 0;
   uint16_t _testMv = 0;
   volatile int _csq = 99;    // 99 = unknown
+  volatile bool _cellDue = false;
+  CellId _cell = {};          // guarded by _cellMux (two tasks)
+  bool _cellValid = false;
+  uint32_t _cellAtMs = 0;
+  portMUX_TYPE _cellMux = portMUX_INITIALIZER_UNLOCKED;
   volatile bool _paused = false;  // Suppresses AT polling when true
   volatile bool _locked = false;  // Screen locked (set by main loop)
   volatile bool _smsPending = false;  // +CMTI or an RI pulse: read SMS soon
@@ -427,6 +440,7 @@ private:
   static void riIsr();            // RI falling edge
   bool waitResponse(const char* expect, uint32_t timeout_ms, char* buf = nullptr, size_t bufLen = 0);
   void pollCSQ();
+  void pollCell();
   void pollIncomingSMS();
   bool doSendSMS(const char* phone, const char* body);
 

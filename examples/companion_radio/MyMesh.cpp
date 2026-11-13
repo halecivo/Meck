@@ -4060,6 +4060,10 @@ void MyMesh::checkCLIRescueCmd() {
       extern void meckWeatherCmd(const char* arg);
       meckWeatherCmd(cli_command[7] ? &cli_command[8] : "");
 #endif
+    } else if (strcmp(cli_command, "pos") == 0 || memcmp(cli_command, "pos ", 4) == 0) {
+      // Debug: position sources and accuracy classes (docs/position.md)
+      extern void meckPositionCmd(const char* arg);
+      meckPositionCmd(cli_command[3] ? &cli_command[4] : "");
     } else if (memcmp(cli_command, "uigo ", 5) == 0) {
       // Debug: open a screen directly, e.g. "uigo rxlog", "uigo pathed 3"
       extern void meckDebugGoto(const char* arg);

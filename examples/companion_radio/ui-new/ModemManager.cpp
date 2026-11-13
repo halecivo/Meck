@@ -1446,6 +1446,16 @@ restart:
       lastCSQPoll = millis();
     }
 
+    // Serving cell: every few minutes while unlocked, otherwise only when an
+    // app asks (each read wakes the modem from UART sleep)
+    static unsigned long lastCellPoll = 0;
+    if (!_paused && !isCallActive() &&
+        (_cellDue || (!_locked && (lastCellPoll == 0 || millis() - lastCellPoll > MODEM_CELL_POLL_MS)))) {
+      _cellDue = false;
+      pollCell();
+      lastCellPoll = millis();
+    }
+
 #ifdef MODEM_DATA
     // ================================================================
     // Step 5: Mobile data -- bring up, watch and take down the link
@@ -1829,6 +1839,26 @@ void ModemManager::pollCSQ() {
       }
     }
   }
+}
+
+void ModemManager::pollCell() {
+  CellId id;
+  bool ok = sendAT("AT+CPSI?", "OK", 2000) && cellParseCpsi(_atBuf, id);
+  portENTER_CRITICAL(&_cellMux);
+  if (ok) _cell = id;
+  _cellValid = ok;
+  _cellAtMs = millis();
+  portEXIT_CRITICAL(&_cellMux);
+  if (ok) MESH_DEBUG_PRINTLN("[Modem] cell %u-%u area 0x%X cell %u", id.mcc, id.mnc, (unsigned)id.area, (unsigned)id.cell);
+}
+
+bool ModemManager::cellInfo(CellId& id, uint32_t& atMs) {
+  portENTER_CRITICAL(&_cellMux);
+  bool ok = _cellValid;
+  id = _cell;
+  atMs = _cellAtMs;
+  portEXIT_CRITICAL(&_cellMux);
+  return ok;
 }
 
 void ModemManager::pollIncomingSMS() {
