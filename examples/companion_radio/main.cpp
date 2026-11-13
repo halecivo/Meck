@@ -4568,14 +4568,26 @@ bool meckAutoSleepPossible() {
 #endif
 }
 
-// The blocker to tell the user about. With UART sleep the modem is not named:
-// idle it lets the deck sleep, and the moments it works cost next to nothing.
+// The blocker to tell the user about: the mode, not what holds the deck up
+// for a moment. With UART sleep the modem is not named: idle it lets the deck
+// sleep, and the moments it works cost next to nothing. A sync window and
+// recent audio end by themselves within seconds, so they are not named
+// either. WiFi the deck can sleep with is not named when something after it
+// (USB power) keeps it awake: that one is.
 int meckSleepBlockerShown() {
 #if defined(HAS_4G_MODEM) && defined(MODEM_UART_SLEEP)
-  return meckLockSleepBlockerEx(true);
+  int b = meckLockSleepBlockerEx(true);
 #else
-  return meckLockSleepBlocker();
+  int b = meckLockSleepBlocker();
 #endif
+#ifdef MECK_AUTO_LIGHT_SLEEP
+  if (b == MECK_SLEEP_WIFI && WiFi.getMode() == WIFI_MODE_STA) {
+    int after = meckLockSleepBlockerEx(true, false);
+    if (after != MECK_SLEEP_OK && after != MECK_SLEEP_PHONE) b = after;
+  }
+#endif
+  if (b == MECK_SLEEP_SYNC || b == MECK_SLEEP_AUDIO) b = MECK_SLEEP_OK;
+  return b;
 }
 
 // Whether the blocker, a connected phone or WiFi on, still lets the locked
