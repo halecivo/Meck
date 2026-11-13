@@ -13,8 +13,8 @@ widget interface in `ui-new/ui2/Ui2LockWidgets.h`.
 |---|---|---|
 | Top line | y 6–22 | lock icon and the node name (bold 10), centred |
 | Radio column | right edge, from y 6, 16 px per icon | radios that stay on while the deck sleeps, top down: BLE (phone connected over BLE), WiFi, GPS, 4G, MeshCore (always). Off = not drawn |
-| Middle block | centred in the space the widgets leave | clock (Montserrat 40) with the weather group on its left, date, notifications |
-| Widgets | stacked upwards from the status line, 8 px apart | agenda, departures, ... |
+| Top group | centred between the node line and the widgets (or the status line), at least 8 px from both | clock (Montserrat 40) with the weather group on its left, date, notifications 10 px under the date |
+| Widgets | stacked upwards, 8 px apart, ending 6 px above the status line | agenda, departures, ... |
 | Status line | y 298–316 | moon / bolt / warn icon, power-saving state, battery estimate, battery icon and % |
 
 - **Clock and weather**: without weather the clock is centred alone. With
@@ -27,8 +27,10 @@ widget interface in `ui-new/ui2/Ui2LockWidgets.h`.
 - **Status line**: "Power saving" when the deck sleeps (what stays on is the
   radio column's job), otherwise what keeps it awake. The estimate is left
   out when it does not fit next to a long status.
-- **Widgets**: when they do not all fit under the middle block, the widget
-  with the lowest priority is left out, then the next, until the rest fit.
+- **Widgets**: nothing is resized; fewer widgets only move the top group
+  down into the middle. When the top group cannot keep its 8 px on both
+  sides, the widget with the lowest priority is left out, then the next,
+  until the rest fit.
 
 ## Adding a widget
 

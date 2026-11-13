@@ -2278,17 +2278,19 @@ public:
 private:
   // Layout of the UI v2 lock screen (docs/lock-screen.md), 240 x 320:
   //   y   6-22   lock + node name; radio column at the right edge from y 6
-  //   middle     clock (+ weather group), date, notifications: centred in
-  //              what the widgets leave
-  //   above the status line: widgets, stacked upwards
+  //   top group  clock (+ weather group), date, notifications: centred in
+  //              the height the widgets leave, at least 8 px from both
+  //   widgets    stacked upwards, 8 px apart, ending 6 px above the status line
   //   y 298-320  status line: power saving, estimate, battery
   static constexpr int16_t TOP_Y = 6, TOP_H = 16;
   static constexpr int16_t RADIO_X = ui2::SCREEN_W - 6 - 12;
   static constexpr int16_t STATUS_Y = 298, STATUS_H = 18;   // + 4 px below
   static constexpr int16_t CLOCK_H = 44;                    // Montserrat 40 line
   static constexpr int16_t DATE_GAP = 2, DATE_H = 15;
-  static constexpr int16_t NOTIF_GAP = 12, NOTIF_H = 24;
-  static constexpr int16_t WIDGET_GAP = 8;
+  static constexpr int16_t NOTIF_GAP = 10, NOTIF_H = 24;
+  static constexpr int16_t WIDGET_GAP = 8;     // between widgets
+  static constexpr int16_t STACK_GAP = 6;      // widgets to the status line
+  static constexpr int16_t GROUP_MIN_GAP = 8;  // top group to its neighbours
 
   void snapBattery(uint32_t now, bool usb) {
     if (now / 60 == _snapMinute && usb == _snapUsb) return;
@@ -2522,33 +2524,38 @@ public:
     drawRadioColumn(c);
     drawStatusLine(c);
 
-    // Middle block: clock (+ weather), date, notifications
+    // Top group: clock (+ weather), date, notifications
     Notif nf[3];
     const int nk = collectNotifs(nf);
     const int16_t heroH = heroHeight();
     const int16_t midH = heroH + (dateBuf[0] ? DATE_GAP + DATE_H : 0) + (nk ? NOTIF_GAP + NOTIF_H : 0);
-    const int16_t midTop = TOP_Y + TOP_H + WIDGET_GAP;
+    const int16_t areaTop = TOP_Y + TOP_H;
 
-    // Widgets stack upwards from the status line; while they do not fit
-    // under the middle block, the lowest priority one is left out
+    // Widgets stack upwards from the status line. The top group keeps at
+    // least 8 px above and below it; while it cannot, the lowest priority
+    // widget is left out. Nothing is resized.
     int16_t wh[UI2_LOCK_MAX_WIDGETS] = {};
     const int16_t ww = SCREEN_W - 2 * PAD;
-    int16_t stackH = 0;
+    int16_t stackH = 0;     // widgets and the gaps between them
     for (int i = 0; i < UI2_LOCK_MAX_WIDGETS && _widgets[i]; i++) {
       wh[i] = _widgets[i]->height(ww, now);
       if (wh[i] < 0) wh[i] = 0;
-      if (wh[i]) stackH += wh[i] + WIDGET_GAP;
+      if (wh[i]) stackH += (stackH ? WIDGET_GAP : 0) + wh[i];
     }
-    const int16_t room = STATUS_Y - midTop - midH - WIDGET_GAP;
+    const int16_t stackBottom = STATUS_Y - STACK_GAP;
+    const int16_t room = stackBottom - areaTop - 2 * GROUP_MIN_GAP - midH;
     while (stackH > room) {
       int drop = -1;
       for (int i = 0; i < UI2_LOCK_MAX_WIDGETS && _widgets[i]; i++)
         if (wh[i] && (drop < 0 || _widgets[i]->priority() < _widgets[drop]->priority())) drop = i;
       if (drop < 0) break;
-      stackH -= wh[drop] + WIDGET_GAP;
       wh[drop] = 0;
+      stackH = 0;
+      for (int i = 0; i < UI2_LOCK_MAX_WIDGETS && _widgets[i]; i++)
+        if (wh[i]) stackH += (stackH ? WIDGET_GAP : 0) + wh[i];
     }
-    int16_t y = STATUS_Y - stackH;
+    int16_t y = stackBottom - stackH;
+    const int16_t areaBottom = stackH ? y : STATUS_Y;
     uint32_t wake = 0;
     for (int i = 0; i < UI2_LOCK_MAX_WIDGETS && _widgets[i]; i++) {
       if (!wh[i]) continue;
@@ -2558,11 +2565,10 @@ public:
       if (t > now && (!wake || t < wake)) wake = t;
     }
 
-    // The middle block centred in what is left between the top line and
-    // the widgets (or the status line)
-    const int16_t midBottom = STATUS_Y - (stackH ? stackH : WIDGET_GAP);
-    int16_t my = midTop + (midBottom - midTop - midH) / 2;
-    if (my < midTop) my = midTop;
+    // The top group centred between the node line and the widgets (or the
+    // status line): fewer widgets only split the free space differently
+    int16_t my = areaTop + (areaBottom - areaTop - midH) / 2;
+    if (my < areaTop + GROUP_MIN_GAP) my = areaTop + GROUP_MIN_GAP;
     drawHero(c, my, heroH, timeBuf);
     my += heroH;
     if (dateBuf[0]) {
