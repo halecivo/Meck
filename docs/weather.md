@@ -25,9 +25,11 @@ and no account. One HTTPS request brings
 A reply is about 2 kB. Times are asked as Unix seconds (UTC), so the deck's
 own UTC offset turns them into local time.
 
-The position is the GPS fix, else the advert position, rounded to 1/100 of a
-degree (about a kilometre): that is all a forecast needs and all Open-Meteo
-gets. Without a position nothing is requested and nothing is shown.
+The position is the best one of class `POS_AREA` (50 km, `docs/position.md`):
+a GPS fix, else the serving cell from the offline cell database, else the
+advert position. It is rounded to 1/100 of a degree (about a kilometre): that
+is all a forecast needs and all Open-Meteo gets. Without a position nothing is
+requested and nothing is shown.
 
 ## When it is fetched
 
