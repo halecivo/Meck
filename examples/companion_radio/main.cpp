@@ -181,6 +181,10 @@
   void meckAgendaSetup();
   #endif
 
+  // Where the deck is: GPS, the serving cell, the advert position (docs/position.md)
+  #include "MeckPosition.h"
+  static void meckPositionTick();
+
   #if defined(MECK_WEATHER) && MECK_WEATHER
   // Weather next to the lock screen clock (docs/weather.md)
   #include "MeckWeather.h"
@@ -5430,6 +5434,7 @@ void loop() {
   #if defined(MECK_DAV) && MECK_DAV
   meckDavTick();           // CalDAV account: pairing web server and discovery
   #endif
+  meckPositionTick();      // GPS, cell and advert position for the apps
   #if defined(MECK_WEATHER) && MECK_WEATHER
   meckWeatherTick();       // lock screen weather: requests, and its state before the minute redraw
   #endif
@@ -8833,19 +8838,154 @@ void meckTelemetryPromptAnswer(const uint8_t* pubKey, const char* name, bool all
   ui_task.showAlert(msg, 2000);
 }
 
-// Own position for "Send my location": a GPS fix, else the advert position
-static bool meckOwnPosition(double& lat, double& lon) {
+// --- Position sources (docs/position.md) -------------------------------------
+// GPS, the serving cell and the advert position, each with its radius; apps
+// ask meckPosition.best() for the accuracy class they need. Times are
+// seconds of uptime, not the RTC, which can jump when it is set.
+static MeckPosition meckPosition;
+static const uint32_t MECK_GPS_RADIUS_M = 25;     // a typical fix in the open
+static const uint32_t MECK_CELL_MAX_AGE_S = 900;  // re-read the cell after this when it is used
+
+static uint32_t meckPosNow() { return millis() / 1000 + 1; }   // 0 means "no time"
+
+#ifdef HAS_4G_MODEM
+// The cell database of the cell's country on the SD card
+struct MeckSdCellIo : CellDbIo {
+  File f;
+  bool read(uint32_t off, void* buf, uint32_t n) override {
+    return f && f.seek(off) && f.read((uint8_t*)buf, n) == (int)n;
+  }
+};
+
+static CellId meckCellSeen = {};
+static uint32_t meckCellSeenAt = 0;    // modem's read time (millis) we last looked at
+static bool meckCellNeeded = false;    // an app wants the cell position (see meckPositionWant)
+static char meckCellNote[48] = "no cell read yet";
+
+static bool meckCellLookup(const CellId& id, CellFix& out) {
+  if (!sdCardReady) { snprintf(meckCellNote, sizeof(meckCellNote), "no SD card"); return false; }
+  char path[24];
+  snprintf(path, sizeof(path), "/cells/%u.bin", id.mcc);
+  MeckSdCellIo io;
+  io.f = SD.open(path, FILE_READ);
+  if (!io.f) { snprintf(meckCellNote, sizeof(meckCellNote), "no %s", path); return false; }
+  CellDbHeader h;
+  bool ok = cellDbHeader(io, h) && cellDbLocate(io, h, id, out);
+  if (!ok) snprintf(meckCellNote, sizeof(meckCellNote), "cell not in %s", path);
+  else snprintf(meckCellNote, sizeof(meckCellNote), out.exact ? "cell found" : "area of %u cells", (unsigned)out.cells);
+  io.f.close();
+  return ok;
+}
+#endif
+
+// Every loop: feed the sources
+static void meckPositionTick() {
+  const uint32_t now = meckPosNow();
+  if (sensors.node_lat != 0 || sensors.node_lon != 0) {
+    MeckFix f = { sensors.node_lat, sensors.node_lon, MeckPosition::STORED_RADIUS_M, 0, POS_SRC_STORED, 0 };
+    meckPosition.set(f);
+  } else {
+    meckPosition.clear(POS_SRC_STORED);
+  }
 #if ENV_INCLUDE_GPS == 1
   LocationProvider* lp = sensors.getLocationProvider();
-  if (the_mesh.getNodePrefs()->gps_enabled && lp && lp->isValid()) {
-    lat = lp->getLatitude() / 1000000.0;
-    lon = lp->getLongitude() / 1000000.0;
-    if (lat != 0 || lon != 0) return true;
+  if (the_mesh.getNodePrefs()->gps_enabled && lp && lp->isValid() && (lp->getLatitude() || lp->getLongitude())) {
+    MeckFix f = { lp->getLatitude() / 1000000.0, lp->getLongitude() / 1000000.0, MECK_GPS_RADIUS_M, now, POS_SRC_GPS, 0 };
+    meckPosition.set(f);   // a fix that stops coming ages out by itself
   }
 #endif
-  lat = sensors.node_lat;
-  lon = sensors.node_lon;
-  return lat != 0 || lon != 0;
+#ifdef HAS_4G_MODEM
+  CellId id;
+  uint32_t atMs;
+  const bool have = modemManager.cellInfo(id, atMs);
+  if (atMs != meckCellSeenAt) {   // a new read
+    meckCellSeenAt = atMs;
+    const uint32_t at = atMs / 1000 + 1;
+    if (!have) {
+      meckPosition.clear(POS_SRC_CELL);
+      snprintf(meckCellNote, sizeof(meckCellNote), "no service");
+    } else if (cellIdEqual(id, meckCellSeen) && meckPosition.has(POS_SRC_CELL)) {
+      MeckFix f = meckPosition.fix(POS_SRC_CELL);   // same cell: the position is new again
+      f.at = at;
+      meckPosition.set(f);
+    } else {
+      meckCellSeen = id;
+      CellFix cf;
+      if (meckCellLookup(id, cf)) {
+        // Good as it is until the next read is due: a new cell would show then
+        MeckFix f = { cf.lat, cf.lon, cf.radiusM, at, POS_SRC_CELL, MECK_CELL_MAX_AGE_S };
+        meckPosition.set(f);
+      } else {
+        meckPosition.clear(POS_SRC_CELL);
+      }
+    }
+  }
+  // Locked, the modem reads the cell only when asked: ask when an app
+  // wanted it and the last read is getting old
+  if (meckCellNeeded && modemManager.isReady() &&
+      (!meckCellSeenAt || millis() - meckCellSeenAt > MECK_CELL_MAX_AGE_S * 1000UL)) {
+    modemManager.requestCellInfo();
+    meckCellSeenAt = millis();   // one request per period, answered or not
+  }
+  meckCellNeeded = false;
+#endif
+}
+
+// An app is about to use a position of class `need` (call it every loop it
+// does): keeps the cell fresh when only the cell can give it
+static bool meckPositionWant(PosClass need, double& lat, double& lon, uint32_t* radiusM = nullptr) {
+  MeckFix f;
+  const uint32_t now = meckPosNow();
+#ifdef HAS_4G_MODEM
+  bool gpsGood = meckPosition.has(POS_SRC_GPS) &&
+                 posClassOf(meckPosition.radiusNow(meckPosition.fix(POS_SRC_GPS), now)) <= need;
+  if (need > POS_FINE && !gpsGood) meckCellNeeded = true;
+#endif
+  if (!meckPosition.best(need, now, f)) return false;
+  lat = f.lat;
+  lon = f.lon;
+  if (radiusM) *radiusM = f.radiusM;
+  return true;
+}
+
+// Own position for "Send my location": FINE only, a GPS fix else the advert
+// position (never the cell)
+static bool meckOwnPosition(double& lat, double& lon) {
+  return meckPositionWant(POS_FINE, lat, lon);
+}
+
+// Debug CLI "pos": every source and the best fix of each class
+void meckPositionCmd(const char* arg) {
+  const uint32_t now = meckPosNow();
+#ifdef HAS_4G_MODEM
+  if (strcmp(arg, "cell") == 0) {
+    modemManager.requestCellInfo();
+    Serial.println("pos: cell read requested; \"pos\" in a few seconds");
+    return;
+  }
+#endif
+  for (int s = 0; s < POS_SRC_COUNT; s++) {
+    if (!meckPosition.has((PosSource)s)) { Serial.printf("  %-6s -\n", posSourceName(s)); continue; }
+    const MeckFix& f = meckPosition.fix((PosSource)s);
+    uint32_t r = meckPosition.radiusNow(f, now);
+    Serial.printf("  %-6s %.3f, %.3f  +-%lu m (%s)", posSourceName(s), f.lat, f.lon, (unsigned long)r, posClassName(posClassOf(r)));
+    if (f.at) Serial.printf(", %lu s old", (unsigned long)(now - f.at));
+    Serial.println();
+  }
+#ifdef HAS_4G_MODEM
+  CellId id;
+  uint32_t atMs;
+  if (modemManager.cellInfo(id, atMs))
+    Serial.printf("  cell %s %u-%u area 0x%X id %u: %s\n", id.radio == CELL_LTE ? "LTE" : id.radio == CELL_GSM ? "GSM" : "UMTS",
+                  id.mcc, id.mnc, (unsigned)id.area, (unsigned)id.cell, meckCellNote);
+  else
+    Serial.printf("  cell: %s\n", meckCellNote);
+#endif
+  for (int c = 0; c < POS_CLASS_COUNT; c++) {
+    MeckFix f;
+    if (meckPosition.best((PosClass)c, now, f)) Serial.printf("  best %-6s: %s\n", posClassName(c), posSourceName(f.src));
+    else Serial.printf("  best %-6s: none\n", posClassName(c));
+  }
 }
 
 // Send our position to a contact as "[LOC]lat,lon" (MeshCore-Solo's format)
@@ -9002,7 +9142,7 @@ void meckWeatherTick() {
   const uint32_t now = rtc_clock.getCurrentTime();
   double lat = 0, lon = 0;
   const bool on = p->lock_weather != 0;
-  const bool pos = on && meckOwnPosition(lat, lon);
+  const bool pos = on && meckPositionWant(POS_AREA, lat, lon);   // the cell will do
   meckWeather.loop(on, pos, lat, lon, now);
 #ifdef MECK_UI_V2
   // What the lock screen shows changes by the minute at most; this runs
