@@ -117,6 +117,13 @@ private:
   bool _netNoAddrLogged = false;   // said once: no address to use over 4G
   void* _pmLock = nullptr;
   bool _pairAwake = false;
+  // The update runs in its own task: a dead network (five addresses, DNS,
+  // connect and read timeouts) took over a minute and froze the keyboard
+  // and display while it ran in loop()
+  volatile bool _posting = false;    // the task runs
+  volatile bool _postDone = false;   // the task is finished, loop() cleans up
+  bool _postRelease = false;         // let go of mobile data once it is done
+  HaSensorValues _postVals;          // read in loop(): the gauge and I2C are not for the task
 
   void load();
   void save();
@@ -130,7 +137,9 @@ private:
   void makeQr();
   void workStep();
   void updateDue();
-  void post();
+  void post();                  // the update itself, blocking: only from postTask()
+  void startPost();
+  static void postTask(void* self);
   bool registerSensor(int id, const HaSensorValues& v);
   int webhook(const char* body, char* resp, size_t respLen);
   void awake(bool on);          // held through the pairing
