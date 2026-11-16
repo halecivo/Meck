@@ -27,10 +27,10 @@ widget interface in `ui-new/ui2/Ui2LockWidgets.h`.
 - **Status line**: "Power saving" when the deck sleeps (what stays on is the
   radio column's job), otherwise what keeps it awake. The estimate is left
   out when it does not fit next to a long status.
-- **Widgets**: nothing is resized; fewer widgets only move the top group
-  down into the middle. When the top group cannot keep its 8 px on both
-  sides, the widget with the lowest priority is left out, then the next,
-  until the rest fit.
+- **Widgets**: fewer widgets only move the top group down into the middle.
+  When the top group cannot keep its 8 px on both sides, a widget made of
+  rows (departures) gives up a row, lowest priority first; then the widget
+  with the lowest priority is left out, then the next, until the rest fit.
 
 ## Weather
 
@@ -59,6 +59,14 @@ calendars (`docs/calendar-account.md`), side by side above the status line:
   the deck has no agenda that covers today (no sync yet, or a copy older than
   five days). Priority 20.
 
+## Departures
+
+Settings > Experimental > **Departures on lock screen** (UI v2, off by
+default; needs a Neujede server address and token, `docs/transit-widget.md`)
+adds the departure board or the trip that fits now under the agenda: a header
+and 2-4 rows of 18 px (size S / M / L), with a stale mark and an empty state.
+Priority 15.
+
 ## Adding a widget
 
 A provider (calendar, weather, timetable) owns its data and its widget:
@@ -78,6 +86,9 @@ ui_task.lockContentChanged();       // after new data: redraws now if locked
 ```
 
 - `draw()` starts with the widget's 1 px top rule at `top`.
+- A widget made of rows can also implement `shrink(w, now, h)` (the next
+  smaller height it can still draw, 0 = none) and `drawAt(..., h, ...)`,
+  which gets the height the layout gave it.
 - `height()` and `draw()` run on every lock screen redraw (once a minute),
   so they only read data the provider already has; no I/O there.
 - The lock screen redraws at the next minute boundary, or at the earliest
