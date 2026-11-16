@@ -106,6 +106,7 @@ static void drawLockPrompt(Ui2Canvas& c, int reason) {
   extern void meckCompanionWifiOff();
   extern bool meckCompanionBleConnected();
   extern bool meckCompanionWifiConnected();
+  extern void meckRadioForget();
 #endif
 
 #ifndef AUTO_OFF_MILLIS
@@ -3264,6 +3265,11 @@ void UITask::shutdown(bool restart){
   if (restart) {
     _board->reboot();
   } else {
+    // A real power-off: the next start has Bluetooth and WiFi off again
+    // (a restart keeps what was on)
+    #if defined(BLE_PIN_CODE) && defined(MECK_WIFI_COMPANION)
+      meckRadioForget();
+    #endif
     // Disable BLE if active
     if (_serial != NULL && _serial->isEnabled()) {
       _serial->disable();

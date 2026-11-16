@@ -1602,10 +1602,47 @@ static void meckWifiOff() {
   WiFi.mode(WIFI_OFF);
 }
 
+// What the user left on is kept over a restart (not over "Power off" in the
+// menu), as the modem is. The lock policy pauses WiFi and brings it back by
+// itself: that is not the user's choice, so it holds the saving off.
+#include <Preferences.h>
+static bool meckRadioSaveHold = false;
+
+static void meckRadioSave(const char* key, bool on) {
+  if (meckRadioSaveHold) return;
+  Preferences p;
+  if (!p.begin("meckrad", false)) return;
+  if (p.getBool(key, !on) != on) p.putBool(key, on);
+  p.end();
+}
+
+// "Power off" from the menu: the next start is a cold one, both off
+void meckRadioForget() {
+  Preferences p;
+  if (!p.begin("meckrad", false)) return;
+  p.clear();
+  p.end();
+}
+
+bool meckCompanionUseBLE();
+bool meckCompanionUseWiFi(bool connectSaved);
+
+// Called once at the end of setup(), after the SD card and the UI are up
+static void meckRadioRestore() {
+  Preferences p;
+  if (!p.begin("meckrad", true)) return;
+  bool ble = p.getBool("ble", false), wifi = p.getBool("wifi", false);
+  p.end();
+  Serial.printf("Companion: restoring after restart: Bluetooth %d, WiFi %d\n", ble, wifi);
+  if (ble) meckCompanionUseBLE();
+  if (wifi) meckCompanionUseWiFi(true);
+}
+
 // Bluetooth off; WiFi stays as it is
 void meckCompanionBleOff() {
   if (!meckCompanionIsBLE()) return;
   ble_companion.disable();
+  meckRadioSave("ble", false);
   Serial.println("Companion: Bluetooth off");
   meckLogMemory("Bluetooth off");
 }
@@ -1614,6 +1651,7 @@ void meckCompanionBleOff() {
 void meckCompanionWifiOff() {
   if (!meckCompanionIsWiFi() && WiFi.getMode() == WIFI_OFF) return;
   meckWifiOff();
+  meckRadioSave("wifi", false);
   Serial.println("Companion: WiFi off");
   meckLogMemory("WiFi off");
 }
@@ -1628,6 +1666,7 @@ void meckCompanionUseNone() {
 bool meckCompanionUseBLE() {
   if (meckCompanionIsBLE()) return true;
   ble_companion.enable();
+  meckRadioSave("ble", true);
   Serial.println("Companion: Bluetooth on");
   meckLogMemory("Bluetooth on");
   return true;
@@ -1652,6 +1691,7 @@ bool meckCompanionUseWiFi(bool connectSaved) {
     meckWifiServerStarted = true;
   }
   wifi_companion.enable();
+  meckRadioSave("wifi", true);
   if (connectSaved) {
     char ssid[33], pass[64];
     if (meckWifiCfgRead(ssid, sizeof(ssid), pass, sizeof(pass)) && ssid[0]) {
@@ -3656,6 +3696,7 @@ void setup() {
 #endif
 #if defined(BLE_PIN_CODE) && defined(MECK_WIFI_COMPANION)
   meckLogMemory("boot, both off");
+  meckRadioRestore();   // what was on before a restart
 #endif
   {
     void* p25 = malloc(25000); void* p10 = malloc(10000); void* p4 = malloc(4000);
@@ -4349,7 +4390,9 @@ void meckLockPolicy(bool locking) {
   NodePrefs* p = the_mesh.getNodePrefs();
   if (locking) {
     if (!(p->lock_keep & LOCK_KEEP_WIFI) && meckCompanionIsWiFi()) {
+      meckRadioSaveHold = true;   // a pause, not the user's choice
       meckCompanionWifiOff();
+      meckRadioSaveHold = false;
       meckPausedWifi = true;
     }
     // A running SOS switches the GPS itself
@@ -4365,7 +4408,11 @@ void meckLockPolicy(bool locking) {
     Serial.printf("[Power] Locked: paused%s%s%s\n", meckPausedWifi ? " WiFi" : "",
                   meckPausedGps ? " GPS" : "", meckPausedModem ? " 4G" : "");
   } else {
-    if (meckPausedWifi) meckCompanionUseWiFi(true);
+    if (meckPausedWifi) {
+      meckRadioSaveHold = true;
+      meckCompanionUseWiFi(true);
+      meckRadioSaveHold = false;
+    }
     if (meckPausedGps && ui_task.getGPSState()) {
       sensors.setSettingValue("gps", "1");
       board.gpsPowerOn();
@@ -6931,7 +6978,10 @@ void handleKeyboardInput() {
       return;
     }
     
-    // A/D keys switch channels (only when buffer is empty, not in DM mode)
+#ifndef MECK_UI_V2
+    // A/D keys switch channels (only when buffer is empty, not in DM mode).
+    // Not in UI v2: a message starting with "a" or "d" lost its first letter
+    // and landed in another channel; the channel is chosen before writing.
     if ((key == 'a') && composePos == 0 && !composeDM) {
       // Previous channel — skip gaps
       if (composeChannelIdx > 0) {
@@ -6988,7 +7038,8 @@ void handleKeyboardInput() {
       composeNeedsRefresh = true; lastComposeKeystroke = millis();  // Debounced refresh
       return;
     }
-    
+#endif
+
     // '$' key (without Sym) opens emoji picker
     if (key == KB_KEY_EMOJI) {
       emojiPicker.reset();
@@ -8511,9 +8562,9 @@ static void drawComposeScreenV2() {
   c.segBar(PAD, barY + 4, SCREEN_W - 2 * PAD - cw - 6, 6, (composePos * 20 + maxBytes - 1) / maxBytes, 20);
 
   if (composePos == 0) {
-    const Ui2Key keys[] = { ui2Key("A/D", MECK_TR("Channel", "Canal")), ui2Key("$", "Emoji"),
-                            ui2Key("Sh+Del", MECK_TR("Cancel", "Annuler")) };
-    Ui2Chrome::footer(c, keys, 3);
+    // A/D no longer switch the channel here (they type letters)
+    const Ui2Key keys[] = { ui2Key("$", "Emoji"), ui2Key("Sh+Del", MECK_TR("Cancel", "Annuler")) };
+    Ui2Chrome::footer(c, keys, 2);
   } else {
     const Ui2Key keys[] = { ui2KeyIcon(UI2_IC_ENTER, MECK_TR("Send", "Envoyer")), ui2Key("$", "Emoji"),
                             ui2Key("Sh+Del", MECK_TR("Cancel", "Annuler")) };
