@@ -571,9 +571,30 @@ int MeckHa::webhook(const char* body, char* resp, size_t respLen) {
   return code;
 }
 
+void MeckHa::startPost() {
+  meckHaSensors(_postVals);
+  _postDone = false;
+  _posting = true;
+  // 12 KB: HTTPClient and a TLS handshake ran on the 32 KB loop stack before
+  if (xTaskCreatePinnedToCore(postTask, "meck_ha", 12288, this, 1, nullptr, 0) != pdPASS) {
+    _posting = false;
+    _nextPost = millis() + RETRY_MS;
+    if (_postRelease) meckNetRelease(DATA_APP_HA);
+    _postRelease = false;
+    Serial.println("HA: no memory for the update task");
+  }
+}
+
+void MeckHa::postTask(void* self) {
+  MeckHa* ha = (MeckHa*)self;
+  ha->post();
+  __sync_synchronize();
+  ha->_postDone = true;
+  vTaskDelete(nullptr);
+}
+
 void MeckHa::post() {
-  HaSensorValues v;
-  meckHaSensors(v);
+  const HaSensorValues& v = _postVals;
   char* body = haAlloc(HA_BODY_LEN);
   char* resp = haAlloc(2048);
   if (!body || !resp) { heap_caps_free(body); heap_caps_free(resp); _nextPost = millis() + RETRY_MS; return; }
@@ -616,6 +637,13 @@ void MeckHa::loop() {
     mdnsStop();
     awake(false);
   }
+  if (_postDone) {
+    _postDone = false;
+    _posting = false;
+    if (_postRelease) meckNetRelease(DATA_APP_HA);
+    _postRelease = false;
+  }
+  if (_posting) return;
   if (paired() && !_removed && !pairingActive() && (int32_t)(millis() - _nextPost) >= 0) {
     updateDue();
   } else if (_netWait) {
@@ -630,9 +658,9 @@ void MeckHa::loop() {
 void MeckHa::updateDue() {
   if (meckNetUp(DATA_APP_HA)) {
     if (!meckNetWifi()) meckNetRequest(DATA_APP_HA);   // hold it through the update
-    post();
-    if (_netWait || !meckNetWifi()) meckNetRelease(DATA_APP_HA);
+    _postRelease = _netWait || !meckNetWifi();   // let go in loop() once the task is done
     _netWait = false;
+    startPost();
     return;
   }
   if (!_netWait) {
