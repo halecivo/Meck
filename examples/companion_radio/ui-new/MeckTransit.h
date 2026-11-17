@@ -74,6 +74,7 @@ private:
   void failed();
   void pmHold(bool on);
   void demo(const char* what, uint32_t now, int32_t offSec);
+  void ping(uint32_t now, int32_t offSec);
 };
 
 extern MeckTransit meckTransit;

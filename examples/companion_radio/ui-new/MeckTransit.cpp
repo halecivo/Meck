@@ -253,6 +253,60 @@ bool MeckTransit::fetch(int rows, bool pos, double lat, double lon, uint32_t now
   return ok;
 }
 
+// Debug CLI "transit ping": where the time of a request goes. Connecting
+// (TCP and TLS) and the wait for the first byte, for /health and for the
+// widget itself, by hand so the two can be told apart. Nothing is printed
+// of the reply; the token goes only to the server, as in a request.
+void MeckTransit::ping(uint32_t now, int32_t offSec) {
+  (void)now; (void)offSec;
+  if (!configured() || !meckNetWifi()) { Serial.println("Transit: ping needs the url, the token and WiFi"); return; }
+  const bool https = strncmp(_url, "https://", 8) == 0 || !strstr(_url, "://");
+  const char* h = strstr(_url, "://");
+  h = h ? h + 3 : _url;
+  char host[64];
+  size_t hl = strcspn(h, ":/");
+  if (hl >= sizeof(host)) hl = sizeof(host) - 1;
+  memcpy(host, h, hl);
+  host[hl] = 0;
+  uint16_t port = https ? 443 : 80;
+  if (h[hl] == ':') port = (uint16_t)atoi(h + hl + 1);
+  const char* prefix = strchr(h + hl, '/');
+  char base[48] = "";
+  if (prefix) {
+    snprintf(base, sizeof(base), "%s", prefix);
+    size_t bl = strlen(base);
+    while (bl && base[bl - 1] == '/') base[--bl] = 0;
+  }
+  static bool tlsPsram = false;
+  if (https && !tlsPsram) { mbedtls_platform_set_calloc_free(trPsramCalloc, free); tlsPsram = true; }
+  pmHold(true);
+  for (int k = 0; k < 2; k++) {
+    WiFiClientSecure tls;
+    WiFiClient plain;
+    if (https) tls.useBuiltinCACertBundle();
+    WiFiClient& c = https ? (WiFiClient&)tls : plain;
+    const uint32_t t0 = millis();
+    bool ok = https ? tls.connect(host, port) : plain.connect(host, port);
+    const uint32_t t1 = millis();
+    if (!ok) { Serial.printf("Transit: ping %s: no connection after %lu ms\n", k ? "widget" : "health", (unsigned long)(t1 - t0)); continue; }
+    c.printf("GET %s%s HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n", base, k ? "/compact/widget?rows=8" : "/health", host);
+    if (k) c.printf("Authorization: Bearer %s\r\n", _token);
+    c.print("\r\n");
+    while (!c.available() && c.connected() && millis() - t1 < 20000) delay(5);
+    const uint32_t t2 = millis();
+    size_t n = 0;
+    while ((c.connected() || c.available()) && millis() - t2 < 10000) {
+      if (c.available()) { c.read(); n++; } else delay(2);
+    }
+    const uint32_t t3 = millis();
+    c.stop();
+    Serial.printf("Transit: ping %s: connect %lu ms, first byte %lu ms, rest %lu ms, %u bytes\n",
+                  k ? "widget" : "health", (unsigned long)(t1 - t0), (unsigned long)(t2 - t1),
+                  (unsigned long)(t3 - t2), (unsigned)n);
+  }
+  pmHold(false);
+}
+
 void MeckTransit::pmHold(bool on) {
 #ifdef CONFIG_PM_ENABLE
   if (!_pmLock && esp_pm_lock_create(ESP_PM_NO_LIGHT_SLEEP, 0, "meck_tr",
@@ -339,6 +393,8 @@ void MeckTransit::cmd(const char* arg, uint32_t now, int32_t offSec) {
                   _lastResult, (unsigned)_lastBytes, (unsigned long)_lastMs, _fails, _due ? "when locked, " : "in ",
                   next > 0 ? next / 1000 : 0L, meckNetWifi() ? "up" : "down",
                   meckNet4gAllowed(DATA_APP_TRANSIT) ? "allowed" : "not allowed", _netWait ? ", waiting for it" : "");
+  } else if (strcmp(arg, "ping") == 0) {
+    ping(now, offSec);
   } else if (strcmp(arg, "fetch") == 0) {
     _demo = false;
     fetchSoon();
@@ -354,7 +410,7 @@ void MeckTransit::cmd(const char* arg, uint32_t now, int32_t offSec) {
     fetchSoon();
     Serial.println("Transit: board cleared");
   } else {
-    Serial.println("transit [status]|fetch|clear|demo [1-4|trip|alt|empty|stale|offline]");
+    Serial.println("transit [status]|fetch|ping|clear|demo [1-4|trip|alt|empty|stale|offline]");
   }
 }
 

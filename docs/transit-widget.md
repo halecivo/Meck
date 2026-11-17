@@ -138,6 +138,8 @@ Host tests (WSL):
 
     transit                 address (token: set or not), the board, last request, next one
     transit fetch           a request now (while locked; needs the setting, address and token)
+    transit ping            over WiFi: time to connect (TCP + TLS) and to the first byte,
+                            for /health and for the widget (prints no reply)
     transit demo [1-4]      made-up stop board with 1-4 rows (RAM only, no requests until fetch)
     transit demo trip       made-up trip, ride by ride
     transit demo alt        made-up trip as three alternatives
