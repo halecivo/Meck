@@ -234,22 +234,42 @@ static void testNeujedeExamples() {
               " \"validUntil\":1794820020,\"key\":\"744ad81a\"}", b, TS));
   CHECK_STR(b.title, "DO PR\xC3\x81" "CE 10:10\xC2\xBB" "10:30");   // the font has no arrow: »
   CHECK_EQ(b.nRows, 2);
-  CHECK_STR(b.rows[0].text, "N\xC3\xA1" "dra\xC5\xBE\xC3\xAD Bran\xC3\xADk\xC2\xBB" "And\xC4\x9Bl");
+  CHECK_STR(b.rows[0].text, "N\xC3\xA1" "dra\xC5\xBE\xC3\xAD Bran\xC3\xADk");   // a ride: where to board only
+  CHECK_STR(b.rows[1].text, "And\xC4\x9Bl");
   CHECK_STR(b.rows[0].badge, "+3");
   CHECK_STR(b.rows[1].line, "B");
   CHECK_STR(b.rows[1].badge, "72 %");
   CHECK_STR(b.rows[1].then[0].hm, "10:27");
   CHECK_STR(b.rows[1].then[1].hm, "");
 
-  // A whole option in one row: its arrival after the runs; the ride you are on; nothing to show
+  // Alternatives, one per row: the arrival in its own field, the runs kept, the text as sent
+  CHECK(parse("{\"v\":1,\"kind\":\"trip\",\"h\":\"Dom\xC5\xAF\",\"rows\":["
+              "{\"l\":\"17\",\"t\":\"8\xE2\x86\x92" "B\xE2\x86\x92S9\",\"d\":1,\"pl\":\"A\",\"at\":\"07:28\",\"arr\":\"07:58\",\"then\":[{\"t\":\"07:36\"},{\"t\":\"07:44\"}]},"
+              "{\"l\":\"S9\",\"t\":\"p\xC5\x99" "es Palack\xC3\xA9ho\",\"at\":\"07:34\",\"arr\":\"08:01\"}]}", b));
+  CHECK_EQ(b.nRows, 2);
+  CHECK_STR(b.rows[0].text, "8\xC2\xBB" "B\xC2\xBBS9");
+  CHECK_STR(b.rows[0].arr, "\xC2\xBB" "7:58");
+  CHECK_STR(b.rows[0].then[1].hm, "7:44");
+  CHECK_STR(b.rows[1].arr, "\xC2\xBB" "8:01");
+  CHECK_STR(b.rows[1].then[0].hm, "");
+  {
+    char o[8];
+    trRowTime(b, 1, true, NOW, OFF, o, sizeof(o));   // every alternative counts down
+    CHECK_STR(o, "10 m");
+  }
+
+  // Rides and an alternative after them are not mixed: the alternative is left out.
+  // The ride you are on keeps its "» where to get off"; nothing to show
   CHECK(parse("{\"v\":1,\"ts\":1794819900,\"kind\":\"trip\",\"h\":\"Dom\xC5\xAF\",\"rows\":["
               "{\"m\":\"T\",\"l\":\"17\",\"t\":\"p\xC5\x99" "es Palack\xC3\xA9ho\",\"at\":\"07:04\",\"arr\":\"07:30\"},"
               "{\"m\":\"T\",\"l\":\"22\",\"t\":\"\xE2\x86\x92 Andel\",\"at\":\"07:15\",\"on\":1,\"then\":[{\"t\":\"07:20\"},{\"t\":\"07:30\"}]}],"
               "\"more\":2,\"validUntil\":1794820020,\"key\":\"x\"}", b, TS));
   CHECK_STR(b.title, "DOM\xC5\xAE");
-  CHECK_STR(b.rows[0].then[0].hm, "\xC2\xBB" "7:30");
-  CHECK_STR(b.rows[1].text, "\xC2\xBB Andel");
-  CHECK_STR(b.rows[1].then[1].hm, "7:30");
+  CHECK_EQ(b.nRows, 1);
+  CHECK_STR(b.rows[0].line, "22");
+  CHECK_STR(b.rows[0].text, "\xC2\xBB Andel");
+  CHECK_STR(b.rows[0].then[1].hm, "7:30");
+  CHECK_STR(b.rows[0].arr, "");
   CHECK_EQ(b.more, 2);
   CHECK(parse("{\"v\":1,\"ts\":1794819900,\"now\":\"10:05\",\"kind\":\"none\",\"h\":\"\",\"rows\":[],\"validUntil\":1794820800,\"key\":\"0\"}", b, TS));
   CHECK_EQ(b.nRows, 0);

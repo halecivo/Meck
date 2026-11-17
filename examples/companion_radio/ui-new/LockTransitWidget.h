@@ -7,6 +7,11 @@
 //   [S9] Praha hl.n.           [1]  7:41    7:45 8:15.  <- rows, 18 px each
 //   [381] Háje            [+2] [B]  7:28    7:28 7:43
 //
+// A trip: its rides, one per row with the stop to board at, or its
+// alternatives, one per row with the lines and the arrival:
+//
+//   [17] 8»B»S9           [+1]      7 m     7:12 7:20  »7:30
+//
 // Sizes S / M / L = 2 / 3 / 4 rows (Settings). When the lock screen runs out
 // of room, rows go first (down to one), then the widget. The time column
 // shows minutes to go ("6 m") or, by a setting, clock times; the minutes
@@ -93,13 +98,17 @@ struct LockTransitWidget : Ui2LockWidget {
 
     // Columns shared by all rows: the "then" column only when a row has
     // one, the platform column only when a row has a platform
+    // and the arrival column only for a trip's alternatives
     bool anyThen = false, anyPlat = false;
+    int16_t arrW = 0;
     for (int i = 0; v.state == TR_ROWS && i < rows; i++) {
       anyThen |= b.rows[i].then[0].hm[0] != 0;
-      anyPlat |= b.rows[i].plat[0] != 0;
+      anyPlat |= b.rows[i].plat[0] != 0 && !b.rows[i].arr[0];
+      int16_t aw = b.rows[i].arr[0] ? Ui2Canvas::textWidth(b.rows[i].arr, UI2_F_NODE) + GAP : 0;
+      if (aw > arrW) arrW = aw;
     }
     const int16_t right = x + w;
-    const int16_t thenX = anyThen ? right - THEN_W : right;
+    const int16_t thenX = right - arrW - (anyThen ? THEN_W : 0);
 
     // Header: title in caps, "then" (or the stale mark) in the right slot
     const int16_t hb = top + 1 + HEAD_H - 3;   // baseline on the bottom of the box
@@ -143,7 +152,7 @@ struct LockTransitWidget : Ui2LockWidget {
       if (tw > timeW) timeW = tw;
     }
     for (int i = 0; i < rows; i++, y += ROW_H)
-      drawRow(c, x, y, thenX, timeW, anyPlat, b.rows[i], tm[i]);
+      drawRow(c, x, y, thenX, right, timeW, anyPlat, b.rows[i], tm[i]);
   }
 
 private:
@@ -152,7 +161,7 @@ private:
     c.fill(xEnd + 1, baseline - Ui2Canvas::capHeight(f) - 1, 2, 2);
   }
 
-  void drawRow(Ui2Canvas& c, int16_t x, int16_t y, int16_t thenX, int16_t timeW, bool anyPlat, const TrRow& r, const char* tm) {
+  void drawRow(Ui2Canvas& c, int16_t x, int16_t y, int16_t thenX, int16_t right, int16_t timeW, bool anyPlat, const TrRow& r, const char* tm) {
     int16_t lx = x;
     // Line chip, inverted
     if (r.line[0]) {
@@ -173,6 +182,9 @@ private:
         tx = e + 6;
       }
     }
+    // The arrival of an alternative, bold at the right edge
+    if (r.arr[0])
+      c.text(right - Ui2Canvas::textWidth(r.arr, UI2_F_NODE), Ui2Canvas::lineBaseline(UI2_F_NODE, y, ROW_H), r.arr, UI2_F_NODE);
     rx -= 3;   // the dot of a late time
     const int16_t tb = Ui2Canvas::lineBaseline(UI2_F_NODE, y, ROW_H);
     const int16_t tl = rx - timeW;
@@ -183,7 +195,7 @@ private:
     }
     rx = tl - GAP;
     if (anyPlat) {
-      if (r.plat[0]) {
+      if (r.plat[0] && !r.arr[0]) {
         const int16_t py = y + 2;
         c.roundRect(rx - PLAT_W, py, PLAT_W, PLAT_W, 2);
         if (r.platChanged) c.roundRect(rx - PLAT_W + 1, py + 1, PLAT_W - 2, PLAT_W - 2, 1);

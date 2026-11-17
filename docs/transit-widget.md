@@ -41,19 +41,29 @@ Neujede):
 | Part | From | Drawn as |
 |---|---|---|
 | line chip | `l` | inverted, Montserrat 10, at least 24 px wide; none without a line (walking) |
-| text | `t` | Noto 11, one line, ellipsis |
+| text | `t` | Noto 11, one line, ellipsis. A ride of a trip shows only where to board (`Braník→Anděl` is drawn as `Braník`) |
 | delay chip | `d` (minutes) or `p` (transfer probability) | outlined, `+2`, from 60 min in hours `+8 h`, `72 %`; none on time |
 | platform | `pl`, `pc` | 14 × 14 box, 2 px border when the platform changed |
 | time | `at`, `d` | bold. Minutes to go (`6 m`, `teď` within the minute), counted from `at` plus the delay; clock time (`7:41`, the timetable's) when it is an hour or more away, has left, or with "Minutes to departure" off |
-| then | `then[]` | up to two clock times; a 2 px dot after a time = that run is 5 min or more late. An option row's arrival `arr` follows as `»7:30` |
+| then | `then[]` | up to two clock times; a 2 px dot after a time = that run is 5 min or more late. |
+| arrival | `arr` | alternatives only: bold `»7:30` at the right edge |
 
 The header is `h` in capitals; for a trip with `dep` and `arr` too
 (`DO PRÁCE 6:55»7:30`). The right column says "then".
 
+- **A trip** is drawn either as its rides, one per row, or as its
+  alternatives, one per row; the two are never mixed. A ride row says where
+  to board; where to get off is the next row's stop, and for the last ride
+  the header. An alternative row (a row with `arr`) has the first line in
+  the chip, the server's text (meant to be the other lines, `8»B»S9`), the
+  minutes to go, the next runs of the first line and the arrival; it has no
+  platform box. When the server sends the recommended trip ride by ride
+  and another alternative in the last row, that row is left out.
 - The UI v2 fonts have no arrow: `→` in the server's texts is drawn as `»`.
 - The minutes are counted by the deck from its own clock, so they move
   without a request, on the lock screen's redraw each minute for the clock.
-  On a stop board every row counts down. Of a trip only the first row does
+  On a stop board every row counts down, and so does every alternative of
+  a trip. Of a trip's rides only the first row does
   (when to leave; while riding, when to get off): the later rides keep
   their clock times.
 - **Stale mark**: when the last request failed, or the rows are older than
@@ -122,7 +132,8 @@ Host tests (WSL):
     transit                 address (token: set or not), the board, last request, next one
     transit fetch           a request now (while locked; needs the setting, address and token)
     transit demo [1-4]      made-up stop board with 1-4 rows (RAM only, no requests until fetch)
-    transit demo trip       made-up trip with an option row
+    transit demo trip       made-up trip, ride by ride
+    transit demo alt        made-up trip as three alternatives
     transit demo empty      the empty state
     transit demo stale      rows with the stale mark
     transit demo offline    never a reply: empty with the warning icon

@@ -9,6 +9,11 @@
 //
 //   [S9] Praha hl.n.      [+2] [1]  7:45   7:53 8:23
 //   line text (ellipsis)  delay plat time  then (up to two)
+//
+// A trip is either its rides, one per row ("[17] Braník", where to board),
+// or its alternatives, one per row with the arrival at the end:
+//
+//   [17] 8»B»S9           [+1]      7:04   7:12 7:20  »7:30
 // =============================================================================
 
 #include <stdint.h>
@@ -34,7 +39,7 @@ static const uint32_t TR_BACKOFF_MAX_S = 15UL * 60;
 static const uint32_t TR_MAX_AGE_S = 2UL * 3600;
 
 struct TrTime {
-  char hm[8];   // "7:45" (no leading zero), "»7:30" (arrival), "" = none
+  char hm[8];   // "7:45" (no leading zero), "" = none
   bool late;    // the run is >= 5 min late: a 2 px dot after the time
 };
 
@@ -47,6 +52,7 @@ struct TrRow {
   int16_t delay;     // minutes late (0 = on time or not known): the time is the timetable's
   TrTime time;       // bold time column
   TrTime then[TR_THEN];
+  char arr[8];       // a whole alternative in one row: its arrival, "»7:30"; "" = a ride or a run
 };
 
 struct TrBoard {
@@ -372,16 +378,40 @@ static inline void trReadRow(const char* r, const char* re, TrRow& row) {
     if (i < TR_THEN && trJsonFlag(e, ee)) row.then[i].late = true;
     i++;
   });
-  // A whole option in one row has its arrival: it goes after the runs
+  // A whole alternative in one row has its arrival, in a column of its own
   char arr[8], hm[6];
   if (trJsonText(trJsonGet(r, re, "arr"), re, arr, sizeof(arr)) && arr[0]) {
-    int k = 0;
-    while (k < TR_THEN - 1 && row.then[k].hm[0]) k++;
     trClock(arr, hm, sizeof(hm));
-    snprintf(row.then[k].hm, sizeof(row.then[k].hm), "\xC2\xBB%s", hm);
-    row.then[k].late = false;
+    snprintf(row.arr, sizeof(row.arr), "\xC2\xBB%s", hm);
   }
   trArrows(row.text);
+}
+
+// The rows of a trip, as the lock screen can show them in its width:
+// - Rides and whole alternatives are not mixed. When the server sent the
+//   recommended trip ride by ride and another alternative after it, the
+//   alternative is left out (it would read as one more ride).
+// - A ride says only where to board ("Braník»Anděl" -> "Braník"): where to
+//   get off is the next row's stop, and for the last ride the header.
+//   "» Anděl" (the ride you are on: where to get off) stays.
+static inline void trTripRows(TrBoard& b) {
+  bool rides = false, alts = false;
+  for (int i = 0; i < b.nRows; i++) (b.rows[i].arr[0] ? alts : rides) = true;
+  if (rides && alts) {
+    int n = 0;
+    for (int i = 0; i < b.nRows; i++)
+      if (!b.rows[i].arr[0]) b.rows[n++] = b.rows[i];
+    for (int i = n; i < b.nRows; i++) memset(&b.rows[i], 0, sizeof(b.rows[i]));
+    b.nRows = (uint8_t)n;
+  }
+  for (int i = 0; i < b.nRows; i++) {
+    TrRow& r = b.rows[i];
+    if (r.arr[0]) continue;
+    char* a = strstr(r.text, "\xC2\xBB");
+    if (!a || a == r.text) continue;
+    while (a > r.text && a[-1] == ' ') a--;
+    *a = 0;
+  }
 }
 
 // "HH:MM" local -> RTC seconds of its next occurrence from `now` (within a
@@ -446,6 +476,8 @@ static inline bool trParse(const char* json, size_t len, uint32_t now, int32_t o
   trJsonEach(rows, end, [&](const char* r, const char* re) {
     if (*r == '{' && b.nRows < TR_MAX_ROWS) trReadRow(r, re, b.rows[b.nRows++]);
   });
+
+  if (b.kind[0] && strcmp(b.kind, "board") != 0) trTripRows(b);
 
   b.fetched = now;
   // validUntil: unix seconds (taken relative to the server's "ts", so a deck
@@ -541,10 +573,10 @@ static inline TrView trViewAt(const TrBoard& b, bool have, bool lastOk, uint32_t
 // --- The time column ----------------------------------------------------------------
 
 // Minutes from `now` until the row really leaves (timetable time plus the
-// delay); -1 when it has left, or the time is no clock time ("»7:30")
+// delay); -1 when it has left, or the time is no clock time
 static inline int trMinutesTo(const TrRow& r, uint32_t now, int32_t offSec) {
   int h, m;
-  if (r.time.hm[0] < '0' || r.time.hm[0] > '9' || sscanf(r.time.hm, "%d:%d", &h, &m) != 2) return -1;
+  if (sscanf(r.time.hm, "%d:%d", &h, &m) != 2) return -1;
   const int nowMin = (int)(((((int64_t)now + offSec) % 86400 + 86400) % 86400) / 60);
   const int d = ((h * 60 + m + r.delay - nowMin) % 1440 + 1440) % 1440;
   return d < 720 ? d : -1;   // the other half of the day: it is behind us
@@ -552,12 +584,13 @@ static inline int trMinutesTo(const TrRow& r, uint32_t now, int32_t offSec) {
 
 // What the bold time column of row i shows. countdown = minutes to go
 // ("6 m", "teď") instead of the clock time, for runs within the hour: every
-// row of a stop board, but of a trip only the first one (when to leave, or
-// while riding when to get off); its later rides keep their clock times.
+// row of a stop board and every alternative of a trip (each is a way to
+// leave now), but of a trip's rides only the first one (when to leave, or
+// while riding when to get off); the later rides keep their clock times.
 static inline void trRowTime(const TrBoard& b, int i, bool countdown, uint32_t now, int32_t offSec, char* out, size_t n) {
   const TrRow& r = b.rows[i];
   const bool board = !b.kind[0] || strcmp(b.kind, "board") == 0;
-  int min = countdown && (board || i == 0) ? trMinutesTo(r, now, offSec) : -1;
+  int min = countdown && (board || i == 0 || r.arr[0]) ? trMinutesTo(r, now, offSec) : -1;
   if (min == 0) snprintf(out, n, "te\xC4\x8F");
   else if (min > 0 && min < 60) snprintf(out, n, "%d m", min);
   else snprintf(out, n, "%s", r.time.hm);

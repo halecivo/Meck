@@ -288,10 +288,18 @@ void MeckTransit::demo(const char* what, uint32_t now, int32_t offSec) {
     "{\"v\":1,\"kind\":\"trip\",\"h\":\"Do pr\xC3\xA1" "ce\",\"dep\":\"%s\",\"arr\":\"%s\",\"rows\":["
     "{\"m\":\"T\",\"l\":\"17\",\"t\":\"Bran\xC3\xADk\xE2\x86\x92Palack\xC3\xA9ho\",\"d\":1,\"pl\":\"A\",\"at\":\"%s\",\"then\":[{\"t\":\"%s\"},{\"t\":\"%s\",\"late\":1}]},"
     "{\"m\":\"M\",\"l\":\"B\",\"t\":\"Karlovo n.\xE2\x86\x92" "Florenc\",\"p\":72,\"pl\":\"2\",\"at\":\"%s\",\"then\":[{\"t\":\"%s\"},{\"t\":\"%s\"}]},"
-    "{\"m\":\"R\",\"l\":\"S9\",\"t\":\"p\xC5\x99" "es Praha hl.n.\",\"at\":\"%s\",\"arr\":\"%s\"}"
+    "{\"m\":\"R\",\"l\":\"S9\",\"t\":\"Florenc\xE2\x86\x92Vyso\xC4\x8D" "any\",\"pl\":\"4\",\"at\":\"%s\"}"
     "],\"validUntil\":300,\"key\":\"demo2\"}";
+  // Alternatives, one per row: the first line in the chip, the others as text
+  static const char* const kAltFmt =
+    "{\"v\":1,\"kind\":\"trip\",\"h\":\"Do pr\xC3\xA1" "ce\",\"dep\":\"%s\",\"arr\":\"%s\",\"rows\":["
+    "{\"m\":\"T\",\"l\":\"17\",\"t\":\"B\xE2\x86\x92S9\",\"d\":1,\"at\":\"%s\",\"arr\":\"%s\",\"then\":[{\"t\":\"%s\"},{\"t\":\"%s\",\"late\":1}]},"
+    "{\"m\":\"R\",\"l\":\"S9\",\"t\":\"8\",\"at\":\"%s\",\"arr\":\"%s\",\"then\":[{\"t\":\"%s\"}]},"
+    "{\"m\":\"B\",\"l\":\"196\",\"t\":\"C\xE2\x86\x92" "8\xE2\x86\x92S9\",\"at\":\"%s\",\"arr\":\"%s\",\"then\":[{\"t\":\"%s\"},{\"t\":\"%s\"}]}"
+    "],\"validUntil\":300,\"key\":\"demo3\"}";
   static char src[900];
-  if (strcmp(what, "trip") == 0) snprintf(src, sizeof(src), kTripFmt, hm(7), hm(42), hm(6), hm(14), hm(22), hm(22), hm(25), hm(29), hm(12), hm(44));
+  if (strcmp(what, "trip") == 0) snprintf(src, sizeof(src), kTripFmt, hm(7), hm(42), hm(6), hm(14), hm(22), hm(22), hm(25), hm(29), hm(31));
+  else if (strcmp(what, "alt") == 0) snprintf(src, sizeof(src), kAltFmt, hm(7), hm(42), hm(6), hm(42), hm(14), hm(22), hm(12), hm(44), hm(42), hm(4), hm(47), hm(14), hm(24));
   else snprintf(src, sizeof(src), kBoardFmt, hm(3), hm(11), hm(41), hm(7), hm(7), hm(22), hm(14), hm(32), hm(62), hm(75));
   TrBoard b;
   if (!trParse(src, strlen(src), now, offSec, b)) return;
@@ -319,6 +327,7 @@ void MeckTransit::cmd(const char* arg, uint32_t now, int32_t offSec) {
         Serial.printf("  [%s] %s [%s] [%s%s] %s%s  %s%s %s%s\n", r.line, r.text, r.badge, r.plat,
                       r.platChanged ? "!" : "", r.time.hm, r.time.late ? "*" : "", r.then[0].hm,
                       r.then[0].late ? "*" : "", r.then[1].hm, r.then[1].late ? "*" : "");
+        if (r.arr[0]) Serial.printf("      arrives %s\n", r.arr);
       }
     } else {
       Serial.println("Transit: no board");
@@ -343,7 +352,7 @@ void MeckTransit::cmd(const char* arg, uint32_t now, int32_t offSec) {
     fetchSoon();
     Serial.println("Transit: board cleared");
   } else {
-    Serial.println("transit [status]|fetch|clear|demo [1-4|trip|empty|stale|offline]");
+    Serial.println("transit [status]|fetch|clear|demo [1-4|trip|alt|empty|stale|offline]");
   }
 }
 
