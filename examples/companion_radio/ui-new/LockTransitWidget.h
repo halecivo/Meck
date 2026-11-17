@@ -9,7 +9,8 @@
 //
 // Sizes S / M / L = 2 / 3 / 4 rows (Settings). When the lock screen runs out
 // of room, rows go first (down to one), then the widget. The time column
-// shows clock times, never a countdown: nothing here changes by the minute.
+// shows minutes to go ("6 m") or, by a setting, clock times; the minutes
+// ride on the lock screen's own redraw each minute for the clock.
 // =============================================================================
 
 #if defined(MECK_TRANSIT) && MECK_TRANSIT && defined(MECK_UI_V2)
@@ -28,6 +29,7 @@ struct LockTransitWidget : Ui2LockWidget {
 
   const uint8_t* enabled = nullptr;   // NodePrefs::lock_transit
   const uint8_t* size = nullptr;      // NodePrefs::lock_transit_rows (2-4)
+  const uint8_t* countdown = nullptr; // NodePrefs::lock_transit_countdown
   const int8_t* utcHours = nullptr;   // NodePrefs::utc_offset_hours
   int fitRows = 0;                    // rows the last layout gave it (0 = not drawn yet)
 
@@ -133,13 +135,15 @@ struct LockTransitWidget : Ui2LockWidget {
       return;
     }
     // The time column is as wide as the widest time on the board
+    char tm[TR_MAX_ROWS][8];
     int16_t timeW = 0;
     for (int i = 0; i < rows; i++) {
-      int16_t tw = Ui2Canvas::textWidth(b.rows[i].time.hm, UI2_F_NODE);
+      trRowTime(b, i, countdown && *countdown, now, off(), tm[i], sizeof(tm[i]));
+      int16_t tw = Ui2Canvas::textWidth(tm[i], UI2_F_NODE);
       if (tw > timeW) timeW = tw;
     }
     for (int i = 0; i < rows; i++, y += ROW_H)
-      drawRow(c, x, y, thenX, timeW, anyPlat, b.rows[i]);
+      drawRow(c, x, y, thenX, timeW, anyPlat, b.rows[i], tm[i]);
   }
 
 private:
@@ -148,7 +152,7 @@ private:
     c.fill(xEnd + 1, baseline - Ui2Canvas::capHeight(f) - 1, 2, 2);
   }
 
-  void drawRow(Ui2Canvas& c, int16_t x, int16_t y, int16_t thenX, int16_t timeW, bool anyPlat, const TrRow& r) {
+  void drawRow(Ui2Canvas& c, int16_t x, int16_t y, int16_t thenX, int16_t timeW, bool anyPlat, const TrRow& r, const char* tm) {
     int16_t lx = x;
     // Line chip, inverted
     if (r.line[0]) {
@@ -172,9 +176,9 @@ private:
     rx -= 3;   // the dot of a late time
     const int16_t tb = Ui2Canvas::lineBaseline(UI2_F_NODE, y, ROW_H);
     const int16_t tl = rx - timeW;
-    if (r.time.hm[0]) {
-      int16_t tw = Ui2Canvas::textWidth(r.time.hm, UI2_F_NODE);
-      int16_t e = c.text(rx - tw, tb, r.time.hm, UI2_F_NODE);
+    if (tm[0]) {
+      int16_t tw = Ui2Canvas::textWidth(tm, UI2_F_NODE);
+      int16_t e = c.text(rx - tw, tb, tm, UI2_F_NODE);
       if (r.time.late) lateDot(c, e, tb, UI2_F_NODE);
     }
     rx = tl - GAP;

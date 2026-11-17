@@ -44,6 +44,7 @@ struct TrRow {
   char badge[8];     // outlined chip: "+2", "+8 h", "72 %"; "" = none
   char plat[4];      // platform box: "1", "B"; "" = none
   bool platChanged;  // 2 px border
+  int16_t delay;     // minutes late (0 = on time or not known): the time is the timetable's
   TrTime time;       // bold time column
   TrTime then[TR_THEN];
 };
@@ -351,7 +352,10 @@ static inline void trReadRow(const char* r, const char* re, TrRow& row) {
   if (!bv || !trJsonText(bv, re, row.badge, sizeof(row.badge))) {
     const char* dv = trJsonGetAny(r, re, kDelay);
     if (dv && *dv == '"') trJsonText(dv, re, row.badge, sizeof(row.badge));
-    else if (trJsonLong(dv, re, x)) trDelayChip(x, row.badge, sizeof(row.badge));
+    else if (trJsonLong(dv, re, x)) {
+      trDelayChip(x, row.badge, sizeof(row.badge));
+      if (x > 0) row.delay = (int16_t)(x > 1440 ? 1440 : x);
+    }
     else if (trJsonLong(trJsonGetAny(r, re, kProb), re, x)) snprintf(row.badge, sizeof(row.badge), "%ld %%", x);
   }
   if (strcmp(row.badge, "0") == 0 || strcmp(row.badge, "+0") == 0) row.badge[0] = 0;
@@ -532,6 +536,31 @@ static inline TrView trViewAt(const TrBoard& b, bool have, bool lastOk, uint32_t
   }
   if (fresh && b.nRows) v.state = TR_ROWS;
   return v;
+}
+
+// --- The time column ----------------------------------------------------------------
+
+// Minutes from `now` until the row really leaves (timetable time plus the
+// delay); -1 when it has left, or the time is no clock time ("»7:30")
+static inline int trMinutesTo(const TrRow& r, uint32_t now, int32_t offSec) {
+  int h, m;
+  if (r.time.hm[0] < '0' || r.time.hm[0] > '9' || sscanf(r.time.hm, "%d:%d", &h, &m) != 2) return -1;
+  const int nowMin = (int)(((((int64_t)now + offSec) % 86400 + 86400) % 86400) / 60);
+  const int d = ((h * 60 + m + r.delay - nowMin) % 1440 + 1440) % 1440;
+  return d < 720 ? d : -1;   // the other half of the day: it is behind us
+}
+
+// What the bold time column of row i shows. countdown = minutes to go
+// ("6 m", "teď") instead of the clock time, for runs within the hour: every
+// row of a stop board, but of a trip only the first one (when to leave, or
+// while riding when to get off); its later rides keep their clock times.
+static inline void trRowTime(const TrBoard& b, int i, bool countdown, uint32_t now, int32_t offSec, char* out, size_t n) {
+  const TrRow& r = b.rows[i];
+  const bool board = !b.kind[0] || strcmp(b.kind, "board") == 0;
+  int min = countdown && (board || i == 0) ? trMinutesTo(r, now, offSec) : -1;
+  if (min == 0) snprintf(out, n, "te\xC4\x8F");
+  else if (min > 0 && min < 60) snprintf(out, n, "%d m", min);
+  else snprintf(out, n, "%s", r.time.hm);
 }
 
 static inline bool trViewEqual(const TrView& a, const TrView& b) {

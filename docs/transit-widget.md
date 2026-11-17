@@ -26,7 +26,8 @@ card; `get transit` never prints the token:
     set transit.url                            forget it again (same for the token)
 
 Then switch it on in Settings > Experimental. **Departures size** under it
-picks S / M / L = 2 / 3 / 4 rows. Without an address and a token the widget is
+picks S / M / L = 2 / 3 / 4 rows, and **Minutes to departure** (on by
+default) whether the time column counts down or shows clock times. Without an address and a token the widget is
 not shown at all.
 
 Over plain `http://` the token goes unencrypted; use it on the home network
@@ -43,15 +44,18 @@ Neujede):
 | text | `t` | Noto 11, one line, ellipsis |
 | delay chip | `d` (minutes) or `p` (transfer probability) | outlined, `+2`, from 60 min in hours `+8 h`, `72 %`; none on time |
 | platform | `pl`, `pc` | 14 × 14 box, 2 px border when the platform changed |
-| time | `at` | bold, clock time (`7:41`), timetable time: the delay is in its chip |
+| time | `at`, `d` | bold. Minutes to go (`6 m`, `teď` within the minute), counted from `at` plus the delay; clock time (`7:41`, the timetable's) when it is an hour or more away, has left, or with "Minutes to departure" off |
 | then | `then[]` | up to two clock times; a 2 px dot after a time = that run is 5 min or more late. An option row's arrival `arr` follows as `»7:30` |
 
 The header is `h` in capitals; for a trip with `dep` and `arr` too
 (`DO PRÁCE 6:55»7:30`). The right column says "then".
 
 - The UI v2 fonts have no arrow: `→` in the server's texts is drawn as `»`.
-- The time column shows clock times, never a countdown, so nothing in the
-  block changes from one minute to the next.
+- The minutes are counted by the deck from its own clock, so they move
+  without a request, on the lock screen's redraw each minute for the clock.
+  On a stop board every row counts down. Of a trip only the first row does
+  (when to leave; while riding, when to get off): the later rides keep
+  their clock times.
 - **Stale mark**: when the last request failed, or the rows are older than
   their `validUntil` (and a request's worth), the right slot of the header
   shows a refresh icon and the time of the last good reply instead of

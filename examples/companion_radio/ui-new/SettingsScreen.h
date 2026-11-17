@@ -308,6 +308,7 @@ enum SettingsRowType : uint8_t {
 #if defined(MECK_TRANSIT) && MECK_TRANSIT && defined(MECK_UI_V2)
   ROW_LOCK_TRANSIT,     // Toggle: Neujede departures on the lock screen
   ROW_LOCK_TRANSIT_SIZE,// Enter cycles S / M / L (2 / 3 / 4 rows)
+  ROW_LOCK_TRANSIT_MIN, // Toggle: minutes to go instead of clock times
 #endif
 };
 
@@ -672,7 +673,10 @@ private:
 #endif
 #if defined(MECK_TRANSIT) && MECK_TRANSIT && defined(MECK_UI_V2)
       addRow(ROW_LOCK_TRANSIT);
-      if (_prefs->lock_transit) addRow(ROW_LOCK_TRANSIT_SIZE);
+      if (_prefs->lock_transit) {
+        addRow(ROW_LOCK_TRANSIT_SIZE);
+        addRow(ROW_LOCK_TRANSIT_MIN);
+      }
 #endif
 #if defined(LilyGo_TDeck_Pro)
     } else if (_subScreen == SUB_SOS) {
@@ -3096,6 +3100,11 @@ public:
         display.print(tmp);
         break;
       }
+      case ROW_LOCK_TRANSIT_MIN:
+        snprintf(tmp, sizeof(tmp), MECK_TR("  Minutes to departure: %s", "  Minutes avant le d\xC3\xA9part : %s"),
+                 _prefs->lock_transit_countdown ? MECK_TR("ON", "OUI") : MECK_TR("OFF", "NON"));
+        display.print(tmp);
+        break;
 #endif
 
       case ROW_TELEM_PROMPT: {
@@ -5666,6 +5675,14 @@ public:
           the_mesh.savePrefs();
           meckTransitChanged();
           Serial.printf("Settings: departures size = %d rows\n", _prefs->lock_transit_rows);
+          break;
+        }
+        case ROW_LOCK_TRANSIT_MIN: {
+          extern void meckTransitChanged();
+          _prefs->lock_transit_countdown = _prefs->lock_transit_countdown ? 0 : 1;
+          the_mesh.savePrefs();
+          meckTransitChanged();
+          Serial.printf("Settings: minutes to departure = %s\n", _prefs->lock_transit_countdown ? "ON" : "OFF");
           break;
         }
 #endif

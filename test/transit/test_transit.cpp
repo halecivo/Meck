@@ -256,6 +256,47 @@ static void testNeujedeExamples() {
   CHECK_EQ(trViewAt(b, true, true, TS, OFF).state, TR_EMPTY);
 }
 
+// The time column: minutes to go, or the clock time
+static void testCountdown() {
+  TrBoard b;
+  char o[8];
+  // NOW is 07:24:15 local
+  CHECK(parse("{\"kind\":\"board\",\"rows\":[{\"at\":\"07:30\"},{\"at\":\"07:28\",\"d\":3},{\"at\":\"07:24\"},"
+              "{\"at\":\"08:24\"}]}", b));
+  CHECK_EQ(b.rows[1].delay, 3);
+  trRowTime(b, 0, true, NOW, OFF, o, sizeof(o));
+  CHECK_STR(o, "6 m");
+  trRowTime(b, 0, false, NOW, OFF, o, sizeof(o));   // switched off: the clock time
+  CHECK_STR(o, "7:30");
+  trRowTime(b, 1, true, NOW, OFF, o, sizeof(o));    // the delay counts: 7:31 for real
+  CHECK_STR(o, "7 m");
+  trRowTime(b, 2, true, NOW, OFF, o, sizeof(o));    // within this minute
+  CHECK_STR(o, "te\xC4\x8F");
+  trRowTime(b, 3, true, NOW, OFF, o, sizeof(o));    // an hour or more: the clock time
+  CHECK_STR(o, "8:24");
+  trRowTime(b, 0, true, NOW + 45, OFF, o, sizeof(o));   // 07:25:00
+  CHECK_STR(o, "5 m");
+  trRowTime(b, 0, true, NOW + 600, OFF, o, sizeof(o));  // it has left
+  CHECK_STR(o, "7:30");
+  // Over midnight, and a run 8 hours late that comes in a minute
+  CHECK(parse("{\"rows\":[{\"at\":\"00:05\"},{\"at\":\"23:12\",\"d\":489}]}", b));
+  trRowTime(b, 0, true, NOW + 16 * 3600 + 30 * 60, OFF, o, sizeof(o));   // 23:54
+  CHECK_STR(o, "11 m");
+  CHECK_EQ(trMinutesTo(b.rows[1], NOW - 4 * 60, OFF), 1);                 // 07:20, real 07:21
+  // A trip: only the first row counts down
+  CHECK(parse("{\"kind\":\"trip\",\"rows\":[{\"at\":\"07:30\"},{\"at\":\"07:40\"}]}", b));
+  trRowTime(b, 0, true, NOW, OFF, o, sizeof(o));
+  CHECK_STR(o, "6 m");
+  trRowTime(b, 1, true, NOW, OFF, o, sizeof(o));
+  CHECK_STR(o, "7:40");
+  // No time, or no clock time
+  CHECK(parse("{\"rows\":[{\"l\":\"B\"},{\"at\":\"soon\"}]}", b));
+  trRowTime(b, 0, true, NOW, OFF, o, sizeof(o));
+  CHECK_STR(o, "");
+  trRowTime(b, 1, true, NOW, OFF, o, sizeof(o));
+  CHECK_STR(o, "soon");
+}
+
 int main() {
   testNeujedeExamples();
   testMock();
@@ -265,6 +306,7 @@ int main() {
   testUrl();
   testSchedule();
   testView();
+  testCountdown();
   printf("%d checks, %d failures\n", checks, failures);
   return failures ? 1 : 0;
 }

@@ -268,20 +268,31 @@ void MeckTransit::pmHold(bool on) {
 // while one is shown). The rows follow the design's examples.
 void MeckTransit::demo(const char* what, uint32_t now, int32_t offSec) {
   // In the /compact/widget v1 format (halecivo/neujede PR #24, api/README.md)
-  static const char* const kBoard =
+  // Times from now on, so the minutes to go have something to count
+  char tb[20][6];
+  int ti = 0;
+  auto hm = [&](int inMin) -> const char* {
+    const unsigned l = (unsigned)((((int64_t)now + offSec) % 86400 + 86400) % 86400) / 60 + (unsigned)inMin;
+    char* o = tb[ti++ % 20];
+    snprintf(o, 6, "%02u:%02u", (l / 60) % 24, l % 60);
+    return o;
+  };
+  static const char* const kBoardFmt =
     "{\"v\":1,\"kind\":\"board\",\"h\":\"\xC5\x98\xC3\xAD\xC4\x8D" "any, n\xC3\xA1" "dra\xC5\xBE\xC3\xAD\",\"rows\":["
-    "{\"m\":\"R\",\"l\":\"S9\",\"t\":\"Praha hl.n.\",\"pl\":\"1\",\"at\":\"07:41\",\"then\":[{\"t\":\"07:45\"},{\"t\":\"08:15\",\"late\":1}]},"
-    "{\"m\":\"B\",\"l\":\"381\",\"t\":\"H\xC3\xA1je\",\"d\":2,\"pl\":\"B\",\"at\":\"07:28\",\"then\":[{\"t\":\"07:28\"},{\"t\":\"07:43\"}]},"
-    "{\"m\":\"R\",\"l\":\"S9\",\"t\":\"Bene\xC5\xA1ov u Prahy\",\"d\":5,\"pl\":\"3\",\"pc\":1,\"at\":\"07:35\",\"then\":[{\"t\":\"07:53\"},{\"t\":\"08:23\"}]},"
-    "{\"m\":\"R\",\"l\":\"S9\",\"t\":\"Praha Masarykovo n.\",\"d\":489,\"pl\":\"2\",\"at\":\"23:12\",\"then\":[{\"t\":\"08:12\"}]}"
+    "{\"m\":\"R\",\"l\":\"S9\",\"t\":\"Praha hl.n.\",\"pl\":\"1\",\"at\":\"%s\",\"then\":[{\"t\":\"%s\"},{\"t\":\"%s\",\"late\":1}]},"
+    "{\"m\":\"B\",\"l\":\"381\",\"t\":\"H\xC3\xA1je\",\"d\":2,\"pl\":\"B\",\"at\":\"%s\",\"then\":[{\"t\":\"%s\"},{\"t\":\"%s\"}]},"
+    "{\"m\":\"R\",\"l\":\"S9\",\"t\":\"Bene\xC5\xA1ov u Prahy\",\"d\":5,\"pl\":\"3\",\"pc\":1,\"at\":\"%s\",\"then\":[{\"t\":\"%s\"},{\"t\":\"%s\"}]},"
+    "{\"m\":\"R\",\"l\":\"S9\",\"t\":\"Praha Masarykovo n.\",\"d\":489,\"pl\":\"2\",\"at\":\"23:12\",\"then\":[{\"t\":\"%s\"}]}"
     "],\"validUntil\":300,\"key\":\"demo1\"}";
-  static const char* const kTrip =
-    "{\"v\":1,\"kind\":\"trip\",\"h\":\"Do pr\xC3\xA1" "ce\",\"dep\":\"06:55\",\"arr\":\"07:30\",\"rows\":["
-    "{\"m\":\"T\",\"l\":\"17\",\"t\":\"Bran\xC3\xADk\xE2\x86\x92Palack\xC3\xA9ho\",\"d\":1,\"pl\":\"A\",\"at\":\"07:04\",\"then\":[{\"t\":\"07:12\"},{\"t\":\"07:20\",\"late\":1}]},"
-    "{\"m\":\"M\",\"l\":\"B\",\"t\":\"Karlovo n.\xE2\x86\x92" "Florenc\",\"p\":72,\"pl\":\"2\",\"at\":\"07:20\",\"then\":[{\"t\":\"07:23\"},{\"t\":\"07:27\"}]},"
-    "{\"m\":\"R\",\"l\":\"S9\",\"t\":\"p\xC5\x99" "es Praha hl.n.\",\"at\":\"07:10\",\"arr\":\"07:32\"}"
+  static const char* const kTripFmt =
+    "{\"v\":1,\"kind\":\"trip\",\"h\":\"Do pr\xC3\xA1" "ce\",\"dep\":\"%s\",\"arr\":\"%s\",\"rows\":["
+    "{\"m\":\"T\",\"l\":\"17\",\"t\":\"Bran\xC3\xADk\xE2\x86\x92Palack\xC3\xA9ho\",\"d\":1,\"pl\":\"A\",\"at\":\"%s\",\"then\":[{\"t\":\"%s\"},{\"t\":\"%s\",\"late\":1}]},"
+    "{\"m\":\"M\",\"l\":\"B\",\"t\":\"Karlovo n.\xE2\x86\x92" "Florenc\",\"p\":72,\"pl\":\"2\",\"at\":\"%s\",\"then\":[{\"t\":\"%s\"},{\"t\":\"%s\"}]},"
+    "{\"m\":\"R\",\"l\":\"S9\",\"t\":\"p\xC5\x99" "es Praha hl.n.\",\"at\":\"%s\",\"arr\":\"%s\"}"
     "],\"validUntil\":300,\"key\":\"demo2\"}";
-  const char* src = strcmp(what, "trip") == 0 ? kTrip : kBoard;
+  static char src[900];
+  if (strcmp(what, "trip") == 0) snprintf(src, sizeof(src), kTripFmt, hm(7), hm(42), hm(6), hm(14), hm(22), hm(22), hm(25), hm(29), hm(12), hm(44));
+  else snprintf(src, sizeof(src), kBoardFmt, hm(3), hm(11), hm(41), hm(7), hm(7), hm(22), hm(14), hm(32), hm(62), hm(75));
   TrBoard b;
   if (!trParse(src, strlen(src), now, offSec, b)) return;
   int n = atoi(what);

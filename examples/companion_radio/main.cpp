@@ -9518,6 +9518,7 @@ void meckTransitSetup() {
   NodePrefs* p = the_mesh.getNodePrefs();
   meckTransitWidget.enabled = &p->lock_transit;
   meckTransitWidget.size = &p->lock_transit_rows;
+  meckTransitWidget.countdown = &p->lock_transit_countdown;
   meckTransitWidget.utcHours = &p->utc_offset_hours;
   ui_task.addLockWidget(&meckTransitWidget);   // after the agenda: under it
 #endif

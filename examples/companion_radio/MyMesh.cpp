@@ -1818,6 +1818,7 @@ MyMesh::MyMesh(mesh::Radio &radio, mesh::RNG &rng, mesh::RTCClock &rtc, SimpleMe
   _prefs.lock_weather = 0;     // nor weather: it sends the position to Open-Meteo
   _prefs.lock_transit = 0;     // nor departures: they need a Neujede server and token
   _prefs.lock_transit_rows = 3;   // departures size M
+  _prefs.lock_transit_countdown = 1;   // minutes to go, not clock times
   _prefs.multi_acks = 1;      // redundant ACKs on by default
   strcpy(_prefs.node_name, "NONAME");
   _prefs.freq = LORA_FREQ;
