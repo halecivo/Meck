@@ -75,6 +75,11 @@ public:
   // `ink` is the pill colour; the number uses the opposite. Returns its width.
   int16_t badge(int16_t x, int16_t top, int16_t h, const char* text, bool ink = true);
   static int16_t badgeWidth(int16_t h, const char* text);
+  // Small count badge on an icon's corner (12 px, Montserrat 9, radius 6),
+  // ringed by 1 px of paper so it stays apart from the icon under it.
+  // (x, top) is the badge's own corner. Returns its width.
+  int16_t cornerBadge(int16_t x, int16_t top, const char* text, bool ink = true);
+  static int16_t cornerBadgeWidth(const char* text);
   // 26 x 14 toggle
   void toggle(int16_t x, int16_t top, bool on, bool ink = true);
   // Segmented bar: `total` segments in w px, the first `filled` ones solid

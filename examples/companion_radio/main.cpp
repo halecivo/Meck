@@ -176,7 +176,19 @@
   // CalDAV account (experimental, docs/caldav-design.md)
   #include "MeckDav.h"
   #include "DavScreen.h"
+  #include "LockAgendaWidget.h"
   void meckDavTick();
+  void meckAgendaSetup();
+  #endif
+
+  // Where the deck is: GPS, the serving cell, the advert position (docs/position.md)
+  #include "MeckPosition.h"
+  static void meckPositionTick();
+
+  #if defined(MECK_WEATHER) && MECK_WEATHER
+  // Weather next to the lock screen clock (docs/weather.md)
+  #include "MeckWeather.h"
+  void meckWeatherTick();
   #endif
 
   // SD-backed persistence state
@@ -1590,10 +1602,47 @@ static void meckWifiOff() {
   WiFi.mode(WIFI_OFF);
 }
 
+// What the user left on is kept over a restart (not over "Power off" in the
+// menu), as the modem is. The lock policy pauses WiFi and brings it back by
+// itself: that is not the user's choice, so it holds the saving off.
+#include <Preferences.h>
+static bool meckRadioSaveHold = false;
+
+static void meckRadioSave(const char* key, bool on) {
+  if (meckRadioSaveHold) return;
+  Preferences p;
+  if (!p.begin("meckrad", false)) return;
+  if (p.getBool(key, !on) != on) p.putBool(key, on);
+  p.end();
+}
+
+// "Power off" from the menu: the next start is a cold one, both off
+void meckRadioForget() {
+  Preferences p;
+  if (!p.begin("meckrad", false)) return;
+  p.clear();
+  p.end();
+}
+
+bool meckCompanionUseBLE();
+bool meckCompanionUseWiFi(bool connectSaved);
+
+// Called once at the end of setup(), after the SD card and the UI are up
+static void meckRadioRestore() {
+  Preferences p;
+  if (!p.begin("meckrad", true)) return;
+  bool ble = p.getBool("ble", false), wifi = p.getBool("wifi", false);
+  p.end();
+  Serial.printf("Companion: restoring after restart: Bluetooth %d, WiFi %d\n", ble, wifi);
+  if (ble) meckCompanionUseBLE();
+  if (wifi) meckCompanionUseWiFi(true);
+}
+
 // Bluetooth off; WiFi stays as it is
 void meckCompanionBleOff() {
   if (!meckCompanionIsBLE()) return;
   ble_companion.disable();
+  meckRadioSave("ble", false);
   Serial.println("Companion: Bluetooth off");
   meckLogMemory("Bluetooth off");
 }
@@ -1602,6 +1651,7 @@ void meckCompanionBleOff() {
 void meckCompanionWifiOff() {
   if (!meckCompanionIsWiFi() && WiFi.getMode() == WIFI_OFF) return;
   meckWifiOff();
+  meckRadioSave("wifi", false);
   Serial.println("Companion: WiFi off");
   meckLogMemory("WiFi off");
 }
@@ -1616,6 +1666,7 @@ void meckCompanionUseNone() {
 bool meckCompanionUseBLE() {
   if (meckCompanionIsBLE()) return true;
   ble_companion.enable();
+  meckRadioSave("ble", true);
   Serial.println("Companion: Bluetooth on");
   meckLogMemory("Bluetooth on");
   return true;
@@ -1640,6 +1691,7 @@ bool meckCompanionUseWiFi(bool connectSaved) {
     meckWifiServerStarted = true;
   }
   wifi_companion.enable();
+  meckRadioSave("wifi", true);
   if (connectSaved) {
     char ssid[33], pass[64];
     if (meckWifiCfgRead(ssid, sizeof(ssid), pass, sizeof(pass)) && ssid[0]) {
@@ -3384,6 +3436,10 @@ void setup() {
 #endif
 #if defined(MECK_DAV) && MECK_DAV
   meckDav.begin();
+  meckAgendaSetup();
+#endif
+#if defined(MECK_WEATHER) && MECK_WEATHER
+  meckWeather.begin();
 #endif
 
   // ---------------------------------------------------------------------------
@@ -3640,6 +3696,7 @@ void setup() {
 #endif
 #if defined(BLE_PIN_CODE) && defined(MECK_WIFI_COMPANION)
   meckLogMemory("boot, both off");
+  meckRadioRestore();   // what was on before a restart
 #endif
   {
     void* p25 = malloc(25000); void* p10 = malloc(10000); void* p4 = malloc(4000);
@@ -4333,7 +4390,9 @@ void meckLockPolicy(bool locking) {
   NodePrefs* p = the_mesh.getNodePrefs();
   if (locking) {
     if (!(p->lock_keep & LOCK_KEEP_WIFI) && meckCompanionIsWiFi()) {
+      meckRadioSaveHold = true;   // a pause, not the user's choice
       meckCompanionWifiOff();
+      meckRadioSaveHold = false;
       meckPausedWifi = true;
     }
     // A running SOS switches the GPS itself
@@ -4349,7 +4408,11 @@ void meckLockPolicy(bool locking) {
     Serial.printf("[Power] Locked: paused%s%s%s\n", meckPausedWifi ? " WiFi" : "",
                   meckPausedGps ? " GPS" : "", meckPausedModem ? " 4G" : "");
   } else {
-    if (meckPausedWifi) meckCompanionUseWiFi(true);
+    if (meckPausedWifi) {
+      meckRadioSaveHold = true;
+      meckCompanionUseWiFi(true);
+      meckRadioSaveHold = false;
+    }
     if (meckPausedGps && ui_task.getGPSState()) {
       sensors.setSettingValue("gps", "1");
       board.gpsPowerOn();
@@ -4568,14 +4631,26 @@ bool meckAutoSleepPossible() {
 #endif
 }
 
-// The blocker to tell the user about. With UART sleep the modem is not named:
-// idle it lets the deck sleep, and the moments it works cost next to nothing.
+// The blocker to tell the user about: the mode, not what holds the deck up
+// for a moment. With UART sleep the modem is not named: idle it lets the deck
+// sleep, and the moments it works cost next to nothing. A sync window and
+// recent audio end by themselves within seconds, so they are not named
+// either. WiFi the deck can sleep with is not named when something after it
+// (USB power) keeps it awake: that one is.
 int meckSleepBlockerShown() {
 #if defined(HAS_4G_MODEM) && defined(MODEM_UART_SLEEP)
-  return meckLockSleepBlockerEx(true);
+  int b = meckLockSleepBlockerEx(true);
 #else
-  return meckLockSleepBlocker();
+  int b = meckLockSleepBlocker();
 #endif
+#ifdef MECK_AUTO_LIGHT_SLEEP
+  if (b == MECK_SLEEP_WIFI && WiFi.getMode() == WIFI_MODE_STA) {
+    int after = meckLockSleepBlockerEx(true, false);
+    if (after != MECK_SLEEP_OK && after != MECK_SLEEP_PHONE) b = after;
+  }
+#endif
+  if (b == MECK_SLEEP_SYNC || b == MECK_SLEEP_AUDIO) b = MECK_SLEEP_OK;
+  return b;
 }
 
 // Whether the blocker, a connected phone or WiFi on, still lets the locked
@@ -4591,16 +4666,11 @@ bool meckBlockerSleeps() {
 #endif
 }
 
-// What stays on while the locked deck sleeps ("app, Wi-Fi, 4G, GPS", empty
-// with nothing), so the lock screen does not name only the one that chose
-// the automatic sleep. Before locking, without what the "When locked"
-// switches will pause.
-void meckSleepKeepsText(char* buf, size_t len) {
-  buf[0] = 0;
-  auto add = [&](const char* name) {
-    if (buf[0]) strlcat(buf, ", ", len);
-    strlcat(buf, name, len);
-  };
+// What stays on while the locked deck sleeps (MECK_KEEP_* bits), so the
+// lock screen does not name only the one that chose the automatic sleep.
+// Before locking, without what the "When locked" switches will pause.
+uint8_t meckSleepKeepsMask() {
+  uint8_t m = 0;
 #ifdef MECK_QUICK_SETTINGS
   const NodePrefs* p = the_mesh.getNodePrefs();
   const bool unlocked = !ui_task.isLocked();
@@ -4615,12 +4685,35 @@ void meckSleepKeepsText(char* buf, size_t len) {
 #ifdef MECK_BLE_LOCK_WINDOWS
   if (meckBleWindowed()) phone = false;   // the sync windows decide
 #endif
-  if (phone) add(MECK_TR("app", "appli"));
-  if (WiFi.getMode() != WIFI_MODE_NULL && !wifiPauses) add("Wi-Fi");
-#ifdef HAS_4G_MODEM
-  if (modemManager.getState() != ModemState::OFF && !modemPauses) add("4G");
+  if (phone) {
+    m |= MECK_KEEP_APP;
+    // Over BLE keeps the BLE radio up; over WiFi the WiFi bit says it already
+#if defined(BLE_PIN_CODE) && defined(MECK_WIFI_COMPANION)
+    if (meckCompanionBleConnected()) m |= MECK_KEEP_BLE;
+#elif defined(BLE_PIN_CODE)
+    m |= MECK_KEEP_BLE;
 #endif
-  if (ui_task.getGPSState() && !gpsPauses) add("GPS");
+  }
+  if (WiFi.getMode() != WIFI_MODE_NULL && !wifiPauses) m |= MECK_KEEP_WIFI;
+#ifdef HAS_4G_MODEM
+  if (modemManager.getState() != ModemState::OFF && !modemPauses) m |= MECK_KEEP_MODEM;
+#endif
+  if (ui_task.getGPSState() && !gpsPauses) m |= MECK_KEEP_GPS;
+  return m;
+}
+
+// The same as text: "app, Wi-Fi, 4G, GPS", empty with nothing
+void meckSleepKeepsText(char* buf, size_t len) {
+  buf[0] = 0;
+  auto add = [&](const char* name) {
+    if (buf[0]) strlcat(buf, ", ", len);
+    strlcat(buf, name, len);
+  };
+  const uint8_t m = meckSleepKeepsMask();
+  if (m & MECK_KEEP_APP) add(MECK_TR("app", "appli"));
+  if (m & MECK_KEEP_WIFI) add("Wi-Fi");
+  if (m & MECK_KEEP_MODEM) add("4G");
+  if (m & MECK_KEEP_GPS) add("GPS");
 }
 
 // Called at the end of loop() instead of the plain locked-loop delay
@@ -5387,6 +5480,10 @@ void loop() {
   #endif
   #if defined(MECK_DAV) && MECK_DAV
   meckDavTick();           // CalDAV account: pairing web server and discovery
+  #endif
+  meckPositionTick();      // GPS, cell and advert position for the apps
+  #if defined(MECK_WEATHER) && MECK_WEATHER
+  meckWeatherTick();       // lock screen weather: requests, and its state before the minute redraw
   #endif
   #ifdef MECK_OTA_UPDATE
   if (!otaRadioPaused) {
@@ -6881,7 +6978,10 @@ void handleKeyboardInput() {
       return;
     }
     
-    // A/D keys switch channels (only when buffer is empty, not in DM mode)
+#ifndef MECK_UI_V2
+    // A/D keys switch channels (only when buffer is empty, not in DM mode).
+    // Not in UI v2: a message starting with "a" or "d" lost its first letter
+    // and landed in another channel; the channel is chosen before writing.
     if ((key == 'a') && composePos == 0 && !composeDM) {
       // Previous channel — skip gaps
       if (composeChannelIdx > 0) {
@@ -6938,7 +7038,8 @@ void handleKeyboardInput() {
       composeNeedsRefresh = true; lastComposeKeystroke = millis();  // Debounced refresh
       return;
     }
-    
+#endif
+
     // '$' key (without Sym) opens emoji picker
     if (key == KB_KEY_EMOJI) {
       emojiPicker.reset();
@@ -8461,9 +8562,9 @@ static void drawComposeScreenV2() {
   c.segBar(PAD, barY + 4, SCREEN_W - 2 * PAD - cw - 6, 6, (composePos * 20 + maxBytes - 1) / maxBytes, 20);
 
   if (composePos == 0) {
-    const Ui2Key keys[] = { ui2Key("A/D", MECK_TR("Channel", "Canal")), ui2Key("$", "Emoji"),
-                            ui2Key("Sh+Del", MECK_TR("Cancel", "Annuler")) };
-    Ui2Chrome::footer(c, keys, 3);
+    // A/D no longer switch the channel here (they type letters)
+    const Ui2Key keys[] = { ui2Key("$", "Emoji"), ui2Key("Sh+Del", MECK_TR("Cancel", "Annuler")) };
+    Ui2Chrome::footer(c, keys, 2);
   } else {
     const Ui2Key keys[] = { ui2KeyIcon(UI2_IC_ENTER, MECK_TR("Send", "Envoyer")), ui2Key("$", "Emoji"),
                             ui2Key("Sh+Del", MECK_TR("Cancel", "Annuler")) };
@@ -8788,19 +8889,154 @@ void meckTelemetryPromptAnswer(const uint8_t* pubKey, const char* name, bool all
   ui_task.showAlert(msg, 2000);
 }
 
-// Own position for "Send my location": a GPS fix, else the advert position
-static bool meckOwnPosition(double& lat, double& lon) {
+// --- Position sources (docs/position.md) -------------------------------------
+// GPS, the serving cell and the advert position, each with its radius; apps
+// ask meckPosition.best() for the accuracy class they need. Times are
+// seconds of uptime, not the RTC, which can jump when it is set.
+static MeckPosition meckPosition;
+static const uint32_t MECK_GPS_RADIUS_M = 25;     // a typical fix in the open
+static const uint32_t MECK_CELL_MAX_AGE_S = 900;  // re-read the cell after this when it is used
+
+static uint32_t meckPosNow() { return millis() / 1000 + 1; }   // 0 means "no time"
+
+#ifdef HAS_4G_MODEM
+// The cell database of the cell's country on the SD card
+struct MeckSdCellIo : CellDbIo {
+  File f;
+  bool read(uint32_t off, void* buf, uint32_t n) override {
+    return f && f.seek(off) && f.read((uint8_t*)buf, n) == (int)n;
+  }
+};
+
+static CellId meckCellSeen = {};
+static uint32_t meckCellSeenAt = 0;    // modem's read time (millis) we last looked at
+static bool meckCellNeeded = false;    // an app wants the cell position (see meckPositionWant)
+static char meckCellNote[48] = "no cell read yet";
+
+static bool meckCellLookup(const CellId& id, CellFix& out) {
+  if (!sdCardReady) { snprintf(meckCellNote, sizeof(meckCellNote), "no SD card"); return false; }
+  char path[24];
+  snprintf(path, sizeof(path), "/cells/%u.bin", id.mcc);
+  MeckSdCellIo io;
+  io.f = SD.open(path, FILE_READ);
+  if (!io.f) { snprintf(meckCellNote, sizeof(meckCellNote), "no %s", path); return false; }
+  CellDbHeader h;
+  bool ok = cellDbHeader(io, h) && cellDbLocate(io, h, id, out);
+  if (!ok) snprintf(meckCellNote, sizeof(meckCellNote), "cell not in %s", path);
+  else snprintf(meckCellNote, sizeof(meckCellNote), out.exact ? "cell found" : "area of %u cells", (unsigned)out.cells);
+  io.f.close();
+  return ok;
+}
+#endif
+
+// Every loop: feed the sources
+static void meckPositionTick() {
+  const uint32_t now = meckPosNow();
+  if (sensors.node_lat != 0 || sensors.node_lon != 0) {
+    MeckFix f = { sensors.node_lat, sensors.node_lon, MeckPosition::STORED_RADIUS_M, 0, POS_SRC_STORED, 0 };
+    meckPosition.set(f);
+  } else {
+    meckPosition.clear(POS_SRC_STORED);
+  }
 #if ENV_INCLUDE_GPS == 1
   LocationProvider* lp = sensors.getLocationProvider();
-  if (the_mesh.getNodePrefs()->gps_enabled && lp && lp->isValid()) {
-    lat = lp->getLatitude() / 1000000.0;
-    lon = lp->getLongitude() / 1000000.0;
-    if (lat != 0 || lon != 0) return true;
+  if (the_mesh.getNodePrefs()->gps_enabled && lp && lp->isValid() && (lp->getLatitude() || lp->getLongitude())) {
+    MeckFix f = { lp->getLatitude() / 1000000.0, lp->getLongitude() / 1000000.0, MECK_GPS_RADIUS_M, now, POS_SRC_GPS, 0 };
+    meckPosition.set(f);   // a fix that stops coming ages out by itself
   }
 #endif
-  lat = sensors.node_lat;
-  lon = sensors.node_lon;
-  return lat != 0 || lon != 0;
+#ifdef HAS_4G_MODEM
+  CellId id;
+  uint32_t atMs;
+  const bool have = modemManager.cellInfo(id, atMs);
+  if (atMs != meckCellSeenAt) {   // a new read
+    meckCellSeenAt = atMs;
+    const uint32_t at = atMs / 1000 + 1;
+    if (!have) {
+      meckPosition.clear(POS_SRC_CELL);
+      snprintf(meckCellNote, sizeof(meckCellNote), "no service");
+    } else if (cellIdEqual(id, meckCellSeen) && meckPosition.has(POS_SRC_CELL)) {
+      MeckFix f = meckPosition.fix(POS_SRC_CELL);   // same cell: the position is new again
+      f.at = at;
+      meckPosition.set(f);
+    } else {
+      meckCellSeen = id;
+      CellFix cf;
+      if (meckCellLookup(id, cf)) {
+        // Good as it is until the next read is due: a new cell would show then
+        MeckFix f = { cf.lat, cf.lon, cf.radiusM, at, POS_SRC_CELL, MECK_CELL_MAX_AGE_S };
+        meckPosition.set(f);
+      } else {
+        meckPosition.clear(POS_SRC_CELL);
+      }
+    }
+  }
+  // Locked, the modem reads the cell only when asked: ask when an app
+  // wanted it and the last read is getting old
+  if (meckCellNeeded && modemManager.isReady() &&
+      (!meckCellSeenAt || millis() - meckCellSeenAt > MECK_CELL_MAX_AGE_S * 1000UL)) {
+    modemManager.requestCellInfo();
+    meckCellSeenAt = millis();   // one request per period, answered or not
+  }
+  meckCellNeeded = false;
+#endif
+}
+
+// An app is about to use a position of class `need` (call it every loop it
+// does): keeps the cell fresh when only the cell can give it
+static bool meckPositionWant(PosClass need, double& lat, double& lon, uint32_t* radiusM = nullptr) {
+  MeckFix f;
+  const uint32_t now = meckPosNow();
+#ifdef HAS_4G_MODEM
+  bool gpsGood = meckPosition.has(POS_SRC_GPS) &&
+                 posClassOf(meckPosition.radiusNow(meckPosition.fix(POS_SRC_GPS), now)) <= need;
+  if (need > POS_FINE && !gpsGood) meckCellNeeded = true;
+#endif
+  if (!meckPosition.best(need, now, f)) return false;
+  lat = f.lat;
+  lon = f.lon;
+  if (radiusM) *radiusM = f.radiusM;
+  return true;
+}
+
+// Own position for "Send my location": FINE only, a GPS fix else the advert
+// position (never the cell)
+static bool meckOwnPosition(double& lat, double& lon) {
+  return meckPositionWant(POS_FINE, lat, lon);
+}
+
+// Debug CLI "pos": every source and the best fix of each class
+void meckPositionCmd(const char* arg) {
+  const uint32_t now = meckPosNow();
+#ifdef HAS_4G_MODEM
+  if (strcmp(arg, "cell") == 0) {
+    modemManager.requestCellInfo();
+    Serial.println("pos: cell read requested; \"pos\" in a few seconds");
+    return;
+  }
+#endif
+  for (int s = 0; s < POS_SRC_COUNT; s++) {
+    if (!meckPosition.has((PosSource)s)) { Serial.printf("  %-6s -\n", posSourceName(s)); continue; }
+    const MeckFix& f = meckPosition.fix((PosSource)s);
+    uint32_t r = meckPosition.radiusNow(f, now);
+    Serial.printf("  %-6s %.3f, %.3f  +-%lu m (%s)", posSourceName(s), f.lat, f.lon, (unsigned long)r, posClassName(posClassOf(r)));
+    if (f.at) Serial.printf(", %lu s old", (unsigned long)(now - f.at));
+    Serial.println();
+  }
+#ifdef HAS_4G_MODEM
+  CellId id;
+  uint32_t atMs;
+  if (modemManager.cellInfo(id, atMs))
+    Serial.printf("  cell %s %u-%u area 0x%X id %u: %s\n", id.radio == CELL_LTE ? "LTE" : id.radio == CELL_GSM ? "GSM" : "UMTS",
+                  id.mcc, id.mnc, (unsigned)id.area, (unsigned)id.cell, meckCellNote);
+  else
+    Serial.printf("  cell: %s\n", meckCellNote);
+#endif
+  for (int c = 0; c < POS_CLASS_COUNT; c++) {
+    MeckFix f;
+    if (meckPosition.best((PosClass)c, now, f)) Serial.printf("  best %-6s: %s\n", posClassName(c), posSourceName(f.src));
+    else Serial.printf("  best %-6s: none\n", posClassName(c));
+  }
 }
 
 // Send our position to a contact as "[LOC]lat,lon" (MeshCore-Solo's format)
@@ -8921,10 +9157,82 @@ void meckHaCmd(const char* arg) { meckHa.cmd(arg); }
 void meckDavTick() {
   // The QR code has to stay up while someone is scanning it: no auto-lock
   if (meckDav.pairingActive() && ui_task.isOnDavScreen()) ui_task.resetIdleTimer();
+  // The events sync asks for local today and the next days
+  meckDav.setClock(rtc_clock.getCurrentTime(), (int32_t)the_mesh.getNodePrefs()->utc_offset_hours * 3600);
   meckDav.loop(ui_task.isLocked());
 }
 
+#ifdef MECK_UI_V2
+// Agenda on the lock screen (Settings > Experimental, docs/lock-screen.md)
+static LockAgendaWidget meckAgendaWidget;
+#endif
+
+void meckAgendaSetup() {
+#ifdef MECK_UI_V2
+  meckAgendaWidget.enabled = &the_mesh.getNodePrefs()->lock_agenda;
+  meckAgendaWidget.utcHours = &the_mesh.getNodePrefs()->utc_offset_hours;
+  ui_task.addLockWidget(&meckAgendaWidget);
+#endif
+}
+
+void meckAgendaChanged() {
+#ifdef MECK_UI_V2
+  ui_task.lockContentChanged();
+#endif
+}
+
 void meckDavCmd(const char* arg) { meckDav.cmd(arg); }
+#endif
+
+#if defined(MECK_WEATHER) && MECK_WEATHER
+// Weather on the lock screen (Settings > Experimental, docs/weather.md)
+static bool meckWeatherDirty = true;
+
+void meckWeatherTick() {
+  NodePrefs* p = the_mesh.getNodePrefs();
+  const uint32_t now = rtc_clock.getCurrentTime();
+  double lat = 0, lon = 0;
+  const bool on = p->lock_weather != 0;
+  const bool pos = on && meckPositionWant(POS_AREA, lat, lon);   // the cell will do
+  meckWeather.loop(on, pos, lat, lon, now);
+#ifdef MECK_UI_V2
+  // What the lock screen shows changes by the minute at most; this runs
+  // before the UI in the same loop, so a change rides on the minute redraw
+  static uint32_t lastMin = 0, lastVer = 0;
+  static WxNow shown = {};
+  if (!meckWeatherDirty && now / 60 == lastMin && meckWeather.version() == lastVer) return;
+  // Dirty: the setting or the CLI; also puts it back after "lockdemo"
+  const bool force = meckWeatherDirty;
+  meckWeatherDirty = false;
+  lastMin = now / 60;
+  lastVer = meckWeather.version();
+  WxNow w = {};
+  if (on) w = wxNowAt(meckWeather.forecast(), now, (int32_t)p->utc_offset_hours * 3600);
+  if (!force && wxNowEqual(w, shown)) return;
+  shown = w;
+  static const Ui2Icon kIcon[] = { UI2_IC_SUN, UI2_IC_MOON, UI2_IC_PARTLY, UI2_IC_CLOUD, UI2_IC_FOG,
+                                   UI2_IC_RAIN, UI2_IC_HEAVY, UI2_IC_SNOW, UI2_IC_STORM };
+  Ui2LockWeather lw;
+  lw.valid = w.valid;
+  lw.icon = kIcon[w.icon];
+  lw.tempC = (int8_t)constrain(w.tempC, -99, 99);
+  lw.rain = w.rain == WX_RAIN_STARTS ? Ui2LockWeather::RAIN_STARTS
+          : w.rain == WX_RAIN_ENDS   ? Ui2LockWeather::RAIN_ENDS : Ui2LockWeather::RAIN_NONE;
+  lw.rainMin = w.rainMin;
+  ui_task.setLockWeather(lw);
+#endif
+}
+
+// Settings: the switch changed; switched on, the first request goes at once
+void meckWeatherChanged() {
+  meckWeatherDirty = true;
+  if (the_mesh.getNodePrefs()->lock_weather) meckWeather.fetchSoon();
+}
+
+void meckWeatherCmd(const char* arg) {
+  meckWeather.cmd(arg, rtc_clock.getCurrentTime(), (int32_t)the_mesh.getNodePrefs()->utc_offset_hours * 3600);
+  meckWeatherDirty = true;
+}
 #endif
 
 // SOS channels (Settings > SOS) are kept by the start of the channel's
@@ -9289,6 +9597,67 @@ void meckDebugGeo(const char* text) {
   if (!found) { Serial.println("uigeo: no location"); return; }
   Serial.printf("uigeo: %.6f, %.6f tagged=%d waypoint=%d label='%s' share=%d\n",
                 g.lat, g.lon, g.tagged, g.waypoint, g.label, share);
+}
+#endif
+
+#ifdef MECK_UI_V2
+// Debug CLI "lockdemo ...": made-up lock screen content to check the layout
+// on screenshots (RAM only, nothing stored or sent, gone at reboot)
+struct MeckLockDemoBlock : Ui2LockWidget {
+  int16_t h = 0;
+  uint8_t prio = 0;
+  uint8_t priority() const override { return prio; }
+  int16_t height(int16_t, uint32_t) override { return h; }
+  void draw(Ui2Canvas& c, int16_t x, int16_t top, int16_t w, uint32_t) override {
+    c.hline(x, top, w);
+    char t[24];
+    snprintf(t, sizeof(t), "demo %d px, prio %d", h, prio);
+    c.text(x + 3, Ui2Canvas::lineBaseline(UI2_F_META, top + 1, 12), t, UI2_F_META);
+    c.dashedRect(x, top + 1, w, h - 1);
+  }
+};
+static MeckLockDemoBlock meckLockDemo[3];
+
+void meckLockDemoCmd(const char* arg) {
+  Ui2LockWeather w;
+  if (strcmp(arg, "weather") == 0) {
+    w.valid = true; w.icon = UI2_IC_SUN; w.tempC = 4;
+    ui_task.setLockWeather(w);
+  } else if (strcmp(arg, "rain") == 0) {
+    w.valid = true; w.icon = UI2_IC_PARTLY; w.tempC = 6;
+    w.rain = Ui2LockWeather::RAIN_STARTS; w.rainMin = 15 * 60 + 20;
+    ui_task.setLockWeather(w);
+  } else if (strcmp(arg, "raining") == 0) {
+    w.valid = true; w.icon = UI2_IC_RAIN; w.tempC = -9;
+    w.rain = Ui2LockWeather::RAIN_ENDS; w.rainMin = 18 * 60 + 40;
+    ui_task.setLockWeather(w);
+  } else if (memcmp(arg, "block ", 6) == 0) {
+    // "block <h> [prio]": one more demo widget, up to three
+    int h = atoi(arg + 6);
+    const char* sp = strchr(arg + 6, ' ');
+    int prio = sp ? atoi(sp + 1) : 0;
+    for (auto& b : meckLockDemo) {
+      if (b.h) continue;
+      b.h = (int16_t)constrain(h, 1, 200);
+      b.prio = (uint8_t)constrain(prio, 0, 255);
+      if (!ui_task.addLockWidget(&b)) { b.h = 0; break; }
+      ui_task.lockContentChanged();
+      Serial.printf("lockdemo: block %d px, prio %d\n", b.h, b.prio);
+      return;
+    }
+    Serial.println("lockdemo: no free demo block");
+    return;
+  } else if (strcmp(arg, "off") == 0) {
+    ui_task.setLockWeather(w);
+    for (auto& b : meckLockDemo) {
+      if (b.h) ui_task.removeLockWidget(&b);
+      b.h = 0;
+    }
+  } else {
+    Serial.println("lockdemo weather|rain|raining|block <h> [prio]|off");
+    return;
+  }
+  Serial.printf("lockdemo: %s\n", arg);
 }
 #endif
 

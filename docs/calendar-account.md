@@ -3,7 +3,8 @@
 Adds a CalDAV / CardDAV account to the deck from the phone, by QR code. The
 deck finds the account's calendars and address books. The contacts' phone
 numbers are synced to the deck (read only) and used by SMS and calls; the
-calendars are only listed for now, showing events comes later
+events of the next days are synced for the lock screen agenda
+(`docs/lock-screen.md`). A calendar screen comes later
 (`docs/caldav-design.md`). Built into the MAX envs with `-D MECK_DAV=1`.
 
 ## Adding the account
@@ -53,6 +54,37 @@ address holds a random one-time token.
   the last 9 digits are compared when both have at least 9.
 - Forgetting the account removes the synced contacts too.
 
+## Events (the lock screen agenda)
+
+- Read only, like the contacts: one `calendar-query` per calendar for local
+  today 00:00 and the next 7 days (a day more on both sides). A recurring
+  event comes whole and the deck expands it: DAILY, WEEKLY, MONTHLY and
+  YEARLY with INTERVAL, COUNT, UNTIL, BYDAY (also "-1FR", the last Friday),
+  BYMONTHDAY and BYMONTH; EXDATEs are left out and a moved instance
+  (RECURRENCE-ID) replaces the one it moves. A rule with BYSETPOS, BYWEEKNO,
+  BYYEARDAY or an hourly one shows its first instance only. Not the server's
+  `expand`: Radicale 3.9 gives every instance of a series that crosses a
+  daylight saving change the offset of its first one (an hour off in winter
+  for a series started in summer) and then misses its EXDATEs and moved
+  instances.
+- When: 90 s after boot, right after pairing, every hour (15 minutes after a
+  failed try) and at the first chance after local midnight. Only on WiFi and
+  only while the deck is unlocked; never at the same time as the contacts.
+- The agenda is replaced only when every calendar answered; one failure keeps
+  the old events until the next try.
+- Up to 128 events (the earliest), the title up to 47 bytes, 40 components
+  (a series and its moved instances) per calendar object. Cancelled events
+  are left out.
+- A time with a TZID (or floating) is a wall-clock time and is shown as it
+  is: a weekly 17:00 stays 17:00 in summer and in winter, as on the phone.
+  That is right when the event's zone is the deck's; one in another zone is
+  off by the difference. A UTC time is shown at the deck's offset.
+- Local time is UTC plus the deck's whole-hour offset (Settings > UTC offset),
+  as for the clock: no daylight saving rules.
+- Kept in PSRAM and in `/cal/agenda.bin` on the SD card, so the lock screen
+  has the agenda after a reboot. A copy more than 5 days old is not shown.
+  Forgetting the account removes it.
+
 ## Screen keys
 
 | Key | Does |
@@ -73,6 +105,10 @@ address holds a random one-time token.
 | `dav test` | Run the discovery for the stored account again |
 | `dav sync` | Sync the contacts now and wait for the end |
 | `dav ls <n>` | List calendar `n` (etags, first ten), read only |
+| `dav events [days [back]]` | Sync the events now (7 days, or `days` starting `back` days ago for this run), wait for the end, print the agenda; per calendar how many items the server sent. The next regular sync puts the agenda right again |
+| `dav dump <n>` | The DTSTART / DTEND / RRULE lines of every event in calendar `n`, no time range, no titles, read only |
+| `dav agenda` | Print the agenda the deck has (no network) |
+| `dav agenda demo <t> <m>` | Made-up agenda, `t` events today and `m` tomorrow, RAM only, to check the lock screen; the next sync or a reboot puts the real one back |
 | `dav forget` | Forget the account |
 | `uigo dav` | Open the screen |
 
@@ -97,7 +133,11 @@ at once.
         -I examples/companion_radio/ui-new test/dav/test_dav.cpp -o /tmp/test_dav && /tmp/test_dav
 
 They cover the URL and XML helpers, the vCard reader (vCard 2.1 to 4.0,
-folding, quoted-printable, escapes, CDATA) and the phone number matching. The
+folding, quoted-printable, escapes, CDATA), the phone number matching, and
+the iCalendar reader and the expansion of recurring events for the agenda
+(each rule part, COUNT and UNTIL, EXDATEs, moved and cancelled instances, a
+series across a daylight saving change, on a reply captured from Radicale
+3.9). The
 CardDAV replies in them are written by hand in Radicale's shape, not captured.
 On the deck the pairing page, the QR code, HTTPS discovery against a real
 server and the screen have been tried; the contacts sync has not run on a
