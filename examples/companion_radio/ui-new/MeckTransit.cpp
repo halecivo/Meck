@@ -186,14 +186,15 @@ void MeckTransit::failed() {
 bool MeckTransit::fetch(int rows, bool pos, double lat, double lon, uint32_t now, int32_t offSec) {
   _tried = true;
   _lastTryMs = millis();
-  if (rows < TR_MIN_ROWS) rows = TR_MIN_ROWS;
-  if (rows > TR_MAX_ROWS) rows = TR_MAX_ROWS;
+  if (rows < 1) rows = 1;
+  if (rows > TR_KEEP_ROWS) rows = TR_KEEP_ROWS;
   char url[200];
   trUrl(url, sizeof(url), _url, rows, pos, trDeg1e4(lat), trDeg1e4(lon));
   char* resp = (char*)heap_caps_malloc(RESP_LEN, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
   if (!resp) { _lastResult = -1; return false; }
 
   pmHold(true);   // no light sleep in the middle of a request
+  const uint32_t t0 = millis();
   const bool https = strncmp(url, "https://", 8) == 0;
   int code = -1;
   size_t len = 0;
@@ -226,6 +227,7 @@ bool MeckTransit::fetch(int rows, bool pos, double lat, double lon, uint32_t now
     }
     memset(auth, 0, sizeof(auth));   // no copy of the token left on the stack
   }
+  _lastMs = millis() - t0;   // awake for the request: what an update costs
   pmHold(false);
 
   bool ok = false;
@@ -246,7 +248,7 @@ bool MeckTransit::fetch(int rows, bool pos, double lat, double lon, uint32_t now
   heap_caps_free(resp);
   _lastResult = code;
   _lastBytes = (uint32_t)len;
-  Serial.printf("Transit: HTTP %d, %u bytes, %d rows asked%s%s\n", code, (unsigned)len, rows,
+  Serial.printf("Transit: HTTP %d, %u bytes in %lu ms, %d rows asked%s%s\n", code, (unsigned)len, (unsigned long)_lastMs, rows,
                 meckNetWifi() ? "" : " (4G)", ok ? "" : (code == 200 ? ", could not read it" : ""));
   return ok;
 }
@@ -333,8 +335,8 @@ void MeckTransit::cmd(const char* arg, uint32_t now, int32_t offSec) {
       Serial.println("Transit: no board");
     }
     long next = _due ? 0 : (long)(_next - millis());
-    Serial.printf("  last request HTTP %d (%u bytes), %u failed in a row, next %s%ld s, WiFi %s, 4G %s%s\n",
-                  _lastResult, (unsigned)_lastBytes, _fails, _due ? "when locked, " : "in ",
+    Serial.printf("  last request HTTP %d (%u bytes, %lu ms), %u failed in a row, next %s%ld s, WiFi %s, 4G %s%s\n",
+                  _lastResult, (unsigned)_lastBytes, (unsigned long)_lastMs, _fails, _due ? "when locked, " : "in ",
                   next > 0 ? next / 1000 : 0L, meckNetWifi() ? "up" : "down",
                   meckNet4gAllowed(DATA_APP_TRANSIT) ? "allowed" : "not allowed", _netWait ? ", waiting for it" : "");
   } else if (strcmp(arg, "fetch") == 0) {

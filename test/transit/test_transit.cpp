@@ -38,7 +38,7 @@ static void testMock() {
   CHECK_EQ(b.v, 1);
   CHECK_STR(b.title, "\xC5\x98\xC3\x8D\xC4\x8C" "ANY, N\xC3\x81" "DRA\xC5\xBD\xC3\x8D");   // ŘÍČANY, NÁDRAŽÍ
   CHECK_STR(b.thenLabel, "then");
-  CHECK_EQ(b.nRows, 4);
+  CHECK_EQ(b.nRows, 5);   // all kept, the widget draws up to 4
   CHECK_STR(b.rows[0].line, "S9");
   CHECK_STR(b.rows[0].text, "Praha hl.n.");
   CHECK_STR(b.rows[0].badge, "");
@@ -317,6 +317,62 @@ static void testCountdown() {
   CHECK_STR(o, "soon");
 }
 
+// A board moves on by itself when runs leave
+static void testBoardAt() {
+  TrBoard b, s;
+  // NOW is 07:24:15 local
+  CHECK(parse("{\"kind\":\"board\",\"rows\":["
+              "{\"l\":\"9\",\"t\":\"A\",\"d\":2,\"pl\":\"1\",\"pc\":1,\"at\":\"07:26\",\"then\":[{\"t\":\"07:36\",\"late\":1},{\"t\":\"07:46\"}]},"
+              "{\"l\":\"22\",\"t\":\"B\",\"at\":\"07:30\"},"
+              "{\"l\":\"17\",\"t\":\"C\",\"at\":\"07:33\",\"then\":[{\"t\":\"07:41\"}]},"
+              "{\"l\":\"S9\",\"t\":\"D\",\"at\":\"soon\"}]}", b));
+  trBoardAt(b, NOW, OFF, s);   // nothing has left yet
+  CHECK_EQ(s.nRows, 4);
+  CHECK_STR(s.rows[0].line, "9");
+  CHECK_STR(s.rows[3].line, "S9");   // no clock time: last
+  // 07:28:30: the 9 is still there (7:26 + 2 = 7:28, its minute is not over)
+  trBoardAt(b, NOW + 255, OFF, s);
+  CHECK_STR(s.rows[0].line, "9");
+  CHECK_STR(s.rows[0].time.hm, "7:26");
+  // 07:29:00: it has left; its next run (7:36, late) comes and goes after the 22 and the 17
+  trBoardAt(b, NOW + 285, OFF, s);
+  CHECK_EQ(s.nRows, 4);
+  CHECK_STR(s.rows[0].line, "22");
+  CHECK_STR(s.rows[1].line, "17");
+  CHECK_STR(s.rows[2].line, "9");
+  CHECK_STR(s.rows[2].time.hm, "7:36");
+  CHECK(s.rows[2].time.late);
+  CHECK_EQ(s.rows[2].delay, 0);
+  CHECK_STR(s.rows[2].badge, "");
+  CHECK(!s.rows[2].platChanged);
+  CHECK_STR(s.rows[2].plat, "1");
+  CHECK_STR(s.rows[2].then[0].hm, "7:46");
+  CHECK_STR(s.rows[2].then[1].hm, "");
+  // 07:34:00: the 22 had no next run and goes; the 17 moves to 7:41
+  trBoardAt(b, NOW + 585, OFF, s);
+  CHECK_EQ(s.nRows, 3);
+  CHECK_STR(s.rows[0].line, "9");
+  CHECK_STR(s.rows[1].line, "17");
+  CHECK_STR(s.rows[1].time.hm, "7:41");
+  // 07:50: only the row without a clock time is left
+  trBoardAt(b, NOW + 1545, OFF, s);
+  CHECK_EQ(s.nRows, 1);
+  CHECK_STR(s.rows[0].line, "S9");
+  // The reply itself is kept as it came
+  CHECK_EQ(b.nRows, 4);
+  CHECK_STR(b.rows[0].time.hm, "7:26");
+  // A trip is not touched
+  CHECK(parse("{\"kind\":\"trip\",\"rows\":[{\"l\":\"9\",\"at\":\"07:00\",\"then\":[{\"t\":\"07:10\"}]}]}", b));
+  trBoardAt(b, NOW, OFF, s);
+  CHECK_EQ(s.nRows, 1);
+  CHECK_STR(s.rows[0].time.hm, "7:00");
+  // Eight rows are kept
+  std::string many = "{\"rows\":[";
+  for (int i = 0; i < 10; i++) many += std::string(i ? "," : "") + "{\"l\":\"" + std::to_string(i) + "\"}";
+  CHECK(parse(many + "]}", b));
+  CHECK_EQ(b.nRows, TR_KEEP_ROWS);
+}
+
 int main() {
   testNeujedeExamples();
   testMock();
@@ -327,6 +383,7 @@ int main() {
   testSchedule();
   testView();
   testCountdown();
+  testBoardAt();
   printf("%d checks, %d failures\n", checks, failures);
   return failures ? 1 : 0;
 }

@@ -43,12 +43,21 @@ struct LockTransitWidget : Ui2LockWidget {
     int n = size ? *size : 3;
     return n < TR_MIN_ROWS ? TR_MIN_ROWS : n > TR_MAX_ROWS ? TR_MAX_ROWS : n;
   }
-  // What the server is asked for: the rows the lock screen gave last time,
-  // within the size setting and the 2-4 the server takes
-  int requestRows() const {
-    int n = fitRows ? fitRows : sizeRows();
-    if (n > sizeRows()) n = sizeRows();
-    return n < TR_MIN_ROWS ? TR_MIN_ROWS : n;
+  // What the server is asked for: more rows than drawn, kept in RAM, so a
+  // board moves on by itself when a run leaves (trBoardAt)
+  int requestRows() const { return TR_KEEP_ROWS; }
+
+  // The board as it stands this minute, worked out once per minute or reply
+  mutable TrBoard shownBoard = {};
+  mutable uint32_t shownMin = 0xFFFFFFFFu, shownVer = 0;
+  const TrBoard& shown(uint32_t now) const {
+    const uint32_t min = now / 60;
+    if (min != shownMin || meckTransit.version() != shownVer) {
+      trBoardAt(meckTransit.board(), now, off(), shownBoard);
+      shownMin = min;
+      shownVer = meckTransit.version();
+    }
+    return shownBoard;
   }
 
   static int16_t heightFor(int rows) { return 1 + HEAD_H + rows * ROW_H; }
@@ -57,14 +66,14 @@ struct LockTransitWidget : Ui2LockWidget {
     TrView v = {};
     const bool on = enabled && *enabled && meckTransit.configured();
     if (!on && !meckTransit.demoActive()) { v.state = TR_HIDDEN; return v; }
-    return trViewAt(meckTransit.board(), meckTransit.have(), meckTransit.lastOk(), now, off());
+    return trViewAt(shown(now), meckTransit.have(), meckTransit.lastOk(), now, off());
   }
 
   int wantRows(uint32_t now) const {
     TrView v = view(now);
     if (v.state == TR_HIDDEN) return 0;
     if (v.state == TR_EMPTY) return 1;
-    int n = meckTransit.board().nRows;
+    int n = shown(now).nRows;
     return n < sizeRows() ? n : sizeRows();
   }
 
@@ -88,7 +97,7 @@ struct LockTransitWidget : Ui2LockWidget {
   void drawAt(Ui2Canvas& c, int16_t x, int16_t top, int16_t w, int16_t h, uint32_t now) override {
     const TrView v = view(now);
     if (v.state == TR_HIDDEN || h <= 0) return;
-    const TrBoard& b = meckTransit.board();
+    const TrBoard& b = shown(now);
     int rows = (h - 1 - HEAD_H) / ROW_H;
     if (v.state == TR_ROWS) {
       if (rows > b.nRows) rows = b.nRows;

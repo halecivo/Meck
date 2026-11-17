@@ -21,8 +21,11 @@
 #include <stdlib.h>
 #include <string.h>
 
-static const int TR_MAX_ROWS = 4;
-static const int TR_MIN_ROWS = 2;      // the server is asked for 2..4 rows
+static const int TR_MAX_ROWS = 4;      // the widget draws at most 4 rows
+static const int TR_MIN_ROWS = 2;
+// The server is asked for this many rows (it takes 1-8) and all are kept:
+// when a run leaves, the deck draws the next ones without a request
+static const int TR_KEEP_ROWS = 8;
 static const int TR_THEN = 2;
 
 // A request no more often than this (WiFi), and over mobile data
@@ -64,7 +67,7 @@ struct TrBoard {
   char key[16];           // changes exactly when the drawn content does
   uint8_t more;           // trip rides that did not fit into the rows
   uint8_t nRows;
-  TrRow rows[TR_MAX_ROWS];
+  TrRow rows[TR_KEEP_ROWS];
   uint32_t fetched;       // RTC seconds the reply came
   uint32_t validUntil;    // RTC seconds; 0 = not given
 };
@@ -474,7 +477,7 @@ static inline bool trParse(const char* json, size_t len, uint32_t now, int32_t o
   if (trJsonLong(trJsonGet(p, end, "more"), end, more) && more > 0) b.more = (uint8_t)(more > 255 ? 255 : more);
 
   trJsonEach(rows, end, [&](const char* r, const char* re) {
-    if (*r == '{' && b.nRows < TR_MAX_ROWS) trReadRow(r, re, b.rows[b.nRows++]);
+    if (*r == '{' && b.nRows < TR_KEEP_ROWS) trReadRow(r, re, b.rows[b.nRows++]);
   });
 
   if (b.kind[0] && strcmp(b.kind, "board") != 0) trTripRows(b);
@@ -574,12 +577,58 @@ static inline TrView trViewAt(const TrBoard& b, bool have, bool lastOk, uint32_t
 
 // Minutes from `now` until the row really leaves (timetable time plus the
 // delay); -1 when it has left, or the time is no clock time
-static inline int trMinutesTo(const TrRow& r, uint32_t now, int32_t offSec) {
+static inline int trMinutesTo(const TrTime& t, int delay, uint32_t now, int32_t offSec) {
   int h, m;
-  if (sscanf(r.time.hm, "%d:%d", &h, &m) != 2) return -1;
+  if (sscanf(t.hm, "%d:%d", &h, &m) != 2) return -1;
   const int nowMin = (int)(((((int64_t)now + offSec) % 86400 + 86400) % 86400) / 60);
-  const int d = ((h * 60 + m + r.delay - nowMin) % 1440 + 1440) % 1440;
+  const int d = ((h * 60 + m + delay - nowMin) % 1440 + 1440) % 1440;
   return d < 720 ? d : -1;   // the other half of the day: it is behind us
+}
+static inline int trMinutesTo(const TrRow& r, uint32_t now, int32_t offSec) {
+  return trMinutesTo(r.time, r.delay, now, offSec);
+}
+
+static inline bool trLeft(const TrTime& t, int delay, uint32_t now, int32_t offSec) {
+  int h, m;
+  return sscanf(t.hm, "%d:%d", &h, &m) == 2 && trMinutesTo(t, delay, now, offSec) < 0;
+}
+
+// A stop board as it stands at `now`, from the reply kept in RAM: a run that
+// has left (its minute is over, delay counted) gives way to the next run of
+// its line from "then" (timetable time, no delay chip: only "5 min or more
+// late" is known of it, as the dot), a row with no run left goes, and the
+// rows are put in the order they leave. So the board moves on when a run
+// leaves without asking the server. A trip is kept as it came: its rows
+// belong together and the server says when they change.
+static inline void trBoardAt(const TrBoard& src, uint32_t now, int32_t offSec, TrBoard& out) {
+  out = src;
+  if (src.kind[0] && strcmp(src.kind, "board") != 0) return;
+  int n = 0;
+  int key[TR_KEEP_ROWS];
+  for (int i = 0; i < src.nRows; i++) {
+    TrRow r = src.rows[i];
+    bool gone = false;
+    while (trLeft(r.time, r.delay, now, offSec)) {
+      if (!r.then[0].hm[0]) { gone = true; break; }
+      r.time = r.then[0];
+      r.delay = 0;
+      r.badge[0] = 0;
+      r.platChanged = false;
+      for (int k = 0; k < TR_THEN - 1; k++) r.then[k] = r.then[k + 1];
+      memset(&r.then[TR_THEN - 1], 0, sizeof(r.then[TR_THEN - 1]));
+    }
+    if (gone) continue;
+    int m = trMinutesTo(r, now, offSec);
+    if (m < 0) m = 100000;   // no clock time: at the end
+    // Insertion in leaving order; equal ones keep the server's order
+    int j = n;
+    while (j > 0 && key[j - 1] > m) { out.rows[j] = out.rows[j - 1]; key[j] = key[j - 1]; j--; }
+    out.rows[j] = r;
+    key[j] = m;
+    n++;
+  }
+  for (int i = n; i < TR_KEEP_ROWS; i++) memset(&out.rows[i], 0, sizeof(out.rows[i]));
+  out.nRows = (uint8_t)n;
 }
 
 // What the bold time column of row i shows. countdown = minutes to go

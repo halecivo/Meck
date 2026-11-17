@@ -66,6 +66,13 @@ The header is `h` in capitals; for a trip with `dep` and `arr` too
   a trip. Of a trip's rides only the first row does
   (when to leave; while riding, when to get off): the later rides keep
   their clock times.
+- **A stop board moves on by itself**: the deck asks for 8 rows and keeps
+  them all, drawing as many as fit. When a run has left (its minute is over,
+  delay counted), the row shows the next run of its line from "then"
+  (timetable time; of its delay only the "5 min or more late" dot is
+  known), a row with no run left goes and the next kept row moves up, and
+  the rows stay in the order they leave. This happens on the minute redraw,
+  without a request. A trip is drawn as it came.
 - **Stale mark**: when the last request failed, or the rows are older than
   their `validUntil` (and a request's worth), the right slot of the header
   shows a refresh icon and the time of the last good reply instead of
@@ -76,13 +83,13 @@ The header is `h` in capitals; for a trip with `dep` and `arr` too
 - **Room**: rows go before the widget does. When the clock group would get
   less than 8 px above or below, the lowest priority widget that has rows
   gives one up (down to one), then widgets are left out by priority
-  (departures 15, agenda 20). The next request asks for as many rows as the
-  lock screen gave last time (2-4, the server's minimum the widget asks for
-  is 2).
+  (departures 15, agenda 20).
 
 ## Requests and battery
 
-`GET <url>/compact/widget?rows=N[&lat=…&lon=…]`, `Authorization: Bearer <token>`.
+`GET <url>/compact/widget?rows=8[&lat=…&lon=…]`, `Authorization: Bearer <token>`.
+The debug CLI `transit` shows the size of the last reply and how long the
+request kept the deck awake.
 
 - **Only while locked**: the widget is only on the lock screen. When the deck
   locks, a request goes at once (unless one went less than 2 minutes ago);
