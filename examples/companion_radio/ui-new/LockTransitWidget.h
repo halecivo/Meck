@@ -46,6 +46,8 @@ struct LockTransitWidget : Ui2LockWidget {
   // What the server is asked for: more rows than drawn, kept in RAM, so a
   // board moves on by itself when a run leaves (trBoardAt)
   int requestRows() const { return TR_KEEP_ROWS; }
+  // The rows drawn (or that would be): their departures set the next request
+  int shownRows() const { return fitRows ? fitRows : sizeRows(); }
 
   // The board as it stands this minute, worked out once per minute or reply
   mutable TrBoard shownBoard = {};

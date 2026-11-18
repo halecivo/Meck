@@ -31,10 +31,11 @@ static const int TR_THEN = 2;
 // A request no more often than this (WiFi), and over mobile data
 static const uint32_t TR_MIN_INTERVAL_S = 120;
 static const uint32_t TR_MIN_INTERVAL_4G_S = 300;
-// A reply without validUntil is asked again after this; one with a very
-// distant validUntil (night) after this at the latest
-static const uint32_t TR_DEFAULT_VALID_S = 600;
-static const uint32_t TR_MAX_VALID_S = 4UL * 3600;
+// The next request (trNextRequest): 15 minutes after the last one, or 5
+// minutes before a shown run leaves when that comes first (its delay may
+// have changed). In between the deck moves the board on by itself.
+static const uint32_t TR_PERIOD_S = 15UL * 60;
+static const uint32_t TR_BEFORE_S = 5UL * 60;
 // Back-off after failed requests: 2, 4, 8, then 15 min
 static const uint32_t TR_BACKOFF_MAX_S = 15UL * 60;
 // Rows older than this are not shown any more (the empty state with the
@@ -528,16 +529,6 @@ static inline int32_t trDeg1e4(double d) { return (int32_t)(d >= 0 ? d * 10000 +
 
 // --- When to ask --------------------------------------------------------------------
 
-// The next request after one that worked: at validUntil, but not sooner
-// than the minimum interval, nor later than TR_MAX_VALID_S
-static inline uint32_t trNextAfterOk(uint32_t now, uint32_t validUntil, bool cellular) {
-  const uint32_t lo = now + (cellular ? TR_MIN_INTERVAL_4G_S : TR_MIN_INTERVAL_S);
-  uint32_t t = validUntil ? validUntil : now + TR_DEFAULT_VALID_S;
-  if (t < lo) t = lo;
-  if (t > now + TR_MAX_VALID_S) t = now + TR_MAX_VALID_S;
-  return t;
-}
-
 // The wait after the n-th failed request in a row (n >= 1): 2, 4, 8, 15 min
 static inline uint32_t trBackoff(uint8_t fails) {
   uint32_t s = TR_MIN_INTERVAL_S;
@@ -554,7 +545,7 @@ enum TrState : uint8_t {
 
 struct TrView {
   TrState state;
-  bool stale;        // the last request failed, or the rows are past validUntil
+  bool stale;        // the last request failed, or the last reply is overdue
   char staleAt[6];   // local "7:24" of the last good reply, "" = never
 };
 
@@ -564,7 +555,10 @@ static inline TrView trViewAt(const TrBoard& b, bool have, bool lastOk, uint32_t
   TrView v = {};
   v.state = TR_EMPTY;
   const bool fresh = have && b.fetched && now >= b.fetched && now - b.fetched < TR_MAX_AGE_S;
-  v.stale = !lastOk || !have || (b.validUntil && now > b.validUntil + TR_MIN_INTERVAL_S);
+  // Overdue: the next request should have come (TR_PERIOD_S at the latest)
+  // and a request's worth has passed. The server's validUntil is not used
+  // here: the deck asks less often than it says (trNextRequest).
+  v.stale = !lastOk || !have || now > b.fetched + TR_PERIOD_S + TR_MIN_INTERVAL_S;
   if (have && b.fetched) {
     const unsigned l = (unsigned)((((int64_t)b.fetched + offSec) % 86400 + 86400) % 86400);
     snprintf(v.staleAt, sizeof(v.staleAt), "%u:%02u", (l / 3600) % 24, (l / 60) % 60);
@@ -643,6 +637,37 @@ static inline void trRowTime(const TrBoard& b, int i, bool countdown, uint32_t n
   if (min == 0) snprintf(out, n, "te\xC4\x8F");
   else if (min > 0 && min < 60) snprintf(out, n, "%d m", min);
   else snprintf(out, n, "%s", r.time.hm);
+}
+
+// When to ask next, after a request that worked at `now`: TR_PERIOD_S
+// later, or TR_BEFORE_S before a run leaves that the widget shows (`shown`
+// rows of a stop board, with their next runs; of a trip only the moment to
+// leave) when that is sooner. A run whose 5 minutes have begun was just
+// asked about. Not sooner than the minimum interval (2 min, 5 over 4G).
+// With nothing to show, the server's validUntil when it is sooner: it knows
+// when a usual window starts.
+static inline uint32_t trNextRequest(const TrBoard& b, int shown, uint32_t now, int32_t offSec, bool cellular) {
+  static TrBoard s;   // ~1 kB, not on the stack
+  trBoardAt(b, now, offSec, s);
+  uint32_t t = now + TR_PERIOD_S;
+  if (!s.nRows && b.validUntil > now && b.validUntil < t) t = b.validUntil;
+  const bool board = !s.kind[0] || strcmp(s.kind, "board") == 0;
+  int n = board ? shown : 1;
+  if (n > s.nRows) n = s.nRows;
+  const uint32_t minute = now - now % 60;
+  auto consider = [&](const TrTime& tm, int delay) {
+    const int m = trMinutesTo(tm, delay, now, offSec);
+    if (m < 0) return;
+    const uint32_t at = minute + (uint32_t)m * 60 - TR_BEFORE_S;
+    if ((int32_t)(at - now) > 30 && at < t) t = at;
+  };
+  for (int i = 0; i < n; i++) {
+    consider(s.rows[i].time, s.rows[i].delay);
+    for (int k = 0; board && k < TR_THEN; k++)
+      if (s.rows[i].then[k].hm[0]) consider(s.rows[i].then[k], 0);
+  }
+  const uint32_t lo = now + (cellular ? TR_MIN_INTERVAL_4G_S : TR_MIN_INTERVAL_S);
+  return t < lo ? lo : t;
 }
 
 static inline bool trViewEqual(const TrView& a, const TrView& b) {

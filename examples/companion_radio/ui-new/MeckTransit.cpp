@@ -138,7 +138,7 @@ void MeckTransit::due(int rows, bool pos, double lat, double lon, uint32_t now, 
     if (_netWait || !wifi) meckNetRelease(DATA_APP_TRANSIT);
     _netWait = false;
     if (ok) {
-      uint32_t at = trNextAfterOk(now, _board.validUntil, !wifi);
+      uint32_t at = trNextRequest(_board, _shownRows, now, offSec, !wifi);
       schedule(at - now);
     } else {
       failed();
@@ -365,7 +365,7 @@ void MeckTransit::demo(const char* what, uint32_t now, int32_t offSec) {
   _have = true;
   _fails = 0;
   if (strcmp(what, "empty") == 0) b.nRows = 0;
-  if (strcmp(what, "stale") == 0) { b.fetched = now - 600; b.validUntil = now - 300; _fails = 3; }
+  if (strcmp(what, "stale") == 0) { b.fetched = now - 600; _fails = 3; }
   if (strcmp(what, "offline") == 0) { _have = false; _fails = 2; }
   _board = b;
   _version++;

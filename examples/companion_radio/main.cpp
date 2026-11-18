@@ -9543,6 +9543,7 @@ void meckTransitTick() {
       pos = true;
     }
   }
+  meckTransit.setShownRows(meckTransitWidget.shownRows());
   meckTransit.loop(on, ui_task.isLocked(), meckTransitWidget.requestRows(), pos, lat, lon, now, off);
   // Redraw now when the board changes, or the widget's state does (stale
   // mark, empty) - checked once a minute, before the minute redraw

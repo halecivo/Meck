@@ -73,8 +73,8 @@ The header is `h` in capitals; for a trip with `dep` and `arr` too
   known), a row with no run left goes and the next kept row moves up, and
   the rows stay in the order they leave. This happens on the minute redraw,
   without a request. A trip is drawn as it came.
-- **Stale mark**: when the last request failed, or the rows are older than
-  their `validUntil` (and a request's worth), the right slot of the header
+- **Stale mark**: when the last request failed, or the next one is overdue
+  (no good reply for 17 minutes), the right slot of the header
   shows a refresh icon and the time of the last good reply instead of
   "then". With no reply at all yet: a warning icon.
 - **Empty state**: "Nic k zobrazení" (or the server's `empty` text) when the
@@ -92,11 +92,24 @@ The debug CLI `transit` shows the size of the last reply and how long the
 request kept the deck awake.
 
 - **Only while locked**: the widget is only on the lock screen. When the deck
-  locks, a request goes at once (unless one went less than 2 minutes ago);
-  then at the reply's `validUntil` (taken as `validUntil − ts` from the reply,
-  so the deck's clock may be a bit off), but not more often than every
-  **2 minutes on WiFi, 5 minutes over 4G**, and at the latest after 4 hours.
-  A reply without `validUntil` is asked again after 10 minutes.
+  locks, a request goes at once (unless one went less than 2 minutes ago).
+- **Then every 15 minutes, or 5 minutes before a shown run leaves** when that
+  comes first, so its delay is fresh when it matters. A run whose 5 minutes
+  have begun was just asked about; the next one counts. On a stop board
+  these are the drawn rows and their next runs ("then"), so a line every 8
+  minutes is asked about every 8 minutes; of a trip only the moment to
+  leave. When a run leaves, the board moves on from what the deck keeps
+  (above), without a request. Never more often than **every 2 minutes on
+  WiFi, 5 minutes over 4G**.
+- The server's `validUntil` (the moment its answer may change, often the
+  next departure) is not followed: the deck counts the minutes and moves
+  the board itself. It is used only when there is nothing to show, where
+  it tells when a usual window starts. A new trip or live trip shows up at
+  the next request, within 15 minutes.
+- **Cost of one request** (measured on the T-Deck MAX, `transit ping`):
+  over WiFi about 10-12 s awake, 5.4 s of it the TLS handshake on the deck
+  and 6-7 s the server preparing the answer; over 4G about 10 kB of data
+  and 13-15 s plus bringing the link up.
 - **Errors**: back-off 2, 4, 8, then 15 minutes; the last rows stay with the
   stale mark.
 - **Redraw** only when the rows change (`key` of the reply), the stale mark or

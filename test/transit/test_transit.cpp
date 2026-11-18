@@ -155,11 +155,34 @@ static void testUrl() {
 }
 
 static void testSchedule() {
-  CHECK_EQ(trNextAfterOk(NOW, NOW + 300, false), NOW + 300);
-  CHECK_EQ(trNextAfterOk(NOW, NOW + 30, false), NOW + 120);    // not more often than 2 min
-  CHECK_EQ(trNextAfterOk(NOW, NOW + 200, true), NOW + 300);    // 5 min over 4G
-  CHECK_EQ(trNextAfterOk(NOW, 0, false), NOW + 600);           // none given
-  CHECK_EQ(trNextAfterOk(NOW, NOW + 86400, false), NOW + 4 * 3600);
+  // NOW is 07:24:15 local; the minute starts at NOW - 15
+  const uint32_t M0 = NOW - 15;
+  TrBoard b;
+  // Nothing leaves within 20 min: 15 min after this request
+  CHECK(parse("{\"kind\":\"board\",\"rows\":[{\"at\":\"07:50\"}],\"validUntil\":60}", b));
+  CHECK_EQ(trNextRequest(b, 3, NOW, OFF, false), NOW + 900);
+  // A bus every 8 minutes: 5 min before the next one that is not yet within its 5 minutes
+  CHECK(parse("{\"kind\":\"board\",\"rows\":[{\"at\":\"07:28\",\"then\":[{\"t\":\"07:36\"},{\"t\":\"07:44\"}]}]}", b));
+  CHECK_EQ(trNextRequest(b, 3, NOW, OFF, false), M0 + (36 - 24 - 5) * 60);   // 7:31, for the 7:36
+  CHECK_EQ(trNextRequest(b, 3, M0 + 7 * 60, OFF, false), M0 + 15 * 60);     // asked at 7:31: 7:39, for the 7:44
+  // The delay counts: 7:33 + 4 = 7:37, asked at 7:32
+  CHECK(parse("{\"kind\":\"board\",\"rows\":[{\"at\":\"07:33\",\"d\":4}]}", b));
+  CHECK_EQ(trNextRequest(b, 3, NOW, OFF, false), M0 + 8 * 60);
+  // Not sooner than 2 min (5 over 4G)
+  CHECK(parse("{\"kind\":\"board\",\"rows\":[{\"at\":\"07:30\"}]}", b));
+  CHECK_EQ(trNextRequest(b, 3, NOW, OFF, false), NOW + 120);
+  CHECK_EQ(trNextRequest(b, 3, NOW, OFF, true), NOW + 300);
+  // Only the shown rows count: the third row's 7:33 is not drawn with 2 rows
+  CHECK(parse("{\"kind\":\"board\",\"rows\":[{\"at\":\"07:45\"},{\"at\":\"07:46\"},{\"at\":\"07:33\"}]}", b));
+  CHECK_EQ(trNextRequest(b, 3, NOW, OFF, false), M0 + 4 * 60);   // sorted: the 7:33 is drawn first
+  CHECK(parse("{\"kind\":\"board\",\"rows\":[{\"at\":\"07:45\"},{\"at\":\"07:46\"},{\"at\":\"07:50\"}]}", b));
+  CHECK_EQ(trNextRequest(b, 2, NOW, OFF, false), NOW + 900);     // 7:40 for the 7:45 is after 7:39:15
+  // A trip: only the moment to leave, not the later rides
+  CHECK(parse("{\"kind\":\"trip\",\"rows\":[{\"at\":\"07:36\"},{\"at\":\"07:29\"}]}", b));
+  CHECK_EQ(trNextRequest(b, 3, NOW, OFF, false), M0 + 7 * 60);
+  // Nothing to show: the server's validUntil when sooner (a usual window starts)
+  CHECK(parse("{\"kind\":\"none\",\"rows\":[],\"ts\":1794723855,\"validUntil\":1794724455}", b));
+  CHECK_EQ(trNextRequest(b, 3, NOW, OFF, false), NOW + 600);
   CHECK_EQ(trBackoff(1), 120);
   CHECK_EQ(trBackoff(2), 240);
   CHECK_EQ(trBackoff(3), 480);
@@ -174,8 +197,11 @@ static void testView() {
   CHECK_EQ(v.state, TR_ROWS);
   CHECK(!v.stale);
   CHECK_STR(v.staleAt, "7:24");
-  // Past validUntil (plus a request's worth): stale, rows still shown
+  // Past its validUntil is not stale: the deck asks less often than that
   v = trViewAt(b, true, true, NOW + 300 + 121, OFF);
+  CHECK(!v.stale);
+  // The next request is overdue (15 min plus a request's worth): stale, rows still shown
+  v = trViewAt(b, true, true, NOW + 900 + 121, OFF);
   CHECK(v.stale);
   CHECK_EQ(v.state, TR_ROWS);
   // The last request failed

@@ -41,6 +41,8 @@ public:
   // Bumped whenever the board changes (a reply, a failure, the CLI)
   uint32_t version() const { return _version; }
   void fetchSoon();
+  // Rows the widget shows now: their departures set the next request
+  void setShownRows(int n) { _shownRows = n; }
 
   bool setUrl(const char* url);       // "" forgets it
   bool setToken(const char* token);   // "" forgets it
@@ -65,6 +67,7 @@ private:
   int _lastResult = 0;           // HTTP code of the last request, -1 no network
   uint32_t _lastBytes = 0;
   uint32_t _lastMs = 0;          // how long the last request kept the deck awake
+  int _shownRows = 3;
   bool _demo = false;            // the board is made up by the CLI: no requests
   void* _pmLock = nullptr;
 
