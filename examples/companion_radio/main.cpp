@@ -3009,7 +3009,9 @@ void halt() {
   }
 #endif
 
-#if defined(LilyGo_TDeck_Pro_Max)
+// Off unless the build asks for it (-D MECK_DIAG_ENABLE): it puts loop() on a
+// 90 s panic watchdog, which a release build should not do on its own.
+#if defined(LilyGo_TDeck_Pro_Max) && defined(MECK_DIAG_ENABLE)
   #define MECK_DIAG 1
   #include "MeckDiag.h"
   #define MECK_CRUMB(id, v) meckCrumb(id, v)
