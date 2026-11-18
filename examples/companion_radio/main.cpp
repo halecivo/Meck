@@ -3009,7 +3009,18 @@ void halt() {
   }
 #endif
 
+#if defined(LilyGo_TDeck_Pro_Max)
+  #define MECK_DIAG 1
+  #include "MeckDiag.h"
+  #define MECK_CRUMB(id, v) meckCrumb(id, v)
+#else
+  #define MECK_CRUMB(id, v) ((void)0)
+#endif
+
 void setup() {
+#ifdef MECK_DIAG
+  meckDiagBoot();
+#endif
   Serial.begin(115200);
 #ifdef MECK_SERIAL_PACING
   Serial.setTxTimeoutMs(0);
@@ -3566,6 +3577,9 @@ void setup() {
 
     // Do an initial settings backup to SD (captures any first-boot defaults)
     backupSettingsToSD();
+#ifdef MECK_DIAG
+    meckDiagReport();   // why this boot happened (reset reason, last crumb, core dump)
+#endif
 
     // SMS / 4G modem init (after SD is ready)
     #ifdef HAS_4G_MODEM
@@ -3705,6 +3719,10 @@ void setup() {
     if (p4) free(p4); if (p10) free(p10); if (p25) free(p25);
   }
   MESH_DEBUG_PRINTLN("=== setup() - COMPLETE ===");
+#ifdef MECK_DIAG
+  meckDiagWatchdogStart();
+  MECK_CRUMB(MC_BOOT_DONE, 0);
+#endif
 }
 
 // ---------------------------------------------------------------------------
@@ -4387,6 +4405,7 @@ static bool meckPausedGps = false;
 static bool meckPausedModem = false;
 
 void meckLockPolicy(bool locking) {
+  MECK_CRUMB(locking ? MC_LOCK_BEGIN : MC_UNLOCK_BEGIN, 0);
   NodePrefs* p = the_mesh.getNodePrefs();
   if (locking) {
     if (!(p->lock_keep & LOCK_KEEP_WIFI) && meckCompanionIsWiFi()) {
@@ -4421,6 +4440,7 @@ void meckLockPolicy(bool locking) {
     if (meckPausedModem) modemManager.begin();
     meckPausedWifi = meckPausedGps = meckPausedModem = false;
   }
+  MECK_CRUMB(locking ? MC_LOCK_END : MC_UNLOCK_END, 0);
 }
 #endif
 
@@ -4824,9 +4844,11 @@ static void meckLockSleepStep() {
   if (xtalOff) esp_sleep_pd_config(ESP_PD_DOMAIN_XTAL, ESP_PD_OPTION_OFF);
 #endif
   Serial.flush();
+  MECK_CRUMB(MC_SLEEP_ENTER, 0);
   int64_t sleepStart = esp_timer_get_time();   // esp_timer keeps counting through light sleep
   esp_light_sleep_start();
   meckSleptUs += (uint64_t)(esp_timer_get_time() - sleepStart);
+  MECK_CRUMB(MC_SLEEP_EXIT, (uint32_t)esp_sleep_get_wakeup_cause());
 #ifdef CONFIG_BT_CTRL_MAIN_XTAL_PU_DURING_LIGHT_SLEEP
   if (xtalOff) esp_sleep_pd_config(ESP_PD_DOMAIN_XTAL, ESP_PD_OPTION_ON);
 #endif
@@ -5465,6 +5487,9 @@ static void dialerBusyPoll(const void*) {
 #endif // HAS_TOUCHSCREEN && HAS_4G_MODEM
 
 void loop() {
+  #ifdef MECK_DIAG
+  meckDiagTick(meckSleptUs);   // task watchdog feed, heartbeat, slow pass check
+  #endif
   #ifdef MECK_SERIAL_PACING
   meckSerialPace();
   #endif
@@ -6822,7 +6847,8 @@ void handleKeyboardInput() {
     }
   }
   
-  Serial.printf("handleKeyboardInput: key='%c' (0x%02X) composeMode=%d\n", 
+  MECK_CRUMB(MC_KEY, (uint8_t)key);
+  Serial.printf("handleKeyboardInput: key='%c' (0x%02X) composeMode=%d\n",
                 key >= 32 ? key : '?', key, composeMode);
   
   // Defer contact saves while user is actively pressing keys
