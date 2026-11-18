@@ -24,8 +24,12 @@
 // Nothing is ever written to the server. Credentials are sent to the address the
 // user typed in only (iCloud's partition hosts excepted, davSameSite).
 //
+// Events (the lock screen agenda, MeckAgenda): the next days of every
+// calendar, recurring events expanded on the deck, every hour and after
+// local midnight, on WiFi while the deck is unlocked. Read only too.
+//
 // The password stays in NVS, never on the SD card, and never in a log.
-// WiFi only for now; the sync itself (and mobile data for it) comes later.
+// WiFi only for now; mobile data for it comes later.
 // =============================================================================
 
 #if defined(MECK_DAV) && MECK_DAV
@@ -83,7 +87,15 @@ public:
   const char* syncError() const { return _syncErr; }
   void syncAdd(const char* name, const char* phone);   // vCard reader callback
 
+  // --- Events sync (the agenda) ---
+  void setClock(uint32_t now, int32_t utcOffsetSec) { _now = now; _utcOff = utcOffsetSec; }
+  void eventsNow() { if (configured() && _calCount) _evWanted = true; }
+  bool eventsSyncing() const { return _ev != EV_IDLE; }
+  void eventAdd(const DavEvent& e);                 // iCalendar reader callback
+  void eventsRead(const char* data, size_t len);    // one calendar object of a reply
+
   void cmd(const char* arg);    // debug CLI "dav ..."
+  static constexpr int EV_BUF = 256;                // events of one sync, before the agenda keeps the earliest
 
 private:
   Phase _phase = PH_OFF;
@@ -125,6 +137,8 @@ private:
   int _psBefore = 0;             // wifi_ps_type_t to put back when pairing ends
   bool _psSaved = false;
   bool _blocking = false;        // a debug CLI discovery: no way back to the form
+  int _lastGot = 0;               // the last reply: bytes read, Content-Length (-1 none)
+  long _lastSize = 0;
   char* _resp = nullptr;         // reply buffer in PSRAM, only while a discovery or sync runs
   size_t _respCap = 0;
   // Contacts sync
@@ -141,6 +155,20 @@ private:
   uint32_t* _syOff = nullptr;
   int32_t* _syLen = nullptr;
   char* _syBody = nullptr;                // multiget request body (PSRAM)
+  // Events sync
+  enum EvPhase : uint8_t { EV_IDLE, EV_CAL };
+  EvPhase _ev = EV_IDLE;
+  bool _evWanted = false, _evOk = false;
+  uint32_t _evAt = 0;            // millis() of the last finished events sync, 0 = none since boot
+  uint32_t _evDay = 0;           // local midnight the last good one was for
+  uint32_t _evWin = 0;           // window start of the one running
+  char _evErr[64] = "";
+  int _evCal = 0, _evN = 0, _evDropped = 0, _evDays = 7;
+  DavEvent* _evList = nullptr;   // PSRAM, EV_BUF
+  char* _evBody = nullptr;       // calendar-query body
+  DavIcalWork* _evWork = nullptr;   // the reader's room for one series (PSRAM)
+  uint32_t _now = 0;             // RTC time and local offset, from main.cpp every loop()
+  int32_t _utcOff = 0;
 
   void load();
   void save();
@@ -169,6 +197,13 @@ private:
   void syncStep();
   void syncEnd();
   void syncFail(const char* why);
+  bool eventsDue() const;
+  void eventsTick(bool locked);
+  void eventsStart(int days = 7, int back = 0);   // days: MeckAgenda::WINDOW_DAYS; the debug CLI asks for others
+  void eventsStep();
+  void eventsEnd();
+  void eventsFail(const char* why);
+  void eventsPrint() const;
   int propfindPrincipal(const char* url, char* location, size_t locationLen);   // status code; the principal goes to _principal
 
   // Web server handlers

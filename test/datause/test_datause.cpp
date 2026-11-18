@@ -79,20 +79,22 @@ static void testUsage() {
 static void testConfig() {
   bool on;
   uint8_t mask;
-  const uint8_t B = dataAppBit(DATA_APP_BROWSER), I = dataAppBit(DATA_APP_IRC), H = dataAppBit(DATA_APP_HA);
+  const uint8_t B = dataAppBit(DATA_APP_BROWSER), I = dataAppBit(DATA_APP_IRC), H = dataAppBit(DATA_APP_HA),
+                W = dataAppBit(DATA_APP_WEATHER);
   // The old one-character file: every app allowed
-  dataConfigParse("1", on, mask);   CHECK(on);  CHECK(mask == (B | I | H));
-  dataConfigParse("0", on, mask);   CHECK(!on); CHECK(mask == (B | I | H));
-  dataConfigParse("", on, mask);    CHECK(!on); CHECK(mask == (B | I | H));
-  dataConfigParse(nullptr, on, mask); CHECK(!on); CHECK(mask == (B | I | H));
-  dataConfigParse("1101", on, mask); CHECK(on); CHECK(mask == (B | H));
-  dataConfigParse("1000", on, mask); CHECK(on); CHECK(mask == 0);
-  dataConfigParse("10", on, mask);   CHECK(on); CHECK(mask == (I | H));   // later apps default on
-  dataConfigParse("1110\n", on, mask); CHECK(mask == (B | I));
+  dataConfigParse("1", on, mask);   CHECK(on);  CHECK(mask == (B | I | H | W));
+  dataConfigParse("0", on, mask);   CHECK(!on); CHECK(mask == (B | I | H | W));
+  dataConfigParse("", on, mask);    CHECK(!on); CHECK(mask == (B | I | H | W));
+  dataConfigParse(nullptr, on, mask); CHECK(!on); CHECK(mask == (B | I | H | W));
+  dataConfigParse("11010", on, mask); CHECK(on); CHECK(mask == (B | H));
+  dataConfigParse("1101", on, mask); CHECK(on); CHECK(mask == (B | H | W));   // a file from before weather
+  dataConfigParse("10000", on, mask); CHECK(on); CHECK(mask == 0);
+  dataConfigParse("10", on, mask);   CHECK(on); CHECK(mask == (I | H | W));   // later apps default on
+  dataConfigParse("11100\n", on, mask); CHECK(mask == (B | I));
 
   char s[8];
-  dataConfigFormat(s, sizeof(s), true, B | H);  CHECK_STR(s, "1101");
-  dataConfigFormat(s, sizeof(s), false, 0);     CHECK_STR(s, "0000");
+  dataConfigFormat(s, sizeof(s), true, B | H);  CHECK_STR(s, "11010");
+  dataConfigFormat(s, sizeof(s), false, 0);     CHECK_STR(s, "00000");
   dataConfigParse(s, on, mask);                 CHECK(!on); CHECK(mask == 0);
   dataConfigFormat(s, 3, true, B);              CHECK_STR(s, "");   // too small: nothing half-written
 }

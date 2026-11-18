@@ -15,10 +15,18 @@
 >   the lights, and a second choice of what keeps running while the deck is
 >   locked, with a one-line verdict of what the lock will cost.
 >   See [docs/ui2-quick-settings.md](docs/ui2-quick-settings.md).
-> - Home Assistant, weather, agenda and mail are designed for it but not
->   built yet, so they are not on the home screen.
+> - **Lock screen**: the clock first, with the weather next to it (Open-Meteo
+>   over WiFi or 4G, the rain line when rain is coming), unread messages,
+>   SMS and missed calls under the date, and small widgets above the status
+>   line, such as today's and tomorrow's agenda from a CalDAV calendar.
+>   Weather and agenda are under Settings > Experimental. See
+>   [docs/lock-screen.md](docs/lock-screen.md) and [docs/weather.md](docs/weather.md).
+> - Home Assistant control and mail are designed for it but not built yet,
+>   so they are not on the home screen.
 >
->   <img src="docs/images/ui-v2-home.png" alt="UI v2 home screen (screenshot from a T-Deck MAX)" width="270">
+>   <img src="docs/images/ui-v2-home.png" alt="UI v2 home screen (screenshot from a T-Deck MAX)" width="250">
+>   <img src="docs/images/ui-v2-lock.png" alt="UI v2 lock screen with weather, notifications and the agenda (screenshot from a T-Deck MAX)" width="250">
+>   <img src="docs/images/ui-v2-quick-settings.png" alt="UI v2 quick settings (screenshot from a T-Deck MAX)" width="250">
 >
 > **Connections**
 >

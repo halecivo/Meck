@@ -1801,6 +1801,8 @@ MyMesh::MyMesh(mesh::Radio &radio, mesh::RNG &rng, mesh::RTCClock &rtc, SimpleMe
   _prefs.sos_btn = 1;          // SOS on a 3 s hold of the top button
   _prefs.notif_vibrate = 1;    // quick settings: vibration on
   _prefs.lock_keep = LOCK_KEEP_DEFAULT;   // what keeps running while locked
+  _prefs.lock_agenda = 0;      // no agenda on the lock screen until switched on
+  _prefs.lock_weather = 0;     // nor weather: it sends the position to Open-Meteo
   _prefs.multi_acks = 1;      // redundant ACKs on by default
   strcpy(_prefs.node_name, "NONAME");
   _prefs.freq = LORA_FREQ;
@@ -4026,6 +4028,12 @@ void MyMesh::checkCLIRescueCmd() {
       extern void meckMemCmd(const char* arg);
       meckMemCmd(cli_command[3] ? &cli_command[4] : "");
 #endif
+#ifdef MECK_UI_V2
+    } else if (strcmp(cli_command, "lockdemo") == 0 || memcmp(cli_command, "lockdemo ", 9) == 0) {
+      // Debug: made-up lock screen weather and widgets (RAM only)
+      extern void meckLockDemoCmd(const char* arg);
+      meckLockDemoCmd(cli_command[8] ? &cli_command[9] : "");
+#endif
     } else if (memcmp(cli_command, "uigeo ", 6) == 0) {
       // Debug: what the location parser finds in a text (nothing is stored)
       extern void meckDebugGeo(const char* text);
@@ -4046,6 +4054,16 @@ void MyMesh::checkCLIRescueCmd() {
       extern void meckDavCmd(const char* arg);
       meckDavCmd(cli_command[3] ? &cli_command[4] : "");
 #endif
+#if defined(MECK_WEATHER) && MECK_WEATHER
+    } else if (strcmp(cli_command, "weather") == 0 || memcmp(cli_command, "weather ", 8) == 0) {
+      // Debug: lock screen weather (docs/weather.md)
+      extern void meckWeatherCmd(const char* arg);
+      meckWeatherCmd(cli_command[7] ? &cli_command[8] : "");
+#endif
+    } else if (strcmp(cli_command, "pos") == 0 || memcmp(cli_command, "pos ", 4) == 0) {
+      // Debug: position sources and accuracy classes (docs/position.md)
+      extern void meckPositionCmd(const char* arg);
+      meckPositionCmd(cli_command[3] ? &cli_command[4] : "");
     } else if (memcmp(cli_command, "uigo ", 5) == 0) {
       // Debug: open a screen directly, e.g. "uigo rxlog", "uigo pathed 3"
       extern void meckDebugGoto(const char* arg);

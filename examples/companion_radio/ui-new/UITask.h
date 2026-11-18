@@ -10,6 +10,7 @@
 #ifdef MECK_UI_V2
 #include "ui2/Ui2HomeTiles.h"
 #include "ui2/Ui2Chrome.h"
+#include "ui2/Ui2LockWidgets.h"
 #endif
 
 #ifndef LED_STATE_ON
@@ -46,6 +47,15 @@ enum MeckSleepBlock {
   MECK_SLEEP_AUDIO,      // audio playing or recently used
   MECK_SLEEP_SOS,        // SOS: counting down, GPS looking for a fix, or a send due
   MECK_SLEEP_SYNC,       // Bluetooth sync window open (ble_lock_window)
+};
+
+// What stays on while the locked deck sleeps: main.cpp's meckSleepKeepsMask()
+enum MeckSleepKeeps : uint8_t {
+  MECK_KEEP_APP   = 1 << 0,   // a phone app connected (BLE or WiFi)
+  MECK_KEEP_BLE   = 1 << 1,   // ... over BLE
+  MECK_KEEP_WIFI  = 1 << 2,
+  MECK_KEEP_MODEM = 1 << 3,
+  MECK_KEEP_GPS   = 1 << 4,
 };
 
 #ifdef HAS_4G_MODEM
@@ -333,6 +343,15 @@ public:
     return _display != NULL && _display->isOn() && (long)(_next_refresh - millis()) <= 0;
   }
   void lockPromptKey(char c);
+#ifdef MECK_UI_V2
+  // Lock screen content besides the clock (ui2/Ui2LockWidgets.h). Widgets
+  // are kept in the order added, top to bottom; false when all slots are used.
+  bool addLockWidget(Ui2LockWidget* w);
+  void removeLockWidget(Ui2LockWidget* w);
+  void setLockWeather(const Ui2LockWeather& w);
+  // A provider's data changed: redraw now if the lock screen is showing
+  void lockContentChanged();
+#endif
   // SOS screen (docs/sos.md). gotoSosScreen() opens it with nothing selected.
   void gotoSosScreen();
   void leaveSosScreen();      // back to the screen it was opened over
