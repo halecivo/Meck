@@ -2174,25 +2174,11 @@ public:
         WiFi.mode(WIFI_OFF);
         Serial.println("Home: WiFi radio OFF");
       } else {
-        // Turn WiFi ON -- reconnect using saved credentials
+        // Turn WiFi ON: no wait, the saved network in range is looked for and
+        // joined from the main loop, with popups
         WiFi.mode(WIFI_STA);
-        if (SD.exists("/web/wifi.cfg")) {
-          File f = SD.open("/web/wifi.cfg", FILE_READ);
-          if (f) {
-            String ssid = f.readStringUntil('\n'); ssid.trim();
-            String pass = f.readStringUntil('\n'); pass.trim();
-            f.close();
-            digitalWrite(SDCARD_CS, HIGH);
-            if (ssid.length() > 0) {
-              // No wait: Connecting popup now, result popup from the main loop
-              extern void meckWifiConnectSaved(const char* ssid, const char* pass);
-              Serial.printf("Home: WiFi ON, connecting to %s\n", ssid.c_str());
-              meckWifiConnectSaved(ssid.c_str(), pass.c_str());
-            }
-          } else {
-            digitalWrite(SDCARD_CS, HIGH);
-          }
-        }
+        extern void meckWifiConnectSaved();
+        meckWifiConnectSaved();
         Serial.println("Home: WiFi radio ON");
       }
 #endif

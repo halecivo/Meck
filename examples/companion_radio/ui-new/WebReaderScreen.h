@@ -39,6 +39,7 @@
 #include <mbedtls/platform.h>
 #include <esp_heap_caps.h>
 #include <SD.h>
+#include "MeckWifiNetworks.h"
 #include <vector>
 #ifdef HAS_4G_MODEM
 #include "ModemManager.h"
@@ -1586,29 +1587,26 @@ private:
   }
 
   void saveWifiCredentials(const char* ssid, const char* pass) {
-    if (!SD.exists(WEB_CACHE_DIR)) SD.mkdir(WEB_CACHE_DIR);
-    File f = SD.open("/web/wifi.cfg", FILE_WRITE);
-    if (f) {
-      f.println(ssid);
-      f.println(pass);
-      f.close();
-    }
-    digitalWrite(SDCARD_CS, HIGH);
+    meckWifiRemember(ssid, pass);
   }
 
+  // Joins the saved network heard strongest (or stays on the one already
+  // joined, by the WiFi companion say)
   bool loadAndAutoConnect() {
-    File f = SD.open("/web/wifi.cfg", FILE_READ);
-    if (!f) { digitalWrite(SDCARD_CS, HIGH); return false; }
-
-    String ssid = f.readStringUntil('\n');
-    String pass = f.readStringUntil('\n');
-    f.close();
-    digitalWrite(SDCARD_CS, HIGH);
-
-    ssid.trim();
-    pass.trim();
-
-    if (ssid.length() == 0) return false;
+    if (WiFi.status() == WL_CONNECTED) {
+      _connectedSSID = WiFi.SSID();
+      _wifiState = WIFI_CONNECTED;
+      return true;
+    }
+    MeckWifiNet nets[MECK_WIFI_MAX_SAVED];
+    int saved = meckWifiLoad(nets, MECK_WIFI_MAX_SAVED);
+    if (saved == 0) return false;
+    int found = WiFi.scanNetworks(false, false, false, 300);
+    int best = found > 0 ? meckWifiBestInScan(nets, saved, found) : (found < 0 ? 0 : -1);
+    WiFi.scanDelete();
+    if (best < 0) return false;
+    String ssid = nets[best].ssid;
+    String pass = nets[best].pass;
 
     Serial.printf("WebReader: Auto-connecting to %s\n", ssid.c_str());
     // WiFi STA mode already set by main.cpp before enter()

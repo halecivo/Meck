@@ -349,6 +349,10 @@ public:
   void saveMainIdentity() {
     _store->saveMainIdentity(self_id);
   }
+  // Clock from WiFi (NTP): moves the stored advert times along with a jump
+  // forward, as the app's time sync does. 'curr' is the clock as it was
+  // before the sync (the sync may have set the system clock already).
+  void setClockFromNetwork(uint32_t secs, uint32_t curr);
 
   // "Heard by" repeat data for a sent message (for the repeat overlay). Finds the
   // sent-track matching 'payload' and copies up to 'max_src' echo sources into the
