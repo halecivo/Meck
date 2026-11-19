@@ -409,9 +409,13 @@ To join a network for the first time, or to change networks:
 5. Once connected, a popup shows the device's IP address for 2 seconds and you are returned to Settings. The IP address is also displayed on the WiFi home page.
 6. If the device can't connect within 15 seconds, a **Could not connect** popup shows and you are returned to the network list to try again. The second line of the popup says why, for example **Wrong password?**, **Network not found**, **Signal lost** or **Timed out**.
 
+**Saved networks:** Every network you join is saved (up to 8, in `/web/wifi.cfg`), and a network is only saved once the device has joined it, so a mistyped password does not replace a good one. In the network list a saved network shows **Saved**; saved networks out of range are listed at the end as **Saved · not in range**. Selecting a saved network fills in its password, so **Enter** alone joins it. Press **F** on a saved network to forget it (the device leaves it if it is the one connected).
+
 **Turning WiFi off and on (v1.15+):** On the **WiFi** home page, press **Enter** (or long press) to turn the WiFi radio off or on, the same as the **WiFi Radio** row in Settings. The bottom of the page shows **Press Enter to Turn Off Wifi** or **Press Enter to Turn On Wifi**. Network setup and passwords stay in Settings.
 
-Turning WiFi on (from the home page or the **WiFi Radio** row) joins your saved network, if you have one. A **Connecting to Saved Wifi:** popup shows the network name, followed by **Connected** and the IP address, or **Could not connect** and the reason.
+Turning WiFi on (from the home page or the **WiFi Radio** row) looks for your saved networks and joins the one with the strongest signal. A **Connecting to Saved Wifi:** popup shows the network name, followed by **Connected** and the IP address, or **Could not connect** and the reason; **No saved WiFi in range** when none is heard. On the combined builds, while WiFi is on but not connected (you walked out of range, say), the device looks for a saved network again by itself, without popups: every minute at first, then every five minutes.
+
+**Clock:** once WiFi is connected the device sets its clock from the internet (NTP, `pool.ntp.org`), as the phone app's time sync does.
 
 Connect the MeshCore web app or meshcore.js to `<device IP>:5000`.
 
