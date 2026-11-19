@@ -731,6 +731,19 @@ bool MyMesh::allowPacketForward(const mesh::Packet* packet) {
   return _prefs.client_repeat != 0;
 }
 
+// Clock from WiFi (NTP): moves the stored advert times along with a jump
+// forward, as the app's time sync does. 'curr' is the clock as it was
+// before the sync (SNTP may have set the system clock already).
+void MyMesh::setClockFromNetwork(uint32_t secs, uint32_t curr) {
+  if (advert_paths && secs > curr + 60) {
+    uint32_t delta = secs - curr;
+    for (int i = 0; i < ADVERT_PATH_TABLE_SIZE; i++) {
+      if (advert_paths[i].recv_timestamp > 0) advert_paths[i].recv_timestamp += delta;
+    }
+  }
+  getRTCClock()->setCurrentTime(secs);
+}
+
 uint8_t MyMesh::getHeardBy(const uint8_t* payload, uint16_t payload_len,
                            uint8_t& out_bph, uint8_t& out_count,
                            uint8_t* out_hash, int8_t* out_snr, uint8_t max_src) const {

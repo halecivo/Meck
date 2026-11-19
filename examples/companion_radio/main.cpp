@@ -1394,6 +1394,9 @@ static uint32_t _atoi(const char* sp) {
   // frequency refusal, which any display build can show.
   void meckShowAlert(const char* text, int duration_millis) { ui_task.showAlert(text, duration_millis); }
   #ifdef MECK_WIFI_COMPANION
+  #include <esp_wifi.h>
+  #include <esp_sntp.h>
+  #include "ui-new/MeckWifiNetworks.h"
   // Why the last WiFi connection attempt failed. The WiFi driver reports a
   // reason code each time a connection attempt drops; it is recorded here so
   // the "Could not connect" popups and the serial log can say why.
@@ -1445,39 +1448,180 @@ static uint32_t _atoi(const char* sp) {
                   r ? WiFi.disconnectReasonName((wifi_err_reason_t)r) : "none reported");
   }
 
-  // Join the saved network without freezing the screen: a "Connecting to
-  // Saved Wifi:" popup now, then meckWifiConnectPoll() (main loop) shows
-  // "Connected" and the IP, or "Could not connect" and why, after at most
-  // SETTINGS_WIFI_CONNECT_MS.
-  static bool meckWifiConnectPending = false;
-  static unsigned long meckWifiConnectAt = 0;
-  void meckWifiConnectSaved(const char* ssid, const char* pass) {
-    meckWifiResetReason();
-    WiFi.begin(ssid, pass);
-    meckWifiConnectPending = true;
-    meckWifiConnectAt = millis();
-    char msg[80];
-    snprintf(msg, sizeof(msg), "%s\n%s...", MECK_TR("Connecting to Saved Wifi:", "Connexion au WiFi :"), ssid);
-    ui_task.showAlert(msg, SETTINGS_WIFI_CONNECT_MS + 2000);
+  // Ends a join attempt still running: the core keeps retrying a network
+  // out of range, WiFi.disconnect() does nothing while not connected, and
+  // WiFi.begin() for another network then fails (the driver refuses a new
+  // configuration while it is connecting). An explicit disconnect ends it
+  // with "leaving", which the core does not retry.
+  void meckWifiStopAttempt() {
+    if (WiFi.getMode() == WIFI_OFF) return;
+    esp_wifi_disconnect();
+    delay(20);
   }
-  // WiFi turned off, or WiFi setup started: no result popup for the attempt.
-  void meckWifiConnectCancel() { meckWifiConnectPending = false; }
+
+  // Join a saved network without freezing the screen: a scan first, then
+  // the saved network heard strongest. meckWifiConnectPoll() (main loop)
+  // shows "Connected" and the IP, or "Could not connect" and why, after at
+  // most SETTINGS_WIFI_CONNECT_MS. A quiet attempt (lost network, retried
+  // in the background) shows nothing.
+  enum MeckWifiJoin : uint8_t { MWJ_IDLE, MWJ_SCAN, MWJ_JOIN };
+  static MeckWifiJoin meckWifiJoin = MWJ_IDLE;
+  static bool meckWifiJoinQuiet = false;
+  static unsigned long meckWifiConnectAt = 0;
+  static char meckWifiJoinSsid[33];
+  static bool meckWifiHold = false;   // WiFi setup or the Web Reader is joining by itself
+
+  static void meckWifiJoinNet(const MeckWifiNet& net) {
+    meckWifiStopAttempt();
+    meckWifiResetReason();
+    snprintf(meckWifiJoinSsid, sizeof(meckWifiJoinSsid), "%s", net.ssid);
+    WiFi.begin(net.ssid, net.pass);
+    meckWifiJoin = MWJ_JOIN;
+    meckWifiConnectAt = millis();
+    Serial.printf("WiFi: joining saved network %s\n", net.ssid);
+    if (!meckWifiJoinQuiet) {
+      char msg[80];
+      snprintf(msg, sizeof(msg), "%s\n%s...", MECK_TR("Connecting to Saved Wifi:", "Connexion au WiFi :"), net.ssid);
+      ui_task.showAlert(msg, SETTINGS_WIFI_CONNECT_MS + 2000);
+    }
+  }
+
+  static void meckWifiStartJoin(bool quiet) {
+    MeckWifiNet nets[MECK_WIFI_MAX_SAVED];
+    meckWifiHold = false;
+    if (!sdCardReady || meckWifiLoad(nets, MECK_WIFI_MAX_SAVED) == 0) {
+      Serial.println("WiFi: no saved network (set one in Settings)");
+      meckWifiJoin = MWJ_IDLE;
+      return;
+    }
+    meckWifiJoinQuiet = quiet;
+    meckWifiStopAttempt();
+    WiFi.scanDelete();
+    if (WiFi.scanNetworks(true, false, false, 300) == WIFI_SCAN_FAILED) {
+      Serial.println("WiFi: scan failed, trying the last network");
+      meckWifiJoinNet(nets[0]);
+      return;
+    }
+    meckWifiJoin = MWJ_SCAN;
+    meckWifiConnectAt = millis();
+    if (!quiet) {
+      ui_task.showAlert(MECK_TR("Looking for saved WiFi...", "Recherche du WiFi..."), SETTINGS_WIFI_CONNECT_MS + 2000);
+    }
+  }
+
+  void meckWifiConnectSaved() { meckWifiStartJoin(false); }
+  // WiFi turned off, or WiFi setup / the Web Reader takes over: no result
+  // popup and no background retries until the next join
+  void meckWifiConnectCancel() {
+    if (meckWifiJoin == MWJ_SCAN) WiFi.scanDelete();
+    meckWifiJoin = MWJ_IDLE;
+    meckWifiHold = true;
+  }
+  // WiFi setup joined a network: background retries may look again
+  void meckWifiRelease() { meckWifiHold = false; }
+
+  // Clock from WiFi: SNTP starts with each connection (the core restarts
+  // it); its result is copied to the device clock from the main loop
+  static volatile bool meckNtpSynced = false;
+  static bool meckNtpStarted = false;
+  static uint32_t meckNtpRefClock = 0;
+  static unsigned long meckNtpRefMs = 0;
+  static void meckNtpOnSync(struct timeval* tv) { meckNtpSynced = true; }
+  static void meckNtpPoll() {
+    bool up = WiFi.status() == WL_CONNECTED;
+    if (up && !meckNtpStarted) {
+      meckNtpStarted = true;
+      meckNtpRefClock = rtc_clock.getCurrentTime();
+      meckNtpRefMs = millis();
+      sntp_set_time_sync_notification_cb(meckNtpOnSync);
+      configTime(0, 0, "pool.ntp.org", "time.google.com");
+      Serial.println("WiFi: NTP time sync started");
+    } else if (!up && meckNtpStarted) {
+      meckNtpStarted = false;
+    }
+    if (!meckNtpSynced) return;
+    meckNtpSynced = false;
+    time_t now = time(nullptr);
+    if (now < 1704067200 || now > 2082758400) return;
+    uint32_t before = meckNtpRefClock + (millis() - meckNtpRefMs) / 1000;
+    the_mesh.setClockFromNetwork((uint32_t)now, before);
+    meckNtpRefClock = (uint32_t)now;
+    meckNtpRefMs = millis();
+    Serial.printf("WiFi: clock set from NTP to %lu (%+ld s)\n", (unsigned long)now, (long)((int32_t)now - (int32_t)before));
+  }
+
+  bool meckCompanionIsWiFi();
+  // Lost or never found network: while WiFi is on, look for a saved one
+  // now and then (every minute at first, then every five) without popups
+  static unsigned long meckWifiDownSince = 0, meckWifiRetryAt = 0;
+  static uint8_t meckWifiRetries = 0;
+  static void meckWifiKeepUp() {
+  #if defined(BLE_PIN_CODE)
+    bool on = meckCompanionIsWiFi() && (WiFi.getMode() & WIFI_MODE_STA) && !(WiFi.getMode() & WIFI_MODE_AP);
+  #else
+    bool on = false;   // single-link WiFi builds keep joining as before
+  #endif
+    if (!on || WiFi.status() == WL_CONNECTED) {
+      meckWifiDownSince = 0;
+      meckWifiRetries = 0;
+      return;
+    }
+    if (meckWifiJoin != MWJ_IDLE || meckWifiHold) return;
+    unsigned long now = millis();
+    if (meckWifiDownSince == 0) {
+      meckWifiDownSince = now;
+      meckWifiRetryAt = now + 30000;   // a short drop: the core rejoins by itself
+      return;
+    }
+    if ((long)(now - meckWifiRetryAt) < 0) return;
+    if (meckWifiRetries < 255) meckWifiRetries++;
+    meckWifiRetryAt = now + (meckWifiRetries < 5 ? 60000UL : 300000UL);
+    Serial.println("WiFi: not connected, looking for a saved network");
+    meckWifiStartJoin(true);
+  }
+
   void meckWifiConnectPoll() {
-    if (!meckWifiConnectPending) return;
+    meckNtpPoll();
+    meckWifiKeepUp();
+    if (meckWifiJoin == MWJ_SCAN) {
+      int found = WiFi.scanComplete();
+      if (found == WIFI_SCAN_RUNNING && (long)(millis() - meckWifiConnectAt) < 15000) return;
+      MeckWifiNet nets[MECK_WIFI_MAX_SAVED];
+      int n = meckWifiLoad(nets, MECK_WIFI_MAX_SAVED);
+      int best = found > 0 ? meckWifiBestInScan(nets, n, found) : -1;
+      Serial.printf("WiFi: scan found %d networks, saved in range: %s\n", found, best >= 0 ? nets[best].ssid : "none");
+      WiFi.scanDelete();
+      if (best >= 0) {
+        meckWifiJoinNet(nets[best]);
+      } else if (found < 0 && n > 0) {
+        meckWifiJoinNet(nets[0]);   // scan failed: the last network may still be there
+      } else {
+        meckWifiJoin = MWJ_IDLE;
+        if (!meckWifiJoinQuiet) {
+          ui_task.showAlert(MECK_TR("No saved WiFi in range", "Aucun WiFi connu"), SETTINGS_WIFI_ALERT_MS);
+        }
+      }
+      return;
+    }
+    if (meckWifiJoin != MWJ_JOIN) return;
     if (WiFi.status() == WL_CONNECTED) {
-      meckWifiConnectPending = false;
+      meckWifiJoin = MWJ_IDLE;
       IPAddress ip = WiFi.localIP();
       Serial.printf("WiFi: connected to %s, IP: %s\n", WiFi.SSID().c_str(), ip.toString().c_str());
-      char msg[48];
-      snprintf(msg, sizeof(msg), MECK_TR("Connected\nIP: %d.%d.%d.%d", "Connect\xC3\xA9\nIP : %d.%d.%d.%d"),
-               ip[0], ip[1], ip[2], ip[3]);
-      ui_task.showAlert(msg, SETTINGS_WIFI_ALERT_MS);
+      if (!meckWifiJoinQuiet) {
+        char msg[48];
+        snprintf(msg, sizeof(msg), MECK_TR("Connected\nIP: %d.%d.%d.%d", "Connect\xC3\xA9\nIP : %d.%d.%d.%d"),
+                 ip[0], ip[1], ip[2], ip[3]);
+        ui_task.showAlert(msg, SETTINGS_WIFI_ALERT_MS);
+      }
     } else if ((long)(millis() - meckWifiConnectAt) >= SETTINGS_WIFI_CONNECT_MS) {
-      meckWifiConnectPending = false;
-      meckWifiLogFail("Saved network");
-      char msg[64];
-      snprintf(msg, sizeof(msg), "%s\n%s", MECK_TR("Could not connect", "Connexion impossible"), meckWifiFailReason());
-      ui_task.showAlert(msg, SETTINGS_WIFI_ALERT_MS);
+      meckWifiJoin = MWJ_IDLE;
+      meckWifiLogFail(meckWifiJoinSsid);
+      if (!meckWifiJoinQuiet) {
+        char msg[64];
+        snprintf(msg, sizeof(msg), "%s\n%s", MECK_TR("Could not connect", "Connexion impossible"), meckWifiFailReason());
+        ui_task.showAlert(msg, SETTINGS_WIFI_ALERT_MS);
+      }
     }
   }
   #endif
@@ -1554,45 +1698,24 @@ bool meckCompanionWifiConnected() {
   return wifi_companion.isEnabled() && wifi_companion.isConnected();
 }
 
-// Read /web/wifi.cfg (line 1 network name, line 2 password), as Settings
-// writes it. Values are cut to upstream's sizes (32 and 63 characters).
+// The app's wifi.* commands work on the most recent saved network (the
+// first in /web/wifi.cfg); the others stay saved.
 static bool meckWifiCfgRead(char* ssid, size_t ssidLen, char* pass, size_t passLen) {
   ssid[0] = 0;
   pass[0] = 0;
   if (!sdCardReady) return false;
-  if (!SD.exists("/web/wifi.cfg")) {
-    digitalWrite(SDCARD_CS, HIGH);
-    return false;
-  }
-  File f = SD.open("/web/wifi.cfg", FILE_READ);
-  if (!f) {
-    digitalWrite(SDCARD_CS, HIGH);
-    return false;
-  }
-  String s = f.readStringUntil('\n'); s.trim();
-  String p = f.readStringUntil('\n'); p.trim();
-  f.close();
-  digitalWrite(SDCARD_CS, HIGH);
-  snprintf(ssid, ssidLen, "%s", s.c_str());
-  snprintf(pass, passLen, "%s", p.c_str());
+  MeckWifiNet net;
+  if (meckWifiLoad(&net, 1) == 0) return false;
+  snprintf(ssid, ssidLen, "%s", net.ssid);
+  snprintf(pass, passLen, "%s", net.pass);
   return true;
 }
 
-// Write /web/wifi.cfg the same way the Settings WiFi setup does.
+// Saves a network as the most recent one; no name forgets them all
 static bool meckWifiCfgWrite(const char* ssid, const char* pass) {
   if (!sdCardReady) return false;
-  bool ok = false;
-  if (SD.exists("/web") || SD.mkdir("/web")) {
-    File f = SD.open("/web/wifi.cfg", FILE_WRITE);
-    if (f) {
-      f.println(ssid);
-      f.println(pass);
-      f.close();
-      ok = true;
-    }
-  }
-  digitalWrite(SDCARD_CS, HIGH);
-  return ok;
+  if (!ssid[0]) return meckWifiStore(nullptr, 0);
+  return meckWifiRemember(ssid, pass);
 }
 
 static void meckWifiOff() {
@@ -1672,8 +1795,8 @@ bool meckCompanionUseBLE() {
   return true;
 }
 
-// WiFi on; Bluetooth stays as it is. connectSaved joins the network in
-// /web/wifi.cfg without waiting (meckWifiConnectSaved shows the Connecting
+// WiFi on; Bluetooth stays as it is. connectSaved joins the saved network
+// in range without waiting (meckWifiConnectSaved shows the Connecting
 // and result popups); WiFi setup passes false because it scans and joins by
 // itself.
 bool meckCompanionUseWiFi(bool connectSaved) {
@@ -1693,13 +1816,8 @@ bool meckCompanionUseWiFi(bool connectSaved) {
   wifi_companion.enable();
   meckRadioSave("wifi", true);
   if (connectSaved) {
-    char ssid[33], pass[64];
-    if (meckWifiCfgRead(ssid, sizeof(ssid), pass, sizeof(pass)) && ssid[0]) {
-      Serial.printf("Companion: WiFi on, connecting to saved network %s\n", ssid);
-      meckWifiConnectSaved(ssid, pass);
-    } else {
-      Serial.println("Companion: WiFi on, no saved network (set one in Settings)");
-    }
+    Serial.println("Companion: WiFi on, looking for a saved network");
+    meckWifiConnectSaved();
   } else {
     Serial.println("Companion: WiFi on");
   }
@@ -1764,8 +1882,8 @@ void meckMemCmd(const char* arg) {
 bool meckCompanionCommand(const char* command, char* reply) {
   char ssid[33], pass[64];   // upstream's wifi_ssid / wifi_pwd sizes
   if (memcmp(command, "set wifi.ssid ", 14) == 0) {
-    meckWifiCfgRead(ssid, sizeof(ssid), pass, sizeof(pass));
     snprintf(ssid, sizeof(ssid), "%s", &command[14]);
+    if (!meckWifiFindSaved(ssid, pass, sizeof(pass))) pass[0] = 0;
     if (!meckWifiCfgWrite(ssid, pass)) {
       strcpy(reply, "Error, can't save to SD card");
       return true;
@@ -4167,7 +4285,7 @@ void meckQsState(QsItem item, QsTileState& st) {
       if (!st.on) line(off);
       else if (WiFi.status() == WL_CONNECTED)
         line(meckCompanionWifiConnected() ? MECK_TR("App connected", "Appli connect\xC3\xA9" "e") : WiFi.SSID().c_str());
-      else if (meckWifiConnectPending) { st.pending = true; line(MECK_TR("Joining\xE2\x80\xA6", "Connexion\xE2\x80\xA6")); }
+      else if (meckWifiJoin != MWJ_IDLE) { st.pending = true; line(MECK_TR("Joining\xE2\x80\xA6", "Connexion\xE2\x80\xA6")); }
       else line(MECK_TR("No network", "Pas de r\xC3\xA9seau"));
       break;
     case QS_GPS: {
