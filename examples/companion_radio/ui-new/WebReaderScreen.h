@@ -1537,6 +1537,7 @@ private:
 
   void connectToSSID(const String& ssid, const char* password) {
     _wifiState = WIFI_CONNECTING;
+    WiFi.setAutoReconnect(true);   // a failed join elsewhere may have left it off
     WiFi.begin(ssid.c_str(), password);
     _wifiTimeout = millis() + 15000;
     _connectedSSID = ssid;
@@ -1610,6 +1611,7 @@ private:
 
     Serial.printf("WebReader: Auto-connecting to %s\n", ssid.c_str());
     // WiFi STA mode already set by main.cpp before enter()
+    WiFi.setAutoReconnect(true);   // a failed join elsewhere may have left it off
     WiFi.begin(ssid.c_str(), pass.c_str());
 
     // Brief blocking wait (up to 5 seconds) during init

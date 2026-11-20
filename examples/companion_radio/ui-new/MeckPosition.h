@@ -31,6 +31,7 @@ static const uint32_t POS_CLASS_LIMIT_M[POS_CLASS_COUNT] = { 100, 2000, 50000, 5
 enum PosSource : uint8_t {
   POS_SRC_GPS,      // a live fix of the deck's GPS
   POS_SRC_CELL,     // the serving cell, looked up in the SD card's cell database
+  POS_SRC_WIFI,     // the joined WiFi network, where GPS fixes put it before
   POS_SRC_STORED,   // the advert position (set by hand or the last GPS fix); has no time
   POS_SRC_COUNT
 };
@@ -56,7 +57,7 @@ static inline const char* posClassName(uint8_t c) {
 }
 
 static inline const char* posSourceName(uint8_t s) {
-  static const char* const n[] = { "gps", "cell", "stored", "?" };
+  static const char* const n[] = { "gps", "cell", "wifi", "stored", "?" };
   return n[s < POS_SRC_COUNT ? s : POS_SRC_COUNT];
 }
 
@@ -69,6 +70,10 @@ public:
   // A stored position counts as this good: it is where the user wants the
   // deck to be (or where its GPS last was), as today
   static const uint32_t STORED_RADIUS_M = 100;
+  // The joined network: about how far a WiFi network reaches. FINE while
+  // joined, so the deck at home or at work has a position without the GPS;
+  // once left, it ages out of FINE at once
+  static const uint32_t WIFI_RADIUS_M = 100;
 
   void set(const MeckFix& f) {
     if (f.src >= POS_SRC_COUNT) return;

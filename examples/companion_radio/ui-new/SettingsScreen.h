@@ -497,6 +497,7 @@ private:
     WIFI_PHASE_SELECT,      // W/S to pick SSID, Enter to select
     WIFI_PHASE_PASSWORD,    // Type password, Enter to connect
     WIFI_PHASE_CONNECTING,
+    WIFI_PHASE_DETAIL,      // a saved network: join, password, its location, forget (UI v2)
   };
   WifiSetupPhase _wifiPhase;
   // Up to 10 networks heard, strongest first, then the saved ones not heard
@@ -505,6 +506,9 @@ private:
   bool _wifiSecure[SETTINGS_WIFI_LIST];      // needs a password
   bool _wifiSaved[SETTINGS_WIFI_LIST];       // in /web/wifi.cfg
   bool _wifiInRange[SETTINGS_WIFI_LIST];     // heard by the scan
+  bool _wifiHasLoc[SETTINGS_WIFI_LIST];      // a saved network with its location in use
+  MeckWifiLoc _wifiLoc;                      // the detail page's network
+  int _wifiDetailSel;
   bool _wifiScanDrawn;              // SCANNING screen is up: scan may block now
   bool _wifiPassPrefilled;          // password is the saved one: a key replaces it
   int _wifiSSIDCount;
@@ -1026,6 +1030,8 @@ public:
     memset(_wifiPassBuf, 0, sizeof(_wifiPassBuf));
     _wifiFormLastChar = 0;
     _wifiConnectStart = 0;
+    _wifiDetailSel = 0;
+    memset(&_wifiLoc, 0, sizeof(_wifiLoc));
     #endif
     rebuildRows();
   }
@@ -1170,6 +1176,13 @@ public:
       }
       _wifiSaved[i] = true;
     }
+    MeckWifiLoc locs[MECK_WIFI_LOC_MAX];
+    int nl = meckWifiLocLoad(locs, MECK_WIFI_LOC_MAX);
+    for (int i = 0; i < _wifiSSIDCount; i++) {
+      _wifiHasLoc[i] = false;
+      for (int k = 0; k < nl && _wifiSaved[i]; k++)
+        if (_wifiSSIDs[i] == locs[k].ssid) _wifiHasLoc[i] = locs[k].fixes && !(locs[k].flags & (WLOC_OFF | WLOC_MOVED));
+    }
     _wifiPhase = WIFI_PHASE_SELECT;  // always show overlay (even if 0)
   }
 
@@ -1179,6 +1192,9 @@ public:
     if (_wifiSSIDCount == 0 || !_wifiSaved[_wifiSSIDSelected]) return;
     const int i = _wifiSSIDSelected;
     meckWifiForget(_wifiSSIDs[i].c_str());
+    meckWifiLocDrop(_wifiSSIDs[i].c_str());
+    extern void meckWifiLocChanged();
+    meckWifiLocChanged();
     Serial.printf("Settings: WiFi network '%s' forgotten\n", _wifiSSIDs[i].c_str());
     if (WiFi.status() == WL_CONNECTED && WiFi.SSID() == _wifiSSIDs[i]) {
       extern void meckWifiStopAttempt();
@@ -1188,16 +1204,92 @@ public:
     snprintf(msg, sizeof(msg), "%s\n%.32s", MECK_TR("Forgotten", "Oubli\xC3\xA9"), _wifiSSIDs[i].c_str());
     if (_wifiInRange[i]) {
       _wifiSaved[i] = false;
+      _wifiHasLoc[i] = false;
     } else {
       for (int k = i; k < _wifiSSIDCount - 1; k++) {
         _wifiSSIDs[k] = _wifiSSIDs[k + 1]; _wifiRSSI[k] = _wifiRSSI[k + 1]; _wifiSecure[k] = _wifiSecure[k + 1];
-        _wifiSaved[k] = _wifiSaved[k + 1]; _wifiInRange[k] = _wifiInRange[k + 1];
+        _wifiSaved[k] = _wifiSaved[k + 1]; _wifiInRange[k] = _wifiInRange[k + 1]; _wifiHasLoc[k] = _wifiHasLoc[k + 1];
       }
       _wifiSSIDCount--;
       if (_wifiSSIDSelected >= _wifiSSIDCount && _wifiSSIDSelected > 0) _wifiSSIDSelected--;
     }
     extern void meckShowAlert(const char* text, int duration_millis);
     meckShowAlert(msg, SETTINGS_WIFI_ALERT_MS);
+  }
+
+  // Saved network detail page (UI v2): its rows, as many as apply
+  enum WifiDetailRow : uint8_t { WD_JOIN, WD_PASSWORD, WD_LOCATION, WD_LOC_DELETE, WD_FORGET };
+  int wifiDetailRows(uint8_t* rows) const {
+    int n = 0;
+    rows[n++] = WD_JOIN;
+    rows[n++] = WD_PASSWORD;
+    rows[n++] = WD_LOCATION;
+    if (_wifiLoc.fixes) rows[n++] = WD_LOC_DELETE;
+    rows[n++] = WD_FORGET;
+    return n;
+  }
+
+  void wifiOpenDetail() {
+    _wifiLoc = meckWifiLocGet(_wifiSSIDs[_wifiSSIDSelected].c_str());
+    _wifiDetailSel = 0;
+    _wifiPhase = WIFI_PHASE_DETAIL;
+  }
+
+  // The saved password into the password field (masked); Enter alone joins
+  void wifiPrefillSaved() {
+    _wifiPassLen = 0;
+    memset(_wifiPassBuf, 0, sizeof(_wifiPassBuf));
+    _wifiFormLastChar = 0;
+    _wifiPassPrefilled = false;
+    char pass[64];
+    if (meckWifiFindSaved(_wifiSSIDs[_wifiSSIDSelected].c_str(), pass, sizeof(pass))) {
+      _wifiPassLen = strlen(pass);
+      memcpy(_wifiPassBuf, pass, _wifiPassLen + 1);
+      _wifiPassPrefilled = _wifiPassLen > 0;
+    }
+  }
+
+  void wifiLocSave() {
+    meckWifiLocPut(_wifiLoc);
+    extern void meckWifiLocChanged();
+    meckWifiLocChanged();
+    _wifiHasLoc[_wifiSSIDSelected] = _wifiLoc.fixes && !(_wifiLoc.flags & (WLOC_OFF | WLOC_MOVED));
+  }
+
+  void wifiDetailEnter() {
+    uint8_t rows[5];
+    const int n = wifiDetailRows(rows);
+    if (_wifiDetailSel >= n) _wifiDetailSel = n - 1;
+    extern void meckShowAlert(const char* text, int duration_millis);
+    switch (rows[_wifiDetailSel]) {
+      case WD_JOIN:
+        wifiPrefillSaved();
+        wifiConnectSelected();
+        break;
+      case WD_PASSWORD:
+        wifiPrefillSaved();
+        _wifiPhase = WIFI_PHASE_PASSWORD;
+        break;
+      case WD_LOCATION:
+        // Off forgets the location too; on learns it again from the GPS
+        if (_wifiLoc.flags & (WLOC_OFF | WLOC_MOVED)) {
+          _wifiLoc.flags = 0;
+        } else {
+          _wifiLoc.flags = WLOC_OFF;
+          _wifiLoc.fixes = 0;
+        }
+        wifiLocSave();
+        break;
+      case WD_LOC_DELETE:
+        _wifiLoc.fixes = 0;
+        wifiLocSave();
+        meckShowAlert(MECK_TR("Location deleted", "Position effac\xC3\xA9" "e"), SETTINGS_WIFI_ALERT_MS);
+        break;
+      case WD_FORGET:
+        wifiForgetSelected();
+        _wifiPhase = WIFI_PHASE_SELECT;
+        break;
+    }
   }
 
   // Join the selected network with the password in _wifiPassBuf; both are
@@ -1207,11 +1299,8 @@ public:
     _wifiPassBuf[_wifiPassLen] = '\0';
     _wifiPhase = WIFI_PHASE_CONNECTING;
 
-    extern void meckWifiStopAttempt();
-    meckWifiStopAttempt();
-    extern void meckWifiResetReason();
-    meckWifiResetReason();
-    WiFi.begin(_wifiSSIDs[_wifiSSIDSelected].c_str(), _wifiPassBuf);
+    extern void meckWifiBegin(const char* ssid, const char* pass);
+    meckWifiBegin(_wifiSSIDs[_wifiSSIDSelected].c_str(), _wifiPassBuf);
 
     // Don't wait here: poll() checks for the result each loop, so the
     // "Connecting..." popup can be drawn while the device joins the
@@ -1267,6 +1356,8 @@ public:
     } else if ((long)(millis() - _wifiConnectStart) >= SETTINGS_WIFI_CONNECT_MS) {
       extern void meckWifiLogFail(const char* who);
       extern const char* meckWifiFailReason();
+      extern void meckWifiStopAttempt();
+      meckWifiStopAttempt();   // no retrying without end
       meckWifiLogFail("Settings");
       // Go back to SSID selection so user can retry
       _wifiPhase = WIFI_PHASE_SELECT;
@@ -3167,7 +3258,9 @@ public:
       char right[16] = "";
       if (_wifiPhase == WIFI_PHASE_SELECT && _wifiSSIDCount > 0)
         Ui2List::pageLabel(right, sizeof(right), _wifiSSIDSelected, _wifiSSIDCount, ROWS_PER_PAGE);
-      Ui2Chrome::titleBar(c, "WiFi", right[0] ? right : nullptr);
+      // The detail page is about one network: its name as the title
+      Ui2Chrome::titleBar(c, _wifiPhase == WIFI_PHASE_DETAIL ? _wifiSSIDs[_wifiSSIDSelected].c_str() : "WiFi",
+                          right[0] ? right : nullptr);
 
       if (_wifiPhase == WIFI_PHASE_SCANNING) {
         Ui2List::emptyState(c, BODY_Y, FOOTER_Y, UI2_IC_WIFI, MECK_TR("Scanning\xE2\x80\xA6", "Recherche\xE2\x80\xA6"),
@@ -3191,13 +3284,14 @@ public:
           const int rssi = _wifiRSSI[i];
           const bool saved = _wifiSaved[i];
           if (!_wifiInRange[i])
-            snprintf(tmp, sizeof(tmp), "%s \xC2\xB7 %s", MECK_TR("Saved", "Enregistr\xC3\xA9"),
+            snprintf(tmp, sizeof(tmp), "%s%s \xC2\xB7 %s", MECK_TR("Saved", "Enregistr\xC3\xA9"),
+                     _wifiHasLoc[i] ? MECK_TR(", location", ", position") : "",
                      MECK_TR("not in range", "hors de port\xC3\xA9" "e"));
           else
-            snprintf(tmp, sizeof(tmp), "%s \xC2\xB7 %d dBm",
+            snprintf(tmp, sizeof(tmp), "%s%s \xC2\xB7 %d dBm",
                      saved ? MECK_TR("Saved", "Enregistr\xC3\xA9")
                            : _wifiSecure[i] ? MECK_TR("Password", "Mot de passe") : MECK_TR("Open", "Ouvert"),
-                     rssi);
+                     _wifiHasLoc[i] ? MECK_TR(", location", ", position") : "", rssi);
           Ui2Row r;
           r.icon = !_wifiInRange[i] ? UI2_IC_WIFIOFF : rssi >= -60 ? UI2_IC_WIFI : rssi >= -72 ? UI2_IC_WIFI2 : UI2_IC_WIFI1;
           r.title = _wifiSSIDs[i].c_str();
@@ -3209,7 +3303,7 @@ public:
         }
         // A saved network can be forgotten: F takes the place of W/S
         const Ui2Key keys[] = {
-          ui2KeyIcon(UI2_IC_ENTER, MECK_TR("Join", "Rejoindre")),
+          ui2KeyIcon(UI2_IC_ENTER, _wifiSaved[_wifiSSIDSelected] ? MECK_TR("Open", "Ouvrir") : MECK_TR("Join", "Rejoindre")),
           _wifiSaved[_wifiSSIDSelected] ? ui2Key("F", MECK_TR("Forget", "Oublier"))
                                         : ui2Key("W/S", MECK_TR("Move", "D\xC3\xA9placer"), true),
           ui2Key("R", MECK_TR("Rescan", "Relancer")),
@@ -3251,6 +3345,65 @@ public:
         const Ui2Key keys[] = { ui2KeyIcon(UI2_IC_ENTER, MECK_TR("Join", "Rejoindre")), ui2Key("Sh+Del", MECK_TR("Back", "Retour")) };
         Ui2Chrome::footer(c, keys, 2);
         return (_wifiFormLastChar > 0 && (millis() - _wifiFormLastChar) < 800) ? 850 : 5000;
+      }
+
+      if (_wifiPhase == WIFI_PHASE_DETAIL) {
+        // A saved network: join it, its password, its location, forget it
+        uint8_t rows[5];
+        const int n = wifiDetailRows(rows);
+        if (_wifiDetailSel >= n) _wifiDetailSel = n - 1;
+        const int i = _wifiSSIDSelected;
+        char sub[64];
+        for (int k = 0; k < n; k++) {
+          Ui2Row r;
+          r.selected = (k == _wifiDetailSel);
+          switch (rows[k]) {
+            case WD_JOIN:
+              r.icon = !_wifiInRange[i] ? UI2_IC_WIFIOFF : _wifiRSSI[i] >= -60 ? UI2_IC_WIFI : _wifiRSSI[i] >= -72 ? UI2_IC_WIFI2 : UI2_IC_WIFI1;
+              r.title = MECK_TR("Join", "Rejoindre");
+              if (_wifiInRange[i]) snprintf(sub, sizeof(sub), "%d dBm", _wifiRSSI[i]);
+              else snprintf(sub, sizeof(sub), "%s", MECK_TR("Not in range", "Hors de port\xC3\xA9" "e"));
+              r.sub = sub;
+              break;
+            case WD_PASSWORD:
+              r.icon = UI2_IC_KEY;
+              r.title = MECK_TR("Password", "Mot de passe");
+              r.sub = MECK_TR("Change the saved one", "Modifier l'enregistr\xC3\xA9");
+              break;
+            case WD_LOCATION:
+              r.icon = UI2_IC_PIN;
+              r.title = MECK_TR("Save location", "Enregistrer la position");
+              r.toggle = (_wifiLoc.flags & (WLOC_OFF | WLOC_MOVED)) ? 0 : 1;
+              if (_wifiLoc.flags & WLOC_MOVED)
+                r.sub = MECK_TR("Off: the network moves", "Non : le r\xC3\xA9seau se d\xC3\xA9place");
+              else if (_wifiLoc.flags & WLOC_OFF)
+                r.sub = MECK_TR("Off", "Non");
+              else if (_wifiLoc.fixes) {
+                snprintf(tmp, sizeof(tmp), "%.5f, %.5f \xC2\xB7 %u GPS", _wifiLoc.lat, _wifiLoc.lon, (unsigned)_wifiLoc.fixes);
+                r.sub = tmp;
+              } else
+                r.sub = MECK_TR("Not yet: GPS fix while joined", "Pas encore : GPS une fois connect\xC3\xA9");
+              break;
+            case WD_LOC_DELETE:
+              r.icon = UI2_IC_DEL;
+              r.title = MECK_TR("Delete location", "Effacer la position");
+              r.sub = MECK_TR("Learned again from the GPS", "R\xC3\xA9" "apprise par le GPS");
+              break;
+            case WD_FORGET:
+              r.icon = UI2_IC_CROSS;
+              r.title = MECK_TR("Forget network", "Oublier le r\xC3\xA9seau");
+              r.sub = MECK_TR("Its password and location", "Mot de passe et position");
+              break;
+          }
+          Ui2List::drawRow(c, BODY_Y + k * ROW_H, r);
+        }
+        const Ui2Key keys[] = {
+          ui2KeyIcon(UI2_IC_ENTER, MECK_TR("Select", "Choisir")),
+          ui2Key("W/S", MECK_TR("Move", "D\xC3\xA9placer"), true),
+          ui2Key("Q", MECK_TR("Back", "Retour")),
+        };
+        Ui2Chrome::footer(c, keys, 3);
+        return 5000;
       }
 
       // Connecting: the result comes as a popup (IP, or why it failed)
@@ -4556,6 +4709,12 @@ public:
             requestWifiScan();
             return true;
           }
+#ifdef MECK_UI_V2
+          if (_wifiSaved[_wifiSSIDSelected]) {   // join, password, location, forget
+            wifiOpenDetail();
+            return true;
+          }
+#endif
           _wifiPassLen = 0;
           memset(_wifiPassBuf, 0, sizeof(_wifiPassBuf));
           _wifiFormLastChar = 0;
@@ -4584,6 +4743,17 @@ public:
           wifiReconnectSaved();  // Restore connection after scan disconnect
           return true;
         }
+        return true;
+      }
+
+      if (_wifiPhase == WIFI_PHASE_DETAIL) {
+        uint8_t rows[5];
+        const int n = wifiDetailRows(rows);
+        if (c == 'w' || c == 'W') { if (_wifiDetailSel > 0) _wifiDetailSel--; return true; }
+        if (c == 's' || c == 'S') { if (_wifiDetailSel < n - 1) _wifiDetailSel++; return true; }
+        if (c == '\r' || c == 13) { wifiDetailEnter(); return true; }
+        if (c == 'f' || c == 'F') { wifiForgetSelected(); _wifiPhase = WIFI_PHASE_SELECT; return true; }
+        if (c == KEY_CANCEL || c == 'q' || c == 'Q') { _wifiPhase = WIFI_PHASE_SELECT; return true; }
         return true;
       }
 
