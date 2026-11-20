@@ -26,6 +26,7 @@ but the cell never serves the map.
 |---|---|---|
 | **GPS** | 25 m | a fix while the GPS is on and has one |
 | **Cell** (`HAS_4G_MODEM`) | the cell's range from the database, at least 500 m. A cell missing from the database gives the middle of its area (LAC / TAC), with a radius that takes in 9 in 10 of the area's cells and their reach, rounded up to the kilometre, at least 2 km | when the modem last read the serving cell |
+| **WiFi** (WiFi builds) | 100 m | while joined to a saved network whose location the GPS has given |
 | **Stored** | counts as 100 m | none: the advert position, set by hand or the last GPS fix |
 
 **Ageing:** a position gets worse as it gets older, by 15 m/s (a car in town).
@@ -36,8 +37,11 @@ but the cell never serves the map.
   had the deck moved to another cell, the next read would show it. It is
   renewed every time the modem reads the same cell again.
 
+- A WiFi position is renewed every 2 s while joined (held 10 s), so it is
+  FINE while the deck stays on that network and leaves FINE seconds after.
+
 **Which one wins** (`MeckPosition::best(class)`):
-1. The live source (GPS, cell) with the smallest radius *now*, if that fits
+1. The live source (GPS, cell, WiFi) with the smallest radius *now*, if that fits
    the class.
 2. Otherwise the stored position, if the class allows 100 m. Every class does
    by default; an app can pass `allowStored = false`.
@@ -45,6 +49,27 @@ but the cell never serves the map.
 So the weather takes GPS, then the cell, and the stored position only as the
 last resort. "Send my location" and adverts take GPS, then the stored
 position, never the cell.
+
+### WiFi network locations
+
+Each saved WiFi network can have a location, learned from the GPS:
+
+- While joined to a saved network with its location on, a GPS fix no worse
+  than 50 m is taken once a minute and averaged into the network's location
+  (a running average over about the last 20).
+- A fix more than 500 m from the location means the network moves with the
+  deck (a phone's hotspot): the location is dropped and learning stops for
+  that network ("Off: the network moves"), until it is turned on again.
+- Kept on the SD card in `/web/wifiloc.cfg`, one line per network:
+  `<flags> <lat> <lon> <fixes> <name>` (flags: 1 off by the user, 2 off because
+  it moves). Written when first learned, when it has shifted 20 m, and every
+  30 fixes. `wifi.cfg` keeps only the names and passwords.
+
+In Settings › WiFi (UI v2), a saved network with a location shows
+"Saved, location". Enter on a saved network opens its page: **Join**,
+**Password**, **Save location** (on / off; off deletes the location too),
+**Delete location** (learned again from the GPS) and **Forget network**
+(its password and location).
 
 ### Reading the cell
 
