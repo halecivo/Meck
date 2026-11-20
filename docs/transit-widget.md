@@ -120,11 +120,12 @@ request kept the deck awake.
   switch (Settings > Mobile data > Departures) allows it: the link is brought
   up for the request and let go right after. Never over Bluetooth. No light
   sleep during the request.
-- **Position**: `lat`/`lon` (4 decimals) only from a GPS that is on anyway and
-  has a fix of the last minutes (class LOCAL, `docs/position.md`). GPS is
-  never switched on for this, and the cell or advert position is not sent:
-  without a fix the server picks by its own hints (Home Assistant zone, usual
-  hours).
+- **Position**: `lat`/`lon` (4 decimals) from a GPS that is on anyway and
+  has a fix of the last minutes (class LOCAL), else from the joined WiFi
+  network's learned location (`docs/position.md`, "WiFi network locations").
+  GPS is never switched on for this, and the cell or advert position is not
+  sent: without either the server picks by its own hints (Home Assistant
+  zone, usual hours).
 
 A reply is below 2 kB; with the TLS handshake a request over 4G is roughly
 8-10 kB.

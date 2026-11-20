@@ -4,9 +4,9 @@
 //
 // Asks a Neujede server (GET /compact/widget) for ready rows: a stop board or
 // the trip that fits now, as the server decides. Only while the deck is
-// locked (the rows are only shown there): when it locks, then at the reply's
-// validUntil, at most every 2 minutes (5 over 4G), with back-off on errors up
-// to 15 minutes. Over WiFi when it is connected; else over mobile data when
+// locked (the rows are only shown there): when it locks, then every 15
+// minutes or 5 minutes before a shown run leaves, at most every 2 minutes
+// (5 over 4G), with back-off on errors up to 15 minutes. Over WiFi when it is connected; else over mobile data when
 // it and the app's 4G switch allow it, brought up for the request and let go
 // right after. Never over Bluetooth.
 //
@@ -27,8 +27,8 @@ public:
   void begin();   // setup(): the address and token from NVS
 
   // Every loop(). enabled = the widget is switched on; locked = the lock
-  // screen shows; rows = what the widget may use now (2-4); pos = a live
-  // GPS fix (never switched on for this); now = RTC seconds (UTC).
+  // screen shows; rows = how many to ask for; pos = a live GPS fix or the
+  // joined WiFi's location (GPS never switched on for this); now = RTC seconds (UTC).
   void loop(bool enabled, bool locked, int rows, bool pos, double lat, double lon, uint32_t now, int32_t offSec);
 
   bool configured() const { return _url[0] && _token[0]; }

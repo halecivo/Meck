@@ -9530,13 +9530,15 @@ void meckTransitTick() {
   const uint32_t now = rtc_clock.getCurrentTime();
   const int32_t off = (int32_t)p->utc_offset_hours * 3600;
   const bool on = p->lock_transit != 0;
-  // The position only from a GPS that is on anyway (a fix of the last few
-  // minutes); never switched on, and never the cell or the advert position:
-  // the server falls back to its own idea of where the user is
+  // The position from a GPS that is on anyway (a fix of the last few
+  // minutes), else from the joined WiFi network's learned location; GPS is
+  // never switched on for this, and the cell or the advert position is not
+  // sent: the server falls back to its own idea of where the user is
   double lat = 0, lon = 0;
   bool pos = false;
-  if (on && meckPosition.has(POS_SRC_GPS)) {
-    const MeckFix& f = meckPosition.fix(POS_SRC_GPS);
+  for (PosSource s : { POS_SRC_GPS, POS_SRC_WIFI }) {
+    if (!on || pos || !meckPosition.has(s)) continue;
+    const MeckFix& f = meckPosition.fix(s);
     if (posClassOf(meckPosition.radiusNow(f, meckPosNow())) <= POS_LOCAL) {
       lat = f.lat;
       lon = f.lon;
