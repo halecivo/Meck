@@ -1397,13 +1397,16 @@ static uint32_t _atoi(const char* sp) {
   #include <esp_wifi.h>
   #include <esp_sntp.h>
   #include "ui-new/MeckWifiNetworks.h"
+  void meckWifiLocChanged();
   // Why the last WiFi connection attempt failed. The WiFi driver reports a
   // reason code each time a connection attempt drops; it is recorded here so
   // the "Could not connect" popups and the serial log can say why.
   static volatile uint8_t meckWifiLastReason = 0;
   static bool meckWifiReasonHooked = false;
   static void meckWifiOnDisconnect(arduino_event_id_t event, arduino_event_info_t info) {
-    meckWifiLastReason = info.wifi_sta_disconnected.reason;
+    // "Leaving" is meckWifiStopAttempt() itself, not why the join failed
+    if (info.wifi_sta_disconnected.reason != WIFI_REASON_ASSOC_LEAVE)
+      meckWifiLastReason = info.wifi_sta_disconnected.reason;
   }
   // Call just before WiFi.begin(): clears the last reason (and starts
   // recording reasons the first time).
@@ -1452,11 +1455,24 @@ static uint32_t _atoi(const char* sp) {
   // out of range, WiFi.disconnect() does nothing while not connected, and
   // WiFi.begin() for another network then fails (the driver refuses a new
   // configuration while it is connecting). An explicit disconnect ends it
-  // with "leaving", which the core does not retry.
+  // with "leaving", which the core does not retry; with its retries off, a
+  // failure already queued is not retried either. Until the next join only
+  // meckWifiKeepUp() looks for a network again, now and then: retrying
+  // without end keeps the radio on, and the locked deck from sleeping.
   void meckWifiStopAttempt() {
     if (WiFi.getMode() == WIFI_OFF) return;
+    WiFi.setAutoReconnect(false);
     esp_wifi_disconnect();
     delay(20);
+  }
+
+  // Join a network, with the core's retries for the join's time (a weak
+  // network may need a second try). Joined, they stay on for short drops.
+  void meckWifiBegin(const char* ssid, const char* pass) {
+    meckWifiStopAttempt();
+    meckWifiResetReason();
+    WiFi.setAutoReconnect(true);
+    WiFi.begin(ssid, pass);
   }
 
   // Join a saved network without freezing the screen: a scan first, then
@@ -1472,10 +1488,8 @@ static uint32_t _atoi(const char* sp) {
   static bool meckWifiHold = false;   // WiFi setup or the Web Reader is joining by itself
 
   static void meckWifiJoinNet(const MeckWifiNet& net) {
-    meckWifiStopAttempt();
-    meckWifiResetReason();
     snprintf(meckWifiJoinSsid, sizeof(meckWifiJoinSsid), "%s", net.ssid);
-    WiFi.begin(net.ssid, net.pass);
+    meckWifiBegin(net.ssid, net.pass);
     meckWifiJoin = MWJ_JOIN;
     meckWifiConnectAt = millis();
     Serial.printf("WiFi: joining saved network %s\n", net.ssid);
@@ -1556,10 +1570,9 @@ static uint32_t _atoi(const char* sp) {
   static unsigned long meckWifiDownSince = 0, meckWifiRetryAt = 0;
   static uint8_t meckWifiRetries = 0;
   static void meckWifiKeepUp() {
+    bool on = (WiFi.getMode() & WIFI_MODE_STA) && !(WiFi.getMode() & WIFI_MODE_AP);
   #if defined(BLE_PIN_CODE)
-    bool on = meckCompanionIsWiFi() && (WiFi.getMode() & WIFI_MODE_STA) && !(WiFi.getMode() & WIFI_MODE_AP);
-  #else
-    bool on = false;   // single-link WiFi builds keep joining as before
+    on = on && meckCompanionIsWiFi();
   #endif
     if (!on || WiFi.status() == WL_CONNECTED) {
       meckWifiDownSince = 0;
@@ -1568,6 +1581,7 @@ static uint32_t _atoi(const char* sp) {
     }
     if (meckWifiJoin != MWJ_IDLE || meckWifiHold) return;
     unsigned long now = millis();
+    // Lost: the core retries for a while, then a scan looks for any saved one
     if (meckWifiDownSince == 0) {
       meckWifiDownSince = now;
       meckWifiRetryAt = now + 30000;   // a short drop: the core rejoins by itself
@@ -1616,6 +1630,7 @@ static uint32_t _atoi(const char* sp) {
       }
     } else if ((long)(millis() - meckWifiConnectAt) >= SETTINGS_WIFI_CONNECT_MS) {
       meckWifiJoin = MWJ_IDLE;
+      meckWifiStopAttempt();
       meckWifiLogFail(meckWifiJoinSsid);
       if (!meckWifiJoinQuiet) {
         char msg[64];
@@ -1714,7 +1729,11 @@ static bool meckWifiCfgRead(char* ssid, size_t ssidLen, char* pass, size_t passL
 // Saves a network as the most recent one; no name forgets them all
 static bool meckWifiCfgWrite(const char* ssid, const char* pass) {
   if (!sdCardReady) return false;
-  if (!ssid[0]) return meckWifiStore(nullptr, 0);
+  if (!ssid[0]) {
+    meckWifiLocStore(nullptr, 0);
+    meckWifiLocChanged();
+    return meckWifiStore(nullptr, 0);
+  }
   return meckWifiRemember(ssid, pass);
 }
 
@@ -9073,6 +9092,96 @@ static bool meckCellLookup(const CellId& id, CellFix& out) {
 }
 #endif
 
+#if defined(DISPLAY_CLASS) && defined(MECK_WIFI_COMPANION)
+// Where each saved WiFi network is (MeckWifiNetworks.h): while joined to
+// one, a fresh GPS fix once a minute is averaged into its location, and the
+// location is the deck's position while joined. A fix far from it means the
+// network moves with the deck (a phone's hotspot): its location goes, and it
+// learns no more until the user turns it on again in WiFi setup.
+static MeckWifiLoc meckWifiLocNow = {};       // the joined network's entry
+static bool meckWifiLocLoaded = false;        // loaded for the joined network
+static bool meckWifiLocSaved = false;         // the joined network is a saved one
+static unsigned long meckWifiLocTickAt = 0, meckWifiLocSampleAt = 0;
+static double meckWifiLocWrLat = 0, meckWifiLocWrLon = 0;   // as last written to SD
+static uint16_t meckWifiLocWrFixes = 0;
+static const uint32_t MECK_WIFI_LOC_MOVED_M = 500;
+static const uint32_t MECK_WIFI_LOC_GPS_M = 50;   // a fix at least this good is learned
+
+// WiFi setup changed the file: read it again
+void meckWifiLocChanged() { meckWifiLocLoaded = false; }
+
+static double meckDistanceM(double lat1, double lon1, double lat2, double lon2) {
+  const double mPerDeg = 111320.0;
+  double dx = (lon2 - lon1) * mPerDeg * cos((lat1 + lat2) * 0.5 * M_PI / 180.0);
+  double dy = (lat2 - lat1) * mPerDeg;
+  return sqrt(dx * dx + dy * dy);
+}
+
+static void meckWifiLocWrite(const char* why) {
+  meckWifiLocPut(meckWifiLocNow);
+  meckWifiLocWrLat = meckWifiLocNow.lat;
+  meckWifiLocWrLon = meckWifiLocNow.lon;
+  meckWifiLocWrFixes = meckWifiLocNow.fixes;
+  Serial.printf("WiFi: location of %s %s: %.5f, %.5f from %u fixes\n", meckWifiLocNow.ssid, why,
+                meckWifiLocNow.lat, meckWifiLocNow.lon, (unsigned)meckWifiLocNow.fixes);
+}
+
+static void meckWifiLocTick(uint32_t now) {
+  if ((long)(millis() - meckWifiLocTickAt) < 2000) return;
+  meckWifiLocTickAt = millis();
+  if (WiFi.status() != WL_CONNECTED || !sdCardReady) {
+    meckWifiLocLoaded = false;   // left: its fix ages out by itself
+    return;
+  }
+  String ssid = WiFi.SSID();
+  if (!meckWifiLocLoaded || ssid != meckWifiLocNow.ssid) {
+    char pass[64];
+    meckPosition.clear(POS_SRC_WIFI);
+    meckWifiLocSaved = meckWifiFindSaved(ssid.c_str(), pass, sizeof(pass));
+    meckWifiLocNow = meckWifiLocGet(ssid.c_str());
+    meckWifiLocWrLat = meckWifiLocNow.lat;
+    meckWifiLocWrLon = meckWifiLocNow.lon;
+    meckWifiLocWrFixes = meckWifiLocNow.fixes;
+    meckWifiLocSampleAt = 0;
+    meckWifiLocLoaded = true;
+  }
+  MeckWifiLoc& l = meckWifiLocNow;
+  if (!meckWifiLocSaved || (l.flags & (WLOC_OFF | WLOC_MOVED))) return;
+  // Renewed every pass, held for a few: it stays FINE while joined
+  if (l.fixes) {
+    MeckFix f = { l.lat, l.lon, MeckPosition::WIFI_RADIUS_M, now, POS_SRC_WIFI, 10 };
+    meckPosition.set(f);
+  }
+  if (!meckPosition.has(POS_SRC_GPS)) return;
+  const MeckFix& g = meckPosition.fix(POS_SRC_GPS);
+  if (meckPosition.radiusNow(g, now) > MECK_WIFI_LOC_GPS_M) return;
+  if (meckWifiLocSampleAt && (long)(millis() - meckWifiLocSampleAt) < 60000) return;
+  meckWifiLocSampleAt = millis();
+  if (!l.fixes) {
+    l.lat = g.lat;
+    l.lon = g.lon;
+    l.fixes = 1;
+    meckWifiLocWrite("learned");
+    return;
+  }
+  if (meckDistanceM(l.lat, l.lon, g.lat, g.lon) > MECK_WIFI_LOC_MOVED_M) {
+    l.flags |= WLOC_MOVED;
+    l.fixes = 0;
+    meckPosition.clear(POS_SRC_WIFI);
+    meckWifiLocWrite("dropped (the network moves)");
+    return;
+  }
+  // A running average over the last 20 or so, so a better fix still counts
+  const uint16_t w = l.fixes < 20 ? l.fixes : 20;
+  l.lat = (l.lat * w + g.lat) / (w + 1);
+  l.lon = (l.lon * w + g.lon) / (w + 1);
+  if (l.fixes < 0xFFFF) l.fixes++;
+  // To SD when it has shifted, and now and then for the count
+  if (meckDistanceM(l.lat, l.lon, meckWifiLocWrLat, meckWifiLocWrLon) > 20 || l.fixes - meckWifiLocWrFixes >= 30)
+    meckWifiLocWrite("updated");
+}
+#endif
+
 // Every loop: feed the sources
 static void meckPositionTick() {
   const uint32_t now = meckPosNow();
@@ -9088,6 +9197,9 @@ static void meckPositionTick() {
     MeckFix f = { lp->getLatitude() / 1000000.0, lp->getLongitude() / 1000000.0, MECK_GPS_RADIUS_M, now, POS_SRC_GPS, 0 };
     meckPosition.set(f);   // a fix that stops coming ages out by itself
   }
+#endif
+#if defined(DISPLAY_CLASS) && defined(MECK_WIFI_COMPANION)
+  meckWifiLocTick(now);    // after the GPS, which it learns from
 #endif
 #ifdef HAS_4G_MODEM
   CellId id;

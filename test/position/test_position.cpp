@@ -86,6 +86,28 @@ static void testBest() {
   CHECK_EQ(p.radiusNow(p.fix(POS_SRC_GPS), T - 100), 20);
 }
 
+// The joined WiFi network's location: FINE while it is renewed (each pass,
+// held 10 s), beaten by a fresh GPS fix, out of FINE soon after leaving
+static void testWifi() {
+  const uint32_t T = 1800000000;
+  MeckPosition p;
+  MeckFix f;
+  MeckFix w = fix(POS_SRC_WIFI, 50.08, 14.42, MeckPosition::WIFI_RADIUS_M, T);
+  w.holdS = 10;
+  p.set(w);
+  p.set(fix(POS_SRC_STORED, 6, 0, MeckPosition::STORED_RADIUS_M, 0));
+  CHECK(p.best(POS_FINE, T + 10, f));
+  CHECK_EQ(f.src, POS_SRC_WIFI);             // a live source before the stored one
+  CHECK(p.best(POS_FINE, T + 11, f));
+  CHECK_EQ(f.src, POS_SRC_STORED);           // left: 100 m + drift
+  CHECK(p.best(POS_LOCAL, T + 60, f, false));
+  CHECK_EQ(f.src, POS_SRC_WIFI);
+  p.set(fix(POS_SRC_GPS, 50.0801, 14.4201, 25, T + 5));
+  CHECK(p.best(POS_FINE, T + 5, f));
+  CHECK_EQ(f.src, POS_SRC_GPS);
+  CHECK(strcmp(posSourceName(POS_SRC_WIFI), "wifi") == 0);
+}
+
 // --- CPSI ----------------------------------------------------------------------
 
 static void testCpsi() {
@@ -249,6 +271,7 @@ static void testFile(const char* db, const char* csvPath) {
 int main(int argc, char** argv) {
   testClasses();
   testBest();
+  testWifi();
   testCpsi();
   testDb();
   if (argc > 2) testFile(argv[1], argv[2]);
