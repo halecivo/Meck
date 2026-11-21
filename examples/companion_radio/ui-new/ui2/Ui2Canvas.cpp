@@ -278,6 +278,35 @@ int16_t Ui2Canvas::battery(int16_t x, int16_t top, int pct, bool ink) {
   return 20;
 }
 
+// Switched-off symbol of the lock screen (Lock design P1): a 48 px ring of
+// 3 px open at the top, a 4 px bar through the opening that sticks out 3 px
+// above the ring, and the switch-off time inside (Montserrat 11).
+void Ui2Canvas::powerSymbol(int16_t x, int16_t top, const char* label, bool ink) {
+  // Pixel centres in half pixels from the middle: in the ring when between
+  // the inner (21 px) and outer (24 px) radius. Runs of ring pixels per row.
+  const int RO2 = 4 * 24 * 24, RI2 = 4 * 21 * 21;
+  for (int row = 0; row < 48; row++) {
+    const int dy = 2 * row + 1 - 48;
+    int run = -1;
+    for (int col = 0; col <= 48; col++) {
+      bool in = false;
+      if (col < 48) {
+        const int dx = 2 * col + 1 - 48;
+        const int d2 = dx * dx + dy * dy;
+        in = d2 <= RO2 && d2 > RI2;
+      }
+      if (in && run < 0) run = col;
+      if (!in && run >= 0) { fill(x + run, top + row, col - run, 1, ink); run = -1; }
+    }
+  }
+  fill(x + 15, top, 18, 12, !ink);                  // the opening
+  fillRoundRect(x + 22, top - 3, 4, 22, 1, ink);    // the bar
+  if (label && label[0]) {
+    const int16_t tw = textWidth(label, UI2_F_NUM11);
+    text(x + (48 - tw) / 2, lineBaseline(UI2_F_NUM11, top + 25, 13), label, UI2_F_NUM11, ink);
+  }
+}
+
 void Ui2Canvas::sectionHeader(int16_t y, const char* label, bool ink) {
   int16_t base = y + ui2::SECTION_H - 3;
   int16_t ex = textTracked(ui2::PAD, base, label, UI2_F_CHIP, 1, ink);

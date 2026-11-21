@@ -2245,6 +2245,9 @@ class LockScreen : public UIScreen {
   Ui2LockWeather _weather;
   char _wd3[4] = "";   // weekday, 3 capitals (the calendar tile of the date variant)
   int _dayNum = 0;      // day of the month, 0 = clock not set
+  // The battery has run out: RTC time of the switch-off while the last frame
+  // is drawn (Lock design P1-P5), else 0
+  uint32_t _offAt = 0;
 #endif
 
 public:
@@ -2266,6 +2269,7 @@ public:
     while (j < UI2_LOCK_MAX_WIDGETS) _widgets[j++] = nullptr;
   }
   void setWeather(const Ui2LockWeather& w) { _weather = w; }
+  void setSwitchedOff(uint32_t at) { _offAt = at; }
 
 private:
   // Layout of the UI v2 lock screen (docs/lock-screen.md), 240 x 320:
@@ -2278,6 +2282,7 @@ private:
   static constexpr int16_t RADIO_X = ui2::SCREEN_W - 6 - 12;
   static constexpr int16_t STATUS_Y = 298, STATUS_H = 18;   // + 4 px below
   static constexpr int16_t CLOCK_H = 44;                    // Montserrat 40 line
+  static constexpr int16_t OFF_SYMBOL = 48;                 // switched-off symbol, instead of the clock
   static constexpr int16_t DATE_GAP = 2, DATE_H = 15;
   static constexpr int16_t NOTIF_GAP = 10, NOTIF_H = 24;
   static constexpr int16_t WIDGET_GAP = 8;     // between widgets
@@ -2345,8 +2350,13 @@ private:
   // One line at the top: lock icon and the node name, centred, clear of the
   // radio column on both sides
   void drawTopLine(Ui2Canvas& c) {
-    const int16_t maxW = RADIO_X - 4 - (ui2::SCREEN_W - RADIO_X + 4) - 16;
     const char* name = _node_prefs->node_name;
+    if (_offAt) {   // no lock icon, no radio column: the name alone, centred
+      const int16_t maxW = ui2::SCREEN_W - 2 * ui2::PAD;
+      c.textFit(ui2::PAD, Ui2Canvas::lineBaseline(UI2_F_CHIP, TOP_Y, TOP_H), maxW, name, UI2_F_CHIP, true, UI2_CENTER);
+      return;
+    }
+    const int16_t maxW = RADIO_X - 4 - (ui2::SCREEN_W - RADIO_X + 4) - 16;
     int16_t nw = Ui2Canvas::textWidth(name, UI2_F_CHIP);
     if (nw > maxW) nw = maxW;
     int16_t x = (ui2::SCREEN_W - 16 - nw) / 2;
@@ -2375,6 +2385,16 @@ private:
 
   // Status line: why the deck sleeps or not, the estimate, battery and %
   void drawStatusLine(Ui2Canvas& c) {
+    if (_offAt) {   // an empty battery and what to do about it
+      const char* msg = MECK_TR("Battery empty Â· charge to turn on", "Batterie vide Â· chargez pour rallumer");
+      const int16_t maxW = ui2::SCREEN_W - 2 * ui2::PAD - 20 - 6;
+      int16_t tw = Ui2Canvas::textWidth(msg, UI2_F_META);
+      if (tw > maxW) tw = maxW;
+      int16_t x = (ui2::SCREEN_W - (20 + 6 + tw)) / 2;
+      c.battery(x, STATUS_Y + (STATUS_H - 10) / 2, 0);
+      c.textFit(x + 20 + 6, Ui2Canvas::boxBaseline(UI2_F_META, STATUS_Y, STATUS_H), maxW, msg, UI2_F_META);
+      return;
+    }
     char pct[8];
     snprintf(pct, sizeof(pct), "%d %%", _snapPct);
     const int16_t pw = Ui2Canvas::textWidth(pct, UI2_F_META);
@@ -2471,17 +2491,23 @@ private:
     return 12 + 2 + (_weather.rain == Ui2LockWeather::RAIN_ENDS ? 12 : 0) + Ui2Canvas::textWidth(buf, UI2_F_CHIP);
   }
 
+  int16_t clockH() const { return _offAt ? OFF_SYMBOL : CLOCK_H; }
+  // The clock's width, or the switched-off symbol's
+  int16_t clockW(const char* timeBuf) const {
+    return _offAt ? OFF_SYMBOL : Ui2Canvas::textWidth(timeBuf, UI2_F_NUM40);
+  }
+
   int16_t heroHeight() {
-    if (!_weather.valid) return CLOCK_H;
+    if (!_weather.valid) return clockH();
     char rain[8];
     int16_t colH = 32 + (rainLine(rain, sizeof(rain)) ? 2 + 12 : 0);
-    return colH > CLOCK_H ? colH : CLOCK_H;
+    return colH > clockH() ? colH : clockH();
   }
 
   // Width of the clock block: weather group, clock, and the calendar tile
   static constexpr int16_t HERO_GAP = 12, HERO_GAP_CAL = 10;   // between weather, clock, calendar
   int16_t heroWidth(const char* timeBuf, bool cal) {
-    const int16_t cw = Ui2Canvas::textWidth(timeBuf, UI2_F_NUM40);
+    const int16_t cw = clockW(timeBuf);
     int16_t gw = 0;
     char rain[8];
     if (_weather.valid) {
@@ -2508,7 +2534,7 @@ private:
   // The clock, with the weather group on its left when there is weather:
   // the two centred together as one block, the clock alone centred without
   void drawHero(Ui2Canvas& c, int16_t top, int16_t h, const char* timeBuf, bool cal = false) {
-    const int16_t cw = Ui2Canvas::textWidth(timeBuf, UI2_F_NUM40);
+    const int16_t cw = clockW(timeBuf);
     int16_t gw = 0, rw = 0;
     char rain[8];
     if (_weather.valid) {
@@ -2519,7 +2545,7 @@ private:
     const int16_t g = cal ? HERO_GAP_CAL : HERO_GAP;
     int16_t x = (ui2::SCREEN_W - blockW) / 2;
     // With the calendar the block can run into the radio column: it moves left
-    if (cal && x + blockW > RADIO_X - 4) x = RADIO_X - 4 - blockW;
+    if (cal && !_offAt && x + blockW > RADIO_X - 4) x = RADIO_X - 4 - blockW;
     if (gw) {
       const int16_t colH = 32 + (rw ? 2 + 12 : 0);
       const int16_t iy = top + (h - colH) / 2;
@@ -2537,7 +2563,8 @@ private:
       }
       x += gw + g;
     }
-    c.text(x, Ui2Canvas::lineBaseline(UI2_F_NUM40, top + (h - CLOCK_H) / 2, CLOCK_H), timeBuf, UI2_F_NUM40);
+    if (_offAt) c.powerSymbol(x, top + (h - OFF_SYMBOL) / 2, timeBuf);
+    else c.text(x, Ui2Canvas::lineBaseline(UI2_F_NUM40, top + (h - CLOCK_H) / 2, CLOCK_H), timeBuf, UI2_F_NUM40);
     if (cal) drawCalendar(c, x + cw + g, top + (h - CAL_H) / 2);
   }
 
@@ -2546,19 +2573,21 @@ public:
   int renderV2(DisplayDriver& display) {
     using namespace ui2;
     Ui2Canvas c(display);
-    uint32_t now = _rtc->getCurrentTime();
+    // Switched off: the frame is drawn as of the moment the battery ran out
+    uint32_t now = _offAt ? _offAt : _rtc->getCurrentTime();
+    ui2LockSwitchedOff() = _offAt != 0;
 
     bool usb = false;
 #if defined(LilyGo_TDeck_Pro_Max) && !defined(MECK_40MHZ_TEST)
     usb = board.isUsbPowered();
 #endif
-    snapBattery(now, usb);
+    if (!_offAt) snapBattery(now, usb);
 
     char timeBuf[8], dateBuf[24];
     formatTime(now, timeBuf, sizeof(timeBuf), dateBuf, sizeof(dateBuf));
 
     drawTopLine(c);
-    drawRadioColumn(c);
+    if (!_offAt) drawRadioColumn(c);   // all radios go off with the deck
     drawStatusLine(c);
 
     // Top group: clock (+ weather), date, notifications
@@ -2570,7 +2599,7 @@ public:
     // widgets get its height; the notifications keep a row of their own. It
     // needs the room: without it (a wide weather group) the date stays a line.
     const bool cal = _node_prefs->lock_date_compact && _dayNum &&
-                     heroWidth(timeBuf, true) <= RADIO_X - 4 - 2;
+                     heroWidth(timeBuf, true) <= (_offAt ? SCREEN_W - 2 * PAD : RADIO_X - 4 - 2);
     const int16_t midH = heroH + (dateBuf[0] && !cal ? DATE_GAP + DATE_H : 0) +
                          (nk ? NOTIF_GAP + NOTIF_H : 0);
     const int16_t areaTop = TOP_Y + TOP_H;
@@ -3799,7 +3828,9 @@ if (curr) curr->poll();
       if (_low_batt_count >= 3) {  // 3 consecutive low readings (~24s) to avoid transient sags
 
       // show low battery shutdown alert on e-ink (persists after power loss)
-      #if defined(LilyGo_TDeck_Pro)
+      #if defined(LilyGo_TDeck_Pro) && defined(MECK_UI_V2)
+      drawSwitchedOffLock();   // the lock screen stays, marked as switched off
+      #elif defined(LilyGo_TDeck_Pro)
       if (_display != NULL) {
         _display->startFrame();
         _display->setTextSize(2);
@@ -3907,6 +3938,23 @@ void UITask::setLockWeather(const Ui2LockWeather& w) {
   ((LockScreen*)lock_screen)->setWeather(w);
   lockContentChanged();
 }
+
+#if defined(MECK_UI_V2) && defined(LilyGo_TDeck_Pro)
+void UITask::drawSwitchedOffLock() {
+  if (_display == NULL) return;
+  if (!_display->isOn()) _display->turnOn();
+  LockScreen* ls = (LockScreen*)lock_screen;
+  ls->setSwitchedOff(rtc_clock.getCurrentTime());
+  // One whole frame: a partial refresh would leave the previous screen's
+  // ghost in what e-ink keeps with no power
+  static_cast<GxEPDDisplay*>(_display)->requestFullRefresh();
+  _display->startFrame();
+  ui2FrameHasChrome = false;
+  ls->renderV2(*_display);
+  _display->endFrame();
+}
+
+#endif
 
 void UITask::lockContentChanged() {
   // Only while the lock screen shows: it is drawn afresh when locking

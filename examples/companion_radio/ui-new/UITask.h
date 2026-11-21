@@ -351,6 +351,9 @@ public:
   void setLockWeather(const Ui2LockWeather& w);
   // A provider's data changed: redraw now if the lock screen is showing
   void lockContentChanged();
+  // The battery ran out: draw the lock screen as the last frame before the
+  // switch-off (Lock design P1-P5), from whatever screen the deck is on
+  void drawSwitchedOffLock();
 #endif
   // SOS screen (docs/sos.md). gotoSosScreen() opens it with nothing selected.
   void gotoSosScreen();

@@ -158,7 +158,8 @@ struct LockTransitWidget : Ui2LockWidget {
     char tm[TR_MAX_ROWS][8];
     int16_t timeW = 0;
     for (int i = 0; i < rows; i++) {
-      trRowTime(b, i, countdown && *countdown, now, off(), tm[i], sizeof(tm[i]));
+      // Switched off: "4 m" would be wrong when read later, show the clock time
+      trRowTime(b, i, countdown && *countdown && !ui2LockSwitchedOff(), now, off(), tm[i], sizeof(tm[i]));
       int16_t tw = Ui2Canvas::textWidth(tm[i], UI2_F_NODE);
       if (tw > timeW) timeW = tw;
     }

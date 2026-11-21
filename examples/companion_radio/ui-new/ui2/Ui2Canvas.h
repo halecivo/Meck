@@ -88,6 +88,9 @@ public:
   void pageDots(int16_t cx, int16_t top, int count, int active, bool ink = true);
   // Battery: 5 segments in an 18 x 10 outline plus nub; returns width (20)
   int16_t battery(int16_t x, int16_t top, int pct, bool ink = true);
+  // Power symbol, 48 x 48 at (x, top), label (a time) inside; its bar rises
+  // 3 px above `top`
+  void powerSymbol(int16_t x, int16_t top, const char* label, bool ink = true);
   // List section header (16 px): small caps label and a rule to the right
   void sectionHeader(int16_t y, const char* label, bool ink = true);
 

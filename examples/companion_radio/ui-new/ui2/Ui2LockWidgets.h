@@ -17,6 +17,14 @@
 
 class Ui2Canvas;
 
+// True while the lock screen draws its last frame before the battery switches
+// the deck off (Lock design P1-P5). What would be wrong once the deck is off,
+// like a countdown to a departure, is then drawn as it will be read later.
+static inline bool& ui2LockSwitchedOff() {
+  static bool v = false;
+  return v;
+}
+
 struct Ui2LockWidget {
   virtual ~Ui2LockWidget() {}
   // Higher stays longer when space runs out
