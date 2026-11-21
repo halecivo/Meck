@@ -32,6 +32,10 @@ struct Ui2LockWidget {
   // next smaller height below h it can still draw, 0 = none. The layout
   // shrinks the lowest priority widget first, then leaves widgets out.
   virtual int16_t shrink(int16_t w, uint32_t now, int16_t h) { (void)w; (void)now; (void)h; return 0; }
+  // A widget that takes all the room the lock screen has for widgets (the
+  // map): while it shows (height() > 0), no other widget does, and it is
+  // drawn at the whole height left under the clock group
+  virtual bool fillsLock() const { return false; }
   // Draw at the height the layout gave it (height() or a shrink() step)
   virtual void drawAt(Ui2Canvas& c, int16_t x, int16_t top, int16_t w, int16_t h, uint32_t now) {
     (void)h;

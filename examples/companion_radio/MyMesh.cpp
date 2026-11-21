@@ -1819,6 +1819,8 @@ MyMesh::MyMesh(mesh::Radio &radio, mesh::RNG &rng, mesh::RTCClock &rtc, SimpleMe
   _prefs.lock_transit = 0;     // nor departures: they need a Neujede server and token
   _prefs.lock_transit_rows = 3;   // departures size M
   _prefs.lock_transit_countdown = 1;   // minutes to go, not clock times
+  _prefs.lock_map = 0;         // no map on the lock screen until switched on
+  _prefs.lock_date_compact = 0;   // the date as a line under the clock
   _prefs.multi_acks = 1;      // redundant ACKs on by default
   strcpy(_prefs.node_name, "NONAME");
   _prefs.freq = LORA_FREQ;
@@ -4091,6 +4093,12 @@ void MyMesh::checkCLIRescueCmd() {
       // Debug: lock screen departures (docs/transit-widget.md); the token is never printed
       extern void meckTransitCmd(const char* arg);
       meckTransitCmd(cli_command[7] ? &cli_command[8] : "");
+#endif
+#if defined(MECK_UI_V2) && HAS_GPS
+    } else if (strcmp(cli_command, "lockmap") == 0 || memcmp(cli_command, "lockmap ", 8) == 0) {
+      // Debug: lock screen map (docs/lock-map.md)
+      extern void meckLockMapCmd(const char* arg);
+      meckLockMapCmd(cli_command[7] ? &cli_command[8] : "");
 #endif
 #if defined(MECK_WEATHER) && MECK_WEATHER
     } else if (strcmp(cli_command, "weather") == 0 || memcmp(cli_command, "weather ", 8) == 0) {

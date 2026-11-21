@@ -310,6 +310,13 @@ enum SettingsRowType : uint8_t {
   ROW_LOCK_TRANSIT_SIZE,// Enter cycles S / M / L (2 / 3 / 4 rows)
   ROW_LOCK_TRANSIT_MIN, // Toggle: minutes to go instead of clock times
 #endif
+#if defined(MECK_UI_V2) && HAS_GPS
+  ROW_LOCK_MAP,         // Toggle: the map on the lock screen while there is a fresh GPS fix
+#endif
+#ifdef MECK_UI_V2
+  ROW_LOCKSCREEN_SUBMENU, // Folder row: what the lock screen shows (Settings > Lock screen)
+  ROW_LOCK_DATE_COMPACT,  // Toggle: the date as a calendar tile next to the clock
+#endif
 };
 
 // ---------------------------------------------------------------------------
@@ -350,6 +357,7 @@ enum SubScreen : uint8_t {
   SUB_EXPORT_FLAGS,   // Export checkboxes + trigger
   #endif
   SUB_EXPERIMENTAL,   // Experimental Features sub-screen
+  SUB_LOCKSCREEN,     // Lock screen: the date and the widgets
   SUB_SOS,            // SOS: button and the channels it goes to
   SUB_DATA_USAGE,     // Mobile data: each app's 4G switch and its last 24 h
 };
@@ -664,19 +672,27 @@ private:
 #endif
 #if defined(MECK_DAV) && MECK_DAV
       addRow(ROW_CALENDAR_ACCOUNT);
-  #ifdef MECK_UI_V2
+#endif
+#ifdef MECK_UI_V2
+    } else if (_subScreen == SUB_LOCKSCREEN) {
+      // --- Lock screen: the date, then the widgets ---
+      addRow(ROW_LOCK_DATE_COMPACT);
+  #if defined(MECK_DAV) && MECK_DAV
       addRow(ROW_LOCK_AGENDA);
   #endif
-#endif
-#if defined(MECK_WEATHER) && MECK_WEATHER && defined(MECK_UI_V2)
+  #if defined(MECK_WEATHER) && MECK_WEATHER
       addRow(ROW_LOCK_WEATHER);
-#endif
-#if defined(MECK_TRANSIT) && MECK_TRANSIT && defined(MECK_UI_V2)
+  #endif
+  #if defined(MECK_TRANSIT) && MECK_TRANSIT
       addRow(ROW_LOCK_TRANSIT);
       if (_prefs->lock_transit) {
         addRow(ROW_LOCK_TRANSIT_SIZE);
         addRow(ROW_LOCK_TRANSIT_MIN);
       }
+  #endif
+  #if HAS_GPS
+      addRow(ROW_LOCK_MAP);
+  #endif
 #endif
 #if defined(LilyGo_TDeck_Pro)
     } else if (_subScreen == SUB_SOS) {
@@ -746,6 +762,9 @@ private:
 #endif
 #ifdef MECK_BLE_LOCK_WINDOWS
       if (_prefs->lock_sleep) addRow(ROW_LOCK_BLE);
+#endif
+#ifdef MECK_UI_V2
+      addRow(ROW_LOCKSCREEN_SUBMENU);
 #endif
 #if defined(LilyGo_TDeck_Pro)
       addRow(ROW_SOS_SUBMENU);
@@ -3006,6 +3025,17 @@ public:
         display.print(tmp);
         break;
 
+#ifdef MECK_UI_V2
+      case ROW_LOCKSCREEN_SUBMENU:
+        display.setColor(selected ? DisplayDriver::DARK : DisplayDriver::GREEN);
+        display.print(MECK_TR("Lock screen >>", "\xC3\x89" "cran verrouill\xC3\xA9 >>"));
+        break;
+      case ROW_LOCK_DATE_COMPACT:
+        snprintf(tmp, sizeof(tmp), MECK_TR("Compact date: %s", "Date compacte : %s"),
+                 _prefs->lock_date_compact ? MECK_TR("ON", "OUI") : MECK_TR("OFF", "NON"));
+        display.print(tmp);
+        break;
+#endif
       case ROW_EXPERIMENTAL_SUBMENU:
         display.setColor(selected ? DisplayDriver::DARK : DisplayDriver::GREEN);
         display.print(MECK_TR("Experimental Features >>", "Exp\xC3\xA9rimental >>"));
@@ -3103,6 +3133,13 @@ public:
       case ROW_LOCK_TRANSIT_MIN:
         snprintf(tmp, sizeof(tmp), MECK_TR("  Minutes to departure: %s", "  Minutes avant le d\xC3\xA9part : %s"),
                  _prefs->lock_transit_countdown ? MECK_TR("ON", "OUI") : MECK_TR("OFF", "NON"));
+        display.print(tmp);
+        break;
+#endif
+#if defined(MECK_UI_V2) && HAS_GPS
+      case ROW_LOCK_MAP:
+        snprintf(tmp, sizeof(tmp), MECK_TR("Map on lock screen: %s", "Carte \xC3\xA0 l'\xC3\xA9" "cran verrouill\xC3\xA9 : %s"),
+                 _prefs->lock_map ? MECK_TR("ON", "OUI") : MECK_TR("OFF", "NON"));
         display.print(tmp);
         break;
 #endif
@@ -3671,6 +3708,7 @@ public:
     else if (_subScreen == SUB_EXPORT_IMPORT || _subScreen == SUB_EXPORT_FLAGS) title = MECK_TR("Export / import", "Exporter / importer");
   #endif
     else if (_subScreen == SUB_EXPERIMENTAL) title = MECK_TR("Experimental", "Exp\xC3\xA9rimental");
+    else if (_subScreen == SUB_LOCKSCREEN) title = MECK_TR("Lock screen", "\xC3\x89" "cran verrouill\xC3\xA9");
     else if (_subScreen == SUB_SOS) title = MECK_TR("Settings \xC2\xB7 SOS", "R\xC3\xA9glages \xC2\xB7 SOS");
     else if (_subScreen == SUB_DATA_USAGE) title = MECK_TR("Mobile data", "Donn\xC3\xA9" "es mobiles");
 
@@ -5610,6 +5648,21 @@ public:
           startEditCanned(_rows[_cursor].param);
           break;
 
+#ifdef MECK_UI_V2
+        case ROW_LOCKSCREEN_SUBMENU:
+          _savedTopCursor = _cursor;
+          _subScreen = SUB_LOCKSCREEN;
+          _cursor = 0;
+          _scrollTop = 0;
+          rebuildRows();
+          Serial.println("Settings: entered Lock screen sub-screen");
+          break;
+        case ROW_LOCK_DATE_COMPACT:
+          _prefs->lock_date_compact = _prefs->lock_date_compact ? 0 : 1;
+          the_mesh.savePrefs();
+          Serial.printf("Settings: compact date on lock screen = %s\n", _prefs->lock_date_compact ? "ON" : "OFF");
+          break;
+#endif
         case ROW_EXPERIMENTAL_SUBMENU:
           _savedTopCursor = _cursor;
           _subScreen = SUB_EXPERIMENTAL;
@@ -5683,6 +5736,16 @@ public:
           the_mesh.savePrefs();
           meckTransitChanged();
           Serial.printf("Settings: minutes to departure = %s\n", _prefs->lock_transit_countdown ? "ON" : "OFF");
+          break;
+        }
+#endif
+#if defined(MECK_UI_V2) && HAS_GPS
+        case ROW_LOCK_MAP: {
+          extern void meckLockMapChanged();
+          _prefs->lock_map = _prefs->lock_map ? 0 : 1;
+          the_mesh.savePrefs();
+          meckLockMapChanged();
+          Serial.printf("Settings: map on lock screen = %s\n", _prefs->lock_map ? "ON" : "OFF");
           break;
         }
 #endif

@@ -2225,6 +2225,9 @@ public:
 // ==========================================================================
 
 #if defined(LilyGo_TDeck_Pro)
+// Debug CLI "lockdemo notif": made-up notification counts (messages, SMS,
+// missed calls); RAM only
+uint8_t meckLockDemoNotif[3] = {};
 class LockScreen : public UIScreen {
   UITask* _task;
   mesh::RTCClock* _rtc;
@@ -2240,6 +2243,8 @@ class LockScreen : public UIScreen {
   // What providers put on the screen besides the clock (ui2/Ui2LockWidgets.h)
   Ui2LockWidget* _widgets[UI2_LOCK_MAX_WIDGETS] = {};
   Ui2LockWeather _weather;
+  char _wd3[4] = "";   // weekday, 3 capitals (the calendar tile of the date variant)
+  int _dayNum = 0;      // day of the month, 0 = clock not set
 #endif
 
 public:
@@ -2278,6 +2283,7 @@ private:
   static constexpr int16_t WIDGET_GAP = 8;     // between widgets
   static constexpr int16_t STACK_GAP = 6;      // widgets to the status line
   static constexpr int16_t GROUP_MIN_GAP = 8;  // top group to its neighbours
+  static constexpr int16_t CAL_W = 40, CAL_H = 40;   // calendar tile right of the clock (variant)
 
   void snapBattery(uint32_t now, bool usb) {
     if (now / 60 == _snapMinute && usb == _snapUsb) return;
@@ -2310,6 +2316,7 @@ private:
     if (now <= 1700000000) {
       snprintf(timeBuf, tlen, "--:--");
       dateBuf[0] = 0;
+      _dayNum = 0;
       return;
     }
     int32_t local = (int32_t)now + ((int32_t)_node_prefs->utc_offset_hours * 3600);
@@ -2326,6 +2333,12 @@ private:
     static const char* const wd_en[] = {"Thursday", "Friday", "Saturday", "Sunday", "Monday", "Tuesday", "Wednesday"};
     static const char* const wd_fr[] = {"jeudi", "vendredi", "samedi", "dimanche", "lundi", "mardi", "mercredi"};
     int wd = (int)((local / 86400) % 7);
+    {
+      const char* full = MECK_TR(wd_en[wd], wd_fr[wd]);
+      for (int i = 0; i < 3; i++) _wd3[i] = (full[i] >= 'a' && full[i] <= 'z') ? full[i] - 32 : full[i];
+      _wd3[3] = 0;
+      _dayNum = d;
+    }
     snprintf(dateBuf, dlen, "%s %d. %d.", MECK_TR(wd_en[wd], wd_fr[wd]), d, m);
   }
 
@@ -2417,6 +2430,12 @@ private:
   // Messages, SMS, missed calls with a count each; returns how many to show
   int collectNotifs(Notif* out) {
     int k = 0;
+    if (meckLockDemoNotif[0] || meckLockDemoNotif[1] || meckLockDemoNotif[2]) {
+      if (meckLockDemoNotif[0]) out[k++] = { UI2_IC_MSG, meckLockDemoNotif[0] };
+      if (meckLockDemoNotif[1]) out[k++] = { UI2_IC_SMS, meckLockDemoNotif[1] };
+      if (meckLockDemoNotif[2]) out[k++] = { UI2_IC_PHONE, meckLockDemoNotif[2] };
+      return k;
+    }
     int u = _task->getUnreadMsgCount();
     if (u > 0) out[k++] = { UI2_IC_MSG, u };
 #ifdef HAS_4G_MODEM
@@ -2430,11 +2449,11 @@ private:
   }
 
   // 16 px icons 22 px apart, each with its count on the top right corner
-  void drawNotifs(Ui2Canvas& c, int16_t top, const Notif* nf, int k) {
-    const int16_t w = k * 16 + (k - 1) * 22;
-    int16_t x = (ui2::SCREEN_W - w) / 2;
+  static int16_t notifsWidth(int k, int16_t gap) { return k * 16 + (k - 1) * gap; }
+  void drawNotifs(Ui2Canvas& c, int16_t top, const Notif* nf, int k, int16_t x = -1, int16_t gap = 22) {
+    if (x < 0) x = (ui2::SCREEN_W - notifsWidth(k, gap)) / 2;
     const int16_t iy = top + (NOTIF_H - 16) / 2;
-    for (int i = 0; i < k; i++, x += 16 + 22) {
+    for (int i = 0; i < k; i++, x += 16 + gap) {
       c.icon(x, iy, nf[i].ic, 16);
       char n[6];
       if (nf[i].n > 99) snprintf(n, sizeof(n), "99+");
@@ -2459,9 +2478,36 @@ private:
     return colH > CLOCK_H ? colH : CLOCK_H;
   }
 
+  // Width of the clock block: weather group, clock, and the calendar tile
+  static constexpr int16_t HERO_GAP = 12, HERO_GAP_CAL = 10;   // between weather, clock, calendar
+  int16_t heroWidth(const char* timeBuf, bool cal) {
+    const int16_t cw = Ui2Canvas::textWidth(timeBuf, UI2_F_NUM40);
+    int16_t gw = 0;
+    char rain[8];
+    if (_weather.valid) {
+      int16_t rw = rainLine(rain, sizeof(rain));
+      gw = rw > 32 ? rw : 32;
+    }
+    const int16_t g = cal ? HERO_GAP_CAL : HERO_GAP;
+    return (gw ? gw + g + cw : cw) + (cal ? g + CAL_W : 0);
+  }
+
+  // The day as a calendar page: weekday in the black strip, the day below
+  void drawCalendar(Ui2Canvas& c, int16_t x, int16_t y) {
+    c.roundRect(x, y, CAL_W, CAL_H, 3);
+    c.fillRoundRect(x, y, CAL_W, 14, 3);
+    c.fill(x, y + 8, CAL_W, 6);   // square off the strip's lower corners
+    int16_t tw = Ui2Canvas::textWidth(_wd3, UI2_F_KEY);
+    c.text(x + (CAL_W - tw) / 2, Ui2Canvas::boxBaseline(UI2_F_KEY, y, 14), _wd3, UI2_F_KEY, false);
+    char d[4];
+    snprintf(d, sizeof(d), "%d", _dayNum);
+    int16_t dw = Ui2Canvas::textWidth(d, UI2_F_NUM22);
+    c.text(x + (CAL_W - dw) / 2, Ui2Canvas::boxBaseline(UI2_F_NUM22, y + 14, CAL_H - 14), d, UI2_F_NUM22);
+  }
+
   // The clock, with the weather group on its left when there is weather:
   // the two centred together as one block, the clock alone centred without
-  void drawHero(Ui2Canvas& c, int16_t top, int16_t h, const char* timeBuf) {
+  void drawHero(Ui2Canvas& c, int16_t top, int16_t h, const char* timeBuf, bool cal = false) {
     const int16_t cw = Ui2Canvas::textWidth(timeBuf, UI2_F_NUM40);
     int16_t gw = 0, rw = 0;
     char rain[8];
@@ -2469,8 +2515,11 @@ private:
       rw = rainLine(rain, sizeof(rain));
       gw = rw > 32 ? rw : 32;
     }
-    const int16_t blockW = gw ? gw + 12 + cw : cw;
+    const int16_t blockW = heroWidth(timeBuf, cal);
+    const int16_t g = cal ? HERO_GAP_CAL : HERO_GAP;
     int16_t x = (ui2::SCREEN_W - blockW) / 2;
+    // With the calendar the block can run into the radio column: it moves left
+    if (cal && x + blockW > RADIO_X - 4) x = RADIO_X - 4 - blockW;
     if (gw) {
       const int16_t colH = 32 + (rw ? 2 + 12 : 0);
       const int16_t iy = top + (h - colH) / 2;
@@ -2486,9 +2535,10 @@ private:
         if (_weather.rain == Ui2LockWeather::RAIN_ENDS) { c.icon(rx, ry, UI2_IC_RIGHT, 12); rx += 12; }
         c.text(rx, Ui2Canvas::lineBaseline(UI2_F_CHIP, ry, 12), rain, UI2_F_CHIP);
       }
-      x += gw + 12;
+      x += gw + g;
     }
     c.text(x, Ui2Canvas::lineBaseline(UI2_F_NUM40, top + (h - CLOCK_H) / 2, CLOCK_H), timeBuf, UI2_F_NUM40);
+    if (cal) drawCalendar(c, x + cw + g, top + (h - CAL_H) / 2);
   }
 
 public:
@@ -2515,7 +2565,14 @@ public:
     Notif nf[3];
     const int nk = collectNotifs(nf);
     const int16_t heroH = heroHeight();
-    const int16_t midH = heroH + (dateBuf[0] ? DATE_GAP + DATE_H : 0) + (nk ? NOTIF_GAP + NOTIF_H : 0);
+    // Compact date (Settings > Lock screen): a calendar tile right of the
+    // clock (and the weather) in the same row, so the date line goes and the
+    // widgets get its height; the notifications keep a row of their own. It
+    // needs the room: without it (a wide weather group) the date stays a line.
+    const bool cal = _node_prefs->lock_date_compact && _dayNum &&
+                     heroWidth(timeBuf, true) <= RADIO_X - 4 - 2;
+    const int16_t midH = heroH + (dateBuf[0] && !cal ? DATE_GAP + DATE_H : 0) +
+                         (nk ? NOTIF_GAP + NOTIF_H : 0);
     const int16_t areaTop = TOP_Y + TOP_H;
 
     // Widgets stack upwards from the status line. The top group keeps at
@@ -2532,6 +2589,15 @@ public:
     }
     const int16_t stackBottom = STATUS_Y - STACK_GAP;
     const int16_t room = stackBottom - areaTop - 2 * GROUP_MIN_GAP - midH;
+    // A widget that fills the lock screen (the map) takes all the room and
+    // the others are left out, as long as the room is worth a block
+    for (int i = 0; i < UI2_LOCK_MAX_WIDGETS && _widgets[i]; i++) {
+      if (!wh[i] || !_widgets[i]->fillsLock() || room < 60) continue;
+      for (int j = 0; j < UI2_LOCK_MAX_WIDGETS; j++) wh[j] = 0;
+      wh[i] = room;
+      stackH = room;
+      break;
+    }
     while (stackH > room) {
       int pick = -1;
       int16_t smaller = 0;
@@ -2566,9 +2632,9 @@ public:
     // status line): fewer widgets only split the free space differently
     int16_t my = areaTop + (areaBottom - areaTop - midH) / 2;
     if (my < areaTop + GROUP_MIN_GAP) my = areaTop + GROUP_MIN_GAP;
-    drawHero(c, my, heroH, timeBuf);
+    drawHero(c, my, heroH, timeBuf, cal);
     my += heroH;
-    if (dateBuf[0]) {
+    if (dateBuf[0] && !cal) {
       c.textFit(PAD, Ui2Canvas::lineBaseline(UI2_F_BODY, my + DATE_GAP, DATE_H), SCREEN_W - 2 * PAD,
                 dateBuf, UI2_F_BODY, true, UI2_CENTER);
       my += DATE_GAP + DATE_H;
