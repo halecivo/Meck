@@ -161,7 +161,7 @@ public:
     if (_markers) { free(_markers); _markers = nullptr; }
   }
 
-  void setSDReady(bool ready) { _sdReady = ready; }
+  void setSDReady(bool ready) { _sdReady = ready; _rangeKnown = false; }
 
   // Set initial GPS position (called when opening map — centers viewport)
   void setGPSPosition(double lat, double lon) {
@@ -181,6 +181,43 @@ public:
     _centerLat = lat;
     _centerLon = lon;
     _needsRedraw = true;
+  }
+
+  // The map for the lock screen: the tiles at the best zoom the SD card has,
+  // centred on a point, in a rectangle of the screen, with the own position
+  // marked in the middle. Draws as the map screen does (same tiles, same
+  // decoder); needs the SD card and, for a view that does not come out
+  // empty, tiles under the point (hasTileAt). Returns true if a tile showed.
+  bool renderInRect(DisplayDriver& display, int x, int y, int w, int h, double lat, double lon) {
+    if (!_pngBuf || !_lineBuf || !_einkDisplay) enter(display);   // buffers and the zoom range
+    else ensureRange();
+    if (!_sdReady || !_pngBuf || !_lineBuf) return false;
+    const int oz = _zoom, ox = _vx, ow = _vw, oy = _vy, oh = _vh;
+    const double ola = _centerLat, olo = _centerLon;
+    _zoom = _zoomMax;
+    _vx = x; _vw = w; _vy = y; _vh = h;
+    _centerLat = lat;
+    _centerLon = lon;
+    renderMapViewport();
+    const bool found = _tileFound;
+    drawOwnPosition(x + w / 2, y + h / 2);
+    _einkDisplay->invalidateFrameCRC();   // raw pixel writes bypass CRC tracking
+    _zoom = oz; _vx = ox; _vw = ow; _vy = oy; _vh = oh;
+    _centerLat = ola;
+    _centerLon = olo;
+    return found;
+  }
+
+  // Is there a tile under this point at the best zoom? (the lock screen
+  // shows no map where it would come out blank)
+  bool hasTileAt(double lat, double lon) {
+    if (!_sdReady) return false;
+    ensureRange();
+    int tx, ty, px, py;
+    latLonToTileXY(lat, lon, _zoomMax, tx, ty, px, py);
+    char path[64];
+    buildTilePath(path, sizeof(path), _zoomMax, tx, ty);
+    return SD.exists(path);
   }
 
   // Update own GPS position without moving viewport (called periodically)
@@ -412,6 +449,11 @@ private:
   int _zoomMin;     // Detected from SD card
   int _zoomMax;     // Detected from SD card
 
+  // Where the map is drawn: the whole screen between the header and the
+  // footer, or the rectangle the lock screen gives it (renderInRect)
+  int _vx = 0, _vw = MAP_DISPLAY_W;
+  int _vy = MAP_VIEWPORT_Y, _vh = MAP_VIEWPORT_H;
+
   // PNG decode buffer (PSRAM)
   uint8_t* _pngBuf;
   uint16_t* _lineBuf;  // Scanline RGB565 buffer for PNG decode (PSRAM)
@@ -438,8 +480,10 @@ private:
     PNG* png;         // Pointer to the decoder (for getLineAsRGB565)
     int offsetX;      // Screen X offset for this tile
     int offsetY;      // Screen Y offset for this tile
-    int viewportY;    // Top of viewport (MAP_VIEWPORT_Y)
-    int viewportH;    // Height of viewport (MAP_VIEWPORT_H)
+    int viewportX;    // Left edge of the viewport (_vx)
+    int viewportW;    // Width of the viewport (_vw)
+    int viewportY;    // Top of viewport (_vy)
+    int viewportH;    // Height of viewport (_vh)
     uint16_t* lineBuf; // Scanline decode buffer (PSRAM-allocated, avoids 512B stack usage per callback)
   };
   DrawContext _drawCtx;
@@ -448,8 +492,14 @@ private:
   // Detect available zoom levels from /tiles/{z}/ directories on SD
   // ==========================================================================
 
+  // The card's zoom range is read once for the lock screen; the map screen
+  // reads it again each time it opens
+  void ensureRange() { if (!_rangeKnown) detectZoomRange(); }
+  bool _rangeKnown = false;
+
   void detectZoomRange() {
     if (!_sdReady) return;
+    _rangeKnown = true;
 
     _zoomMin = MAP_MAX_ZOOM;
     _zoomMax = MAP_MIN_ZOOM;
@@ -528,11 +578,11 @@ private:
     int dx = (targetTileX - centerTileX) * MAP_TILE_SIZE + (targetPixelX - centerPixelX);
     int dy = (targetTileY - centerTileY) * MAP_TILE_SIZE + (targetPixelY - centerPixelY);
 
-    screenX = MAP_DISPLAY_W / 2 + dx;
-    screenY = MAP_VIEWPORT_Y + MAP_VIEWPORT_H / 2 + dy;
+    screenX = _vx + _vw / 2 + dx;
+    screenY = _vy + _vh / 2 + dy;
 
-    return (screenX >= 0 && screenX < MAP_DISPLAY_W &&
-            screenY >= MAP_VIEWPORT_Y && screenY < MAP_VIEWPORT_Y + MAP_VIEWPORT_H);
+    return (screenX >= _vx && screenX < _vx + _vw &&
+            screenY >= _vy && screenY < (_vy + _vh));
   }
 
   // ==========================================================================
@@ -579,8 +629,10 @@ private:
     _drawCtx.png       = &_png;
     _drawCtx.offsetX   = screenX;
     _drawCtx.offsetY   = screenY;
-    _drawCtx.viewportY = MAP_VIEWPORT_Y;
-    _drawCtx.viewportH = MAP_VIEWPORT_H;
+    _drawCtx.viewportX = _vx;
+    _drawCtx.viewportW = _vw;
+    _drawCtx.viewportY = _vy;
+    _drawCtx.viewportH = _vh;
     _drawCtx.lineBuf   = _lineBuf;
 
     // Open PNG from memory buffer
@@ -630,7 +682,7 @@ private:
 
     for (int x = 0; x < lineWidth; x++) {
       int screenX = ctx->offsetX + x;
-      if (screenX < 0 || screenX >= MAP_DISPLAY_W) continue;
+      if (screenX < ctx->viewportX || screenX >= ctx->viewportX + ctx->viewportW) continue;
 
       // RGB565 little-endian on ESP32: standard bit layout
       // R[15:11] G[10:5] B[4:0]
@@ -661,8 +713,8 @@ private:
 
     // Screen position where the center tile's (0,0) corner should be placed
     // such that the GPS point ends up at viewport center
-    int viewCenterX = MAP_DISPLAY_W / 2;
-    int viewCenterY = MAP_VIEWPORT_Y + MAP_VIEWPORT_H / 2;
+    int viewCenterX = _vx + _vw / 2;
+    int viewCenterY = _vy + _vh / 2;
 
     int baseTileScreenX = viewCenterX - centerPixelX;
     int baseTileScreenY = viewCenterY - centerPixelY;
@@ -672,9 +724,9 @@ private:
     int endDX = 0, endDY = 0;
 
     while (baseTileScreenX + startDX * MAP_TILE_SIZE > 0) startDX--;
-    while (baseTileScreenY + startDY * MAP_TILE_SIZE > MAP_VIEWPORT_Y) startDY--;
-    while (baseTileScreenX + (endDX + 1) * MAP_TILE_SIZE < MAP_DISPLAY_W) endDX++;
-    while (baseTileScreenY + (endDY + 1) * MAP_TILE_SIZE < MAP_VIEWPORT_Y + MAP_VIEWPORT_H) endDY++;
+    while (baseTileScreenY + startDY * MAP_TILE_SIZE > _vy) startDY--;
+    while (baseTileScreenX + (endDX + 1) * MAP_TILE_SIZE < _vx + _vw) endDX++;
+    while (baseTileScreenY + (endDY + 1) * MAP_TILE_SIZE < (_vy + _vh)) endDY++;
 
     int maxTile = (1 << _zoom) - 1;
     int loaded = 0, missing = 0;
@@ -758,8 +810,8 @@ private:
       for (int dx = -span; dx <= span; dx++) {
         if (abs(dy) <= r && abs(dx) <= innerSpan) continue;
         int px = cx + dx, py = cy + dy;
-        if (px >= 0 && px < MAP_DISPLAY_W &&
-            py >= MAP_VIEWPORT_Y && py < MAP_VIEWPORT_Y + MAP_VIEWPORT_H) {
+        if (px >= _vx && px < _vx + _vw &&
+            py >= _vy && py < (_vy + _vh)) {
           _einkDisplay->drawPixelRaw(px, py, GxEPD_WHITE);
         }
       }
@@ -770,8 +822,8 @@ private:
       int span = r - abs(dy);
       for (int dx = -span; dx <= span; dx++) {
         int px = cx + dx, py = cy + dy;
-        if (px >= 0 && px < MAP_DISPLAY_W &&
-            py >= MAP_VIEWPORT_Y && py < MAP_VIEWPORT_Y + MAP_VIEWPORT_H) {
+        if (px >= _vx && px < _vx + _vw &&
+            py >= _vy && py < (_vy + _vh)) {
           _einkDisplay->drawPixelRaw(px, py, GxEPD_BLACK);
         }
       }
@@ -819,16 +871,16 @@ private:
     int ly = topY - textH;
 
     // Clamp to viewport
-    if (lx < 1) lx = 1;
-    if (lx + textW >= MAP_DISPLAY_W - 1) lx = MAP_DISPLAY_W - textW - 1;
-    if (ly < MAP_VIEWPORT_Y) ly = MAP_VIEWPORT_Y;
-    if (ly + textH >= MAP_VIEWPORT_Y + MAP_VIEWPORT_H) return;
+    if (lx < _vx + 1) lx = _vx + 1;
+    if (lx + textW >= _vx + _vw - 1) lx = _vx + _vw - textW - 1;
+    if (ly < _vy) ly = _vy;
+    if (ly + textH >= (_vy + _vh)) return;
 
     // White background rectangle
     for (int y = ly - 1; y <= ly + textH; y++) {
       for (int x = lx - 1; x <= lx + textW; x++) {
-        if (x >= 0 && x < MAP_DISPLAY_W &&
-            y >= MAP_VIEWPORT_Y && y < MAP_VIEWPORT_Y + MAP_VIEWPORT_H) {
+        if (x >= _vx && x < _vx + _vw &&
+            y >= _vy && y < (_vy + _vh)) {
           _einkDisplay->drawPixelRaw(x, y, GxEPD_WHITE);
         }
       }
@@ -848,8 +900,8 @@ private:
       for (int dx = -(r + 2); dx <= (r + 2); dx++) {
         if (dx * dx + dy * dy <= (r + 2) * (r + 2)) {
           int px = cx + dx, py = cy + dy;
-          if (px >= 0 && px < MAP_DISPLAY_W &&
-              py >= MAP_VIEWPORT_Y && py < MAP_VIEWPORT_Y + MAP_VIEWPORT_H) {
+          if (px >= _vx && px < _vx + _vw &&
+              py >= _vy && py < (_vy + _vh)) {
             _einkDisplay->drawPixelRaw(px, py, GxEPD_WHITE);
           }
         }
@@ -862,8 +914,8 @@ private:
         int d2 = dx * dx + dy * dy;
         if (d2 >= (r - 2) * (r - 2) && d2 <= r * r) {
           int px = cx + dx, py = cy + dy;
-          if (px >= 0 && px < MAP_DISPLAY_W &&
-              py >= MAP_VIEWPORT_Y && py < MAP_VIEWPORT_Y + MAP_VIEWPORT_H) {
+          if (px >= _vx && px < _vx + _vw &&
+              py >= _vy && py < (_vy + _vh)) {
             _einkDisplay->drawPixelRaw(px, py, GxEPD_BLACK);
           }
         }
@@ -875,8 +927,8 @@ private:
       for (int dx = -3; dx <= 3; dx++) {
         if (dx * dx + dy * dy <= 9) {
           int px = cx + dx, py = cy + dy;
-          if (px >= 0 && px < MAP_DISPLAY_W &&
-              py >= MAP_VIEWPORT_Y && py < MAP_VIEWPORT_Y + MAP_VIEWPORT_H) {
+          if (px >= _vx && px < _vx + _vw &&
+              py >= _vy && py < (_vy + _vh)) {
             _einkDisplay->drawPixelRaw(px, py, GxEPD_BLACK);
           }
         }
@@ -891,17 +943,17 @@ private:
   void renderCrosshair() {
     if (!_einkDisplay) return;
 
-    int cx = MAP_DISPLAY_W / 2;
-    int cy = MAP_VIEWPORT_Y + MAP_VIEWPORT_H / 2;
+    int cx = _vx + _vw / 2;
+    int cy = _vy + _vh / 2;
     int len = markerRadius() + 2;  // Scales with zoom
 
     // Draw thin crosshair: black line with white border for contrast
     // Horizontal arm
     for (int x = cx - len; x <= cx + len; x++) {
-      if (x >= 0 && x < MAP_DISPLAY_W) {
-        if (cy - 1 >= MAP_VIEWPORT_Y)
+      if (x >= _vx && x < _vx + _vw) {
+        if (cy - 1 >= _vy)
           _einkDisplay->drawPixelRaw(x, cy - 1, GxEPD_WHITE);
-        if (cy + 1 < MAP_VIEWPORT_Y + MAP_VIEWPORT_H)
+        if (cy + 1 < (_vy + _vh))
           _einkDisplay->drawPixelRaw(x, cy + 1, GxEPD_WHITE);
         _einkDisplay->drawPixelRaw(x, cy, GxEPD_BLACK);
       }
@@ -909,10 +961,10 @@ private:
 
     // Vertical arm
     for (int y = cy - len; y <= cy + len; y++) {
-      if (y >= MAP_VIEWPORT_Y && y < MAP_VIEWPORT_Y + MAP_VIEWPORT_H) {
-        if (cx - 1 >= 0)
+      if (y >= _vy && y < (_vy + _vh)) {
+        if (cx - 1 >= _vx)
           _einkDisplay->drawPixelRaw(cx - 1, y, GxEPD_WHITE);
-        if (cx + 1 < MAP_DISPLAY_W)
+        if (cx + 1 < _vx + _vw)
           _einkDisplay->drawPixelRaw(cx + 1, y, GxEPD_WHITE);
         _einkDisplay->drawPixelRaw(cx, y, GxEPD_BLACK);
       }

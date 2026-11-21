@@ -339,6 +339,12 @@ void DataStore::loadPrefsInt(const char *filename, NodePrefs& _prefs, double& no
     if (file.read((uint8_t *)&_prefs.lock_transit_countdown, sizeof(_prefs.lock_transit_countdown)) != sizeof(_prefs.lock_transit_countdown)) {
       _prefs.lock_transit_countdown = 1;  // default: minutes to go
     }
+    if (file.read((uint8_t *)&_prefs.lock_map, sizeof(_prefs.lock_map)) != sizeof(_prefs.lock_map)) {
+      _prefs.lock_map = 0;  // default: no map on the lock screen
+    }
+    if (file.read((uint8_t *)&_prefs.lock_date_compact, sizeof(_prefs.lock_date_compact)) != sizeof(_prefs.lock_date_compact)) {
+      _prefs.lock_date_compact = 0;  // default: the date as a line
+    }
 
     // Clamp to valid ranges
     if (_prefs.dark_mode > 1) _prefs.dark_mode = 0;
@@ -370,6 +376,8 @@ void DataStore::loadPrefsInt(const char *filename, NodePrefs& _prefs, double& no
     if (_prefs.lock_transit > 1) _prefs.lock_transit = 0;
     if (_prefs.lock_transit_rows < 2 || _prefs.lock_transit_rows > 4) _prefs.lock_transit_rows = 3;
     if (_prefs.lock_transit_countdown > 1) _prefs.lock_transit_countdown = 1;
+    if (_prefs.lock_map > 1) _prefs.lock_map = 0;
+    if (_prefs.lock_date_compact > 1) _prefs.lock_date_compact = 0;
     // Force NUL termination on each canned message slot in case of garbage
     for (int i = 0; i < (int)(sizeof(_prefs.canned_msgs) / sizeof(_prefs.canned_msgs[0])); i++) {
       _prefs.canned_msgs[i][sizeof(_prefs.canned_msgs[0]) - 1] = '\0';
@@ -456,6 +464,8 @@ void DataStore::savePrefs(const NodePrefs& _prefs, double node_lat, double node_
     file.write((uint8_t *)&_prefs.lock_transit, sizeof(_prefs.lock_transit));                  // 1598
     file.write((uint8_t *)&_prefs.lock_transit_rows, sizeof(_prefs.lock_transit_rows));        // 1599
     file.write((uint8_t *)&_prefs.lock_transit_countdown, sizeof(_prefs.lock_transit_countdown));  // 1600
+    file.write((uint8_t *)&_prefs.lock_map, sizeof(_prefs.lock_map));                          // 1601
+    file.write((uint8_t *)&_prefs.lock_date_compact, sizeof(_prefs.lock_date_compact));        // 1602
 
     file.close();
   }

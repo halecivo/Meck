@@ -202,6 +202,16 @@ struct NodePrefs {  // persisted to file
   uint8_t lock_transit_rows;       // default 3
   uint8_t lock_transit_countdown;  // default 1
 
+  // The map on the lock screen (Experimental, UI v2): with GPS on and a fresh
+  // fix it takes all the room of the widgets. Older prefs files short-read it
+  // and keep 0 (off).
+  uint8_t lock_map;                // default 0
+
+  // Lock screen (UI v2): the date as a small calendar tile right of the
+  // clock instead of a line under it, which leaves more room for widgets.
+  // Older prefs files short-read it and keep 0 (off).
+  uint8_t lock_date_compact;       // default 0
+
   // --- Font helpers (inline, no overhead) ---
   // Returns the DisplayDriver text-size index for "small/body" text.
   // T-Deck Pro: 0 = built-in 6×8 (or 7pt with custom fonts), 1 = 9pt.
