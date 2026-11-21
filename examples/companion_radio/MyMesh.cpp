@@ -1816,6 +1816,9 @@ MyMesh::MyMesh(mesh::Radio &radio, mesh::RNG &rng, mesh::RTCClock &rtc, SimpleMe
   _prefs.lock_keep = LOCK_KEEP_DEFAULT;   // what keeps running while locked
   _prefs.lock_agenda = 0;      // no agenda on the lock screen until switched on
   _prefs.lock_weather = 0;     // nor weather: it sends the position to Open-Meteo
+  _prefs.lock_transit = 0;     // nor departures: they need a Neujede server and token
+  _prefs.lock_transit_rows = 3;   // departures size M
+  _prefs.lock_transit_countdown = 1;   // minutes to go, not clock times
   _prefs.multi_acks = 1;      // redundant ACKs on by default
   strcpy(_prefs.node_name, "NONAME");
   _prefs.freq = LORA_FREQ;
@@ -3449,6 +3452,12 @@ void MyMesh::checkCLIRescueCmd() {
           Serial.printf("  > %d\n", _prefs.autoadd_max_hops);
         }
 
+#if defined(MECK_TRANSIT) && MECK_TRANSIT
+      } else if (strcmp(key, "transit") == 0) {
+        // Neujede server for the lock screen departures; the token is never printed
+        extern void meckTransitConfig(const char* key, const char* val);
+        meckTransitConfig(nullptr, nullptr);
+#endif
       } else {
         Serial.printf("  Error: unknown key '%s' (try 'help')\n", key);
       }
@@ -3954,6 +3963,16 @@ void MyMesh::checkCLIRescueCmd() {
           Serial.println("  Error: 0-64 (0=no limit)");
         }
 
+#if defined(MECK_TRANSIT) && MECK_TRANSIT
+      } else if (memcmp(config, "transit.url", 11) == 0 && (config[11] == ' ' || !config[11])) {
+        // Neujede server, e.g. https://nj.example.org; "set transit.url" alone forgets it
+        extern void meckTransitConfig(const char* key, const char* val);
+        meckTransitConfig("url", config[11] ? &config[12] : "");
+      } else if (memcmp(config, "transit.token", 13) == 0 && (config[13] == ' ' || !config[13])) {
+        // Its API token (kept in NVS, never printed); alone forgets it
+        extern void meckTransitConfig(const char* key, const char* val);
+        meckTransitConfig("token", config[13] ? &config[14] : "");
+#endif
       } else {
         Serial.printf("  Error: unknown setting '%s' (try 'help')\n", config);
       }
@@ -4066,6 +4085,12 @@ void MyMesh::checkCLIRescueCmd() {
       // Debug: CalDAV account (docs/caldav-design.md); the password is never printed
       extern void meckDavCmd(const char* arg);
       meckDavCmd(cli_command[3] ? &cli_command[4] : "");
+#endif
+#if defined(MECK_TRANSIT) && MECK_TRANSIT
+    } else if (strcmp(cli_command, "transit") == 0 || memcmp(cli_command, "transit ", 8) == 0) {
+      // Debug: lock screen departures (docs/transit-widget.md); the token is never printed
+      extern void meckTransitCmd(const char* arg);
+      meckTransitCmd(cli_command[7] ? &cli_command[8] : "");
 #endif
 #if defined(MECK_WEATHER) && MECK_WEATHER
     } else if (strcmp(cli_command, "weather") == 0 || memcmp(cli_command, "weather ", 8) == 0) {

@@ -28,6 +28,15 @@ struct Ui2LockWidget {
   // Next time (RTC seconds) its content changes by itself, e.g. an event
   // ends; 0 = none. The lock screen redraws then even off the minute tick.
   virtual uint32_t nextChange(uint32_t now) { (void)now; return 0; }
+  // A widget made of rows can give some up before it is left out: the
+  // next smaller height below h it can still draw, 0 = none. The layout
+  // shrinks the lowest priority widget first, then leaves widgets out.
+  virtual int16_t shrink(int16_t w, uint32_t now, int16_t h) { (void)w; (void)now; (void)h; return 0; }
+  // Draw at the height the layout gave it (height() or a shrink() step)
+  virtual void drawAt(Ui2Canvas& c, int16_t x, int16_t top, int16_t w, int16_t h, uint32_t now) {
+    (void)h;
+    draw(c, x, top, w, now);
+  }
 };
 
 // The weather group left of the clock; valid = false draws the clock alone

@@ -193,6 +193,15 @@ struct NodePrefs {  // persisted to file
   // files short-read this field and keep the default 0 (off).
   uint8_t lock_weather;            // default 0
 
+  // Departures on the lock screen (Experimental, UI v2): rows from a
+  // Neujede server (address and token in NVS, see MeckTransit.h), and the
+  // widget size in rows (2 = S, 3 = M, 4 = L), and whether the time column
+  // counts down the minutes (1) or shows clock times (0). Older prefs files
+  // short-read these and keep the defaults 0 (off), 3 and 1.
+  uint8_t lock_transit;            // default 0
+  uint8_t lock_transit_rows;       // default 3
+  uint8_t lock_transit_countdown;  // default 1
+
   // --- Font helpers (inline, no overhead) ---
   // Returns the DisplayDriver text-size index for "small/body" text.
   // T-Deck Pro: 0 = built-in 6×8 (or 7pt with custom fonts), 1 = 9pt.

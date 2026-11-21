@@ -2519,8 +2519,9 @@ public:
     const int16_t areaTop = TOP_Y + TOP_H;
 
     // Widgets stack upwards from the status line. The top group keeps at
-    // least 8 px above and below it; while it cannot, the lowest priority
-    // widget is left out. Nothing is resized.
+    // least 8 px above and below it; while it cannot, a widget made of rows
+    // gives up a row (lowest priority first), then the lowest priority
+    // widget is left out.
     int16_t wh[UI2_LOCK_MAX_WIDGETS] = {};
     const int16_t ww = SCREEN_W - 2 * PAD;
     int16_t stackH = 0;     // widgets and the gaps between them
@@ -2532,11 +2533,20 @@ public:
     const int16_t stackBottom = STATUS_Y - STACK_GAP;
     const int16_t room = stackBottom - areaTop - 2 * GROUP_MIN_GAP - midH;
     while (stackH > room) {
+      int pick = -1;
+      int16_t smaller = 0;
+      for (int i = 0; i < UI2_LOCK_MAX_WIDGETS && _widgets[i]; i++) {
+        if (!wh[i] || (pick >= 0 && _widgets[i]->priority() >= _widgets[pick]->priority())) continue;
+        int16_t s = _widgets[i]->shrink(ww, now, wh[i]);
+        if (s > 0 && s < wh[i]) { pick = i; smaller = s; }
+      }
       int drop = -1;
-      for (int i = 0; i < UI2_LOCK_MAX_WIDGETS && _widgets[i]; i++)
-        if (wh[i] && (drop < 0 || _widgets[i]->priority() < _widgets[drop]->priority())) drop = i;
-      if (drop < 0) break;
-      wh[drop] = 0;
+      if (pick < 0)
+        for (int i = 0; i < UI2_LOCK_MAX_WIDGETS && _widgets[i]; i++)
+          if (wh[i] && (drop < 0 || _widgets[i]->priority() < _widgets[drop]->priority())) drop = i;
+      if (pick < 0 && drop < 0) break;
+      if (pick >= 0) wh[pick] = smaller;
+      else wh[drop] = 0;
       stackH = 0;
       for (int i = 0; i < UI2_LOCK_MAX_WIDGETS && _widgets[i]; i++)
         if (wh[i]) stackH += (stackH ? WIDGET_GAP : 0) + wh[i];
@@ -2546,7 +2556,7 @@ public:
     uint32_t wake = 0;
     for (int i = 0; i < UI2_LOCK_MAX_WIDGETS && _widgets[i]; i++) {
       if (!wh[i]) continue;
-      _widgets[i]->draw(c, PAD, y, ww, now);
+      _widgets[i]->drawAt(c, PAD, y, ww, wh[i], now);
       y += wh[i] + WIDGET_GAP;
       uint32_t t = _widgets[i]->nextChange(now);
       if (t > now && (!wake || t < wake)) wake = t;

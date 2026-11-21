@@ -305,6 +305,11 @@ enum SettingsRowType : uint8_t {
 #if defined(MECK_WEATHER) && MECK_WEATHER && defined(MECK_UI_V2)
   ROW_LOCK_WEATHER,     // Toggle: the forecast next to the clock on the lock screen
 #endif
+#if defined(MECK_TRANSIT) && MECK_TRANSIT && defined(MECK_UI_V2)
+  ROW_LOCK_TRANSIT,     // Toggle: Neujede departures on the lock screen
+  ROW_LOCK_TRANSIT_SIZE,// Enter cycles S / M / L (2 / 3 / 4 rows)
+  ROW_LOCK_TRANSIT_MIN, // Toggle: minutes to go instead of clock times
+#endif
 };
 
 // ---------------------------------------------------------------------------
@@ -666,6 +671,13 @@ private:
 #if defined(MECK_WEATHER) && MECK_WEATHER && defined(MECK_UI_V2)
       addRow(ROW_LOCK_WEATHER);
 #endif
+#if defined(MECK_TRANSIT) && MECK_TRANSIT && defined(MECK_UI_V2)
+      addRow(ROW_LOCK_TRANSIT);
+      if (_prefs->lock_transit) {
+        addRow(ROW_LOCK_TRANSIT_SIZE);
+        addRow(ROW_LOCK_TRANSIT_MIN);
+      }
+#endif
 #if defined(LilyGo_TDeck_Pro)
     } else if (_subScreen == SUB_SOS) {
       // --- SOS sub-screen: the button, then every channel ---
@@ -687,6 +699,9 @@ private:
   #endif
   #if defined(MECK_WEATHER) && MECK_WEATHER
       addRow(ROW_DATA_APP, DATA_APP_WEATHER);
+  #endif
+  #if defined(MECK_TRANSIT) && MECK_TRANSIT
+      addRow(ROW_DATA_APP, DATA_APP_TRANSIT);
   #endif
       addRow(ROW_DATA_OTHER);
       addRow(ROW_DATA_TOTAL);
@@ -811,6 +826,7 @@ private:
       case DATA_APP_IRC:     return MECK_TR("IRC chat", "Chat IRC");
       case DATA_APP_HA:      return "Home Assistant";
       case DATA_APP_WEATHER: return MECK_TR("Weather", "MÃ©tÃ©o");
+      case DATA_APP_TRANSIT: return MECK_TR("Departures", "D\xC3\xA9parts");
       default:               return MECK_TR("Other", "Autre");
     }
   }
@@ -3066,6 +3082,27 @@ public:
       case ROW_LOCK_WEATHER:
         snprintf(tmp, sizeof(tmp), MECK_TR("Weather on lock screen: %s", "M\xC3\xA9t\xC3\xA9o \xC3\xA0 l'\xC3\xA9" "cran verrouill\xC3\xA9 : %s"),
                  _prefs->lock_weather ? MECK_TR("ON", "OUI") : MECK_TR("OFF", "NON"));
+        display.print(tmp);
+        break;
+#endif
+#if defined(MECK_TRANSIT) && MECK_TRANSIT && defined(MECK_UI_V2)
+      case ROW_LOCK_TRANSIT:
+        snprintf(tmp, sizeof(tmp), MECK_TR("Departures on lock screen: %s", "D\xC3\xA9parts \xC3\xA0 l'\xC3\xA9" "cran verrouill\xC3\xA9 : %s"),
+                 _prefs->lock_transit ? MECK_TR("ON", "OUI") : MECK_TR("OFF", "NON"));
+        display.print(tmp);
+        break;
+      case ROW_LOCK_TRANSIT_SIZE: {
+        static const char* const kSize[] = { "S", "M", "L" };
+        uint8_t r = _prefs->lock_transit_rows;
+        if (r < 2 || r > 4) r = 3;
+        snprintf(tmp, sizeof(tmp), MECK_TR("  Departures size: %s (%d rows)", "  Taille des d\xC3\xA9parts : %s (%d lignes)"),
+                 kSize[r - 2], r);
+        display.print(tmp);
+        break;
+      }
+      case ROW_LOCK_TRANSIT_MIN:
+        snprintf(tmp, sizeof(tmp), MECK_TR("  Minutes to departure: %s", "  Minutes avant le d\xC3\xA9part : %s"),
+                 _prefs->lock_transit_countdown ? MECK_TR("ON", "OUI") : MECK_TR("OFF", "NON"));
         display.print(tmp);
         break;
 #endif
@@ -5618,6 +5655,34 @@ public:
           the_mesh.savePrefs();
           meckWeatherChanged();
           Serial.printf("Settings: weather on lock screen = %s\n", _prefs->lock_weather ? "ON" : "OFF");
+          break;
+        }
+#endif
+#if defined(MECK_TRANSIT) && MECK_TRANSIT && defined(MECK_UI_V2)
+        case ROW_LOCK_TRANSIT: {
+          extern void meckTransitChanged();
+          _prefs->lock_transit = _prefs->lock_transit ? 0 : 1;
+          the_mesh.savePrefs();
+          rebuildRows();   // the size row comes and goes with it
+          meckTransitChanged();
+          Serial.printf("Settings: departures on lock screen = %s\n", _prefs->lock_transit ? "ON" : "OFF");
+          break;
+        }
+        case ROW_LOCK_TRANSIT_SIZE: {
+          extern void meckTransitChanged();
+          uint8_t r = _prefs->lock_transit_rows;
+          _prefs->lock_transit_rows = (r >= 2 && r < 4) ? r + 1 : 2;
+          the_mesh.savePrefs();
+          meckTransitChanged();
+          Serial.printf("Settings: departures size = %d rows\n", _prefs->lock_transit_rows);
+          break;
+        }
+        case ROW_LOCK_TRANSIT_MIN: {
+          extern void meckTransitChanged();
+          _prefs->lock_transit_countdown = _prefs->lock_transit_countdown ? 0 : 1;
+          the_mesh.savePrefs();
+          meckTransitChanged();
+          Serial.printf("Settings: minutes to departure = %s\n", _prefs->lock_transit_countdown ? "ON" : "OFF");
           break;
         }
 #endif

@@ -191,6 +191,14 @@
   void meckWeatherTick();
   #endif
 
+  #if defined(MECK_TRANSIT) && MECK_TRANSIT
+  // Departures from a Neujede server on the lock screen (docs/transit-widget.md)
+  #include "MeckTransit.h"
+  #include "LockTransitWidget.h"
+  void meckTransitSetup();
+  void meckTransitTick();
+  #endif
+
   // SD-backed persistence state
   static bool sdCardReady = false;
 
@@ -3589,6 +3597,9 @@ void setup() {
 #if defined(MECK_WEATHER) && MECK_WEATHER
   meckWeather.begin();
 #endif
+#if defined(MECK_TRANSIT) && MECK_TRANSIT
+  meckTransitSetup();
+#endif
 
   // ---------------------------------------------------------------------------
   // OTA boot validation — confirm new firmware is working after an OTA update.
@@ -5646,6 +5657,9 @@ void loop() {
   meckPositionTick();      // GPS, cell and advert position for the apps
   #if defined(MECK_WEATHER) && MECK_WEATHER
   meckWeatherTick();       // lock screen weather: requests, and its state before the minute redraw
+  #endif
+  #if defined(MECK_TRANSIT) && MECK_TRANSIT
+  meckTransitTick();       // lock screen departures: requests while locked, redraw on a new board
   #endif
   #ifdef MECK_OTA_UPDATE
   if (!otaRadioPaused) {
@@ -9488,6 +9502,84 @@ void meckWeatherChanged() {
 void meckWeatherCmd(const char* arg) {
   meckWeather.cmd(arg, rtc_clock.getCurrentTime(), (int32_t)the_mesh.getNodePrefs()->utc_offset_hours * 3600);
   meckWeatherDirty = true;
+}
+#endif
+
+#if defined(MECK_TRANSIT) && MECK_TRANSIT
+// Departures on the lock screen (Settings > Experimental, docs/transit-widget.md)
+#ifdef MECK_UI_V2
+static LockTransitWidget meckTransitWidget;
+#endif
+static bool meckTransitDirty = true;
+
+void meckTransitSetup() {
+  meckTransit.begin();
+#ifdef MECK_UI_V2
+  NodePrefs* p = the_mesh.getNodePrefs();
+  meckTransitWidget.enabled = &p->lock_transit;
+  meckTransitWidget.size = &p->lock_transit_rows;
+  meckTransitWidget.countdown = &p->lock_transit_countdown;
+  meckTransitWidget.utcHours = &p->utc_offset_hours;
+  ui_task.addLockWidget(&meckTransitWidget);   // after the agenda: under it
+#endif
+}
+
+void meckTransitTick() {
+#ifdef MECK_UI_V2
+  NodePrefs* p = the_mesh.getNodePrefs();
+  const uint32_t now = rtc_clock.getCurrentTime();
+  const int32_t off = (int32_t)p->utc_offset_hours * 3600;
+  const bool on = p->lock_transit != 0;
+  // The position from a GPS that is on anyway (a fix of the last few
+  // minutes), else from the joined WiFi network's learned location; GPS is
+  // never switched on for this, and the cell or the advert position is not
+  // sent: the server falls back to its own idea of where the user is
+  double lat = 0, lon = 0;
+  bool pos = false;
+  for (PosSource s : { POS_SRC_GPS, POS_SRC_WIFI }) {
+    if (!on || pos || !meckPosition.has(s)) continue;
+    const MeckFix& f = meckPosition.fix(s);
+    if (posClassOf(meckPosition.radiusNow(f, meckPosNow())) <= POS_LOCAL) {
+      lat = f.lat;
+      lon = f.lon;
+      pos = true;
+    }
+  }
+  meckTransit.setShownRows(meckTransitWidget.shownRows());
+  meckTransit.loop(on, ui_task.isLocked(), meckTransitWidget.requestRows(), pos, lat, lon, now, off);
+  // Redraw now when the board changes, or the widget's state does (stale
+  // mark, empty) - checked once a minute, before the minute redraw
+  static uint32_t lastVer = 0, lastMin = 0;
+  static TrView shown = {};
+  if (!meckTransitDirty && meckTransit.version() == lastVer && now / 60 == lastMin) return;
+  const bool changed = meckTransitDirty || meckTransit.version() != lastVer;
+  meckTransitDirty = false;
+  lastVer = meckTransit.version();
+  lastMin = now / 60;
+  TrView v = meckTransitWidget.view(now);
+  if (!changed && trViewEqual(v, shown)) return;
+  shown = v;
+  ui_task.lockContentChanged();
+#endif
+}
+
+// Settings: the switch or the size changed
+void meckTransitChanged() {
+  meckTransitDirty = true;
+  if (the_mesh.getNodePrefs()->lock_transit) meckTransit.fetchSoon();
+}
+
+void meckTransitCmd(const char* arg) {
+  meckTransit.cmd(arg, rtc_clock.getCurrentTime(), (int32_t)the_mesh.getNodePrefs()->utc_offset_hours * 3600);
+  meckTransitDirty = true;
+}
+
+// Serial settings "get transit", "set transit.url", "set transit.token"
+void meckTransitConfig(const char* key, const char* val) {
+  if (!key) { meckTransit.printConfig(); return; }
+  bool ok = strcmp(key, "url") == 0 ? meckTransit.setUrl(val) : meckTransit.setToken(val);
+  Serial.printf("  > %s\n", ok ? "OK" : "Error: too long or not http(s)");
+  meckTransitDirty = true;
 }
 #endif
 
