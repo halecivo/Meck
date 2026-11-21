@@ -939,6 +939,11 @@ static uint32_t _atoi(const char* sp) {
   #include "UITask.h"
   #if   HAS_GPS
     #include "MapScreen.h"  // After BLE -- PNGdec headers conflict with BLE if included earlier
+    #ifdef MECK_UI_V2
+      #include "LockMapWidget.h"   // the map on the lock screen (docs/lock-map.md)
+      void meckLockMapSetup();
+      void meckLockMapTick();
+    #endif
   #endif
   #ifdef MECK_QUICK_SETTINGS
     #include "QuickSettingsScreen.h"
@@ -3600,6 +3605,9 @@ void setup() {
 #if defined(MECK_TRANSIT) && MECK_TRANSIT
   meckTransitSetup();
 #endif
+#if defined(MECK_UI_V2) && HAS_GPS
+  meckLockMapSetup();
+#endif
 
   // ---------------------------------------------------------------------------
   // OTA boot validation — confirm new firmware is working after an OTA update.
@@ -5660,6 +5668,9 @@ void loop() {
   #endif
   #if defined(MECK_TRANSIT) && MECK_TRANSIT
   meckTransitTick();       // lock screen departures: requests while locked, redraw on a new board
+  #endif
+  #if defined(MECK_UI_V2) && HAS_GPS
+  meckLockMapTick();       // lock screen map: is there a fresh fix and tiles under it
   #endif
   #ifdef MECK_OTA_UPDATE
   if (!otaRadioPaused) {
@@ -9583,6 +9594,80 @@ void meckTransitConfig(const char* key, const char* val) {
 }
 #endif
 
+#if defined(MECK_UI_V2) && HAS_GPS
+// The map on the lock screen (Settings > Experimental, docs/lock-map.md). It
+// shows while GPS is on and its fix is a recent one: the same window the
+// departures use for the position they send (a FINE fix aged into LOCAL, a
+// couple of minutes), so what keeps the position fresh for one keeps it for
+// the other, and nothing here switches the GPS on. Without a tile under the
+// position the widget stays out, rather than a blank map.
+static LockMapWidget meckLockMapWidget;
+static bool meckLockMapDirty = true;
+static bool meckLockMapDemo = false;      // debug CLI: a position without a GPS fix
+static double meckLockMapDemoLat = 0, meckLockMapDemoLon = 0;
+
+void meckLockMapSetup() {
+  meckLockMapWidget.map = (MapScreen*)ui_task.getMapScreen();
+  meckLockMapWidget.boost = [] { cpuPower.setBoost(); };
+  ui_task.addLockWidget(&meckLockMapWidget);   // fills the lock screen: order does not matter
+}
+
+void meckLockMapTick() {
+  static bool wasLocked = false;
+  static unsigned long checkedAt = 0;
+  const bool locked = ui_task.isLocked();
+  if (!locked) { wasLocked = false; return; }
+  // Once on locking, then every 5 s: a few SD lookups, not for every loop pass
+  if (wasLocked && !meckLockMapDirty && millis() - checkedAt < 5000) return;
+  wasLocked = true;
+  checkedAt = millis();
+  meckLockMapDirty = false;
+  NodePrefs* p = the_mesh.getNodePrefs();
+  bool vis = false;
+  if (meckLockMapDemo && sdCardReady && meckLockMapWidget.map) {
+    meckLockMapWidget.map->setSDReady(true);
+    if (meckLockMapWidget.map->hasTileAt(meckLockMapDemoLat, meckLockMapDemoLon)) {
+      meckLockMapWidget.lat = meckLockMapDemoLat;
+      meckLockMapWidget.lon = meckLockMapDemoLon;
+      vis = true;
+    }
+  } else if (p->lock_map && p->gps_enabled && sdCardReady && meckLockMapWidget.map && meckPosition.has(POS_SRC_GPS)) {
+    const MeckFix& f = meckPosition.fix(POS_SRC_GPS);
+    if (posClassOf(meckPosition.radiusNow(f, meckPosNow())) <= POS_LOCAL) {
+      meckLockMapWidget.map->setSDReady(true);
+      if (meckLockMapWidget.map->hasTileAt(f.lat, f.lon)) {
+        meckLockMapWidget.lat = f.lat;   // drawn at the next redraw (the minute)
+        meckLockMapWidget.lon = f.lon;
+        vis = true;
+      }
+    }
+  }
+  if (vis != meckLockMapWidget.visible) {
+    meckLockMapWidget.visible = vis;
+    ui_task.lockContentChanged();
+  }
+}
+
+// Settings: the switch changed
+void meckLockMapChanged() { meckLockMapDirty = true; }
+
+// Debug CLI "lockmap [demo [lat lon]|off]": show the map on the lock screen
+// without a GPS fix, at the advert position or the given one
+void meckLockMapCmd(const char* arg) {
+  if (strncmp(arg, "demo", 4) == 0) {
+    double la = sensors.node_lat, lo = sensors.node_lon;
+    if (sscanf(arg + 4, "%lf %lf", &la, &lo) != 2) { la = sensors.node_lat; lo = sensors.node_lon; }
+    meckLockMapDemoLat = la;
+    meckLockMapDemoLon = lo;
+    meckLockMapDemo = true;
+  } else if (strcmp(arg, "off") == 0) {
+    meckLockMapDemo = false;
+  }
+  meckLockMapDirty = true;
+  Serial.printf("lockmap: demo %s, visible %d\n", meckLockMapDemo ? "on" : "off", (int)meckLockMapWidget.visible);
+}
+#endif
+
 // SOS channels (Settings > SOS) are kept by the start of the channel's
 // secret: its slot changes when an earlier channel is deleted
 static int meckSosChannelEntry(uint8_t ch) {
@@ -9966,8 +10051,21 @@ struct MeckLockDemoBlock : Ui2LockWidget {
 };
 static MeckLockDemoBlock meckLockDemo[3];
 
+extern uint8_t meckLockDemoNotif[3];
+
 void meckLockDemoCmd(const char* arg) {
   Ui2LockWeather w;
+  if (memcmp(arg, "notif", 5) == 0) {
+    // "notif <messages> <sms> <missed>": made-up counts; "notif" alone clears
+    int m = 0, s = 0, c = 0;
+    sscanf(arg + 5, "%d %d %d", &m, &s, &c);
+    meckLockDemoNotif[0] = (uint8_t)constrain(m, 0, 255);
+    meckLockDemoNotif[1] = (uint8_t)constrain(s, 0, 255);
+    meckLockDemoNotif[2] = (uint8_t)constrain(c, 0, 255);
+    ui_task.lockContentChanged();
+    Serial.printf("lockdemo: notif %d %d %d\n", m, s, c);
+    return;
+  }
   if (strcmp(arg, "weather") == 0) {
     w.valid = true; w.icon = UI2_IC_SUN; w.tempC = 4;
     ui_task.setLockWeather(w);
@@ -9997,12 +10095,13 @@ void meckLockDemoCmd(const char* arg) {
     return;
   } else if (strcmp(arg, "off") == 0) {
     ui_task.setLockWeather(w);
+    memset(meckLockDemoNotif, 0, sizeof(meckLockDemoNotif));
     for (auto& b : meckLockDemo) {
       if (b.h) ui_task.removeLockWidget(&b);
       b.h = 0;
     }
   } else {
-    Serial.println("lockdemo weather|rain|raining|block <h> [prio]|off");
+    Serial.println("lockdemo weather|rain|raining|notif <m> <sms> <missed>|block <h> [prio]|off");
     return;
   }
   Serial.printf("lockdemo: %s\n", arg);
