@@ -10093,7 +10093,12 @@ void meckLockDemoCmd(const char* arg) {
     }
     Serial.println("lockdemo: no free demo block");
     return;
+  } else if (strcmp(arg, "switchedoff") == 0) {
+    // The last frame the lock screen draws when the battery runs out: nothing
+    // is switched off, "lockdemo off" puts the normal lock screen back
+    ui_task.drawSwitchedOffLock();
   } else if (strcmp(arg, "off") == 0) {
+    ui_task.clearSwitchedOffLock();
     ui_task.setLockWeather(w);
     memset(meckLockDemoNotif, 0, sizeof(meckLockDemoNotif));
     for (auto& b : meckLockDemo) {
@@ -10101,7 +10106,7 @@ void meckLockDemoCmd(const char* arg) {
       b.h = 0;
     }
   } else {
-    Serial.println("lockdemo weather|rain|raining|notif <m> <sms> <missed>|block <h> [prio]|off");
+    Serial.println("lockdemo weather|rain|raining|notif <m> <sms> <missed>|block <h> [prio]|switchedoff|off");
     return;
   }
   Serial.printf("lockdemo: %s\n", arg);

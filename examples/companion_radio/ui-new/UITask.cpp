@@ -2386,7 +2386,7 @@ private:
   // Status line: why the deck sleeps or not, the estimate, battery and %
   void drawStatusLine(Ui2Canvas& c) {
     if (_offAt) {   // an empty battery and what to do about it
-      const char* msg = MECK_TR("Battery empty Â· charge to turn on", "Batterie vide Â· chargez pour rallumer");
+      const char* msg = MECK_TR("Battery empty · charge to turn on", "Batterie vide · chargez pour rallumer");
       const int16_t maxW = ui2::SCREEN_W - 2 * ui2::PAD - 20 - 6;
       int16_t tw = Ui2Canvas::textWidth(msg, UI2_F_META);
       if (tw > maxW) tw = maxW;
@@ -3952,6 +3952,12 @@ void UITask::drawSwitchedOffLock() {
   ui2FrameHasChrome = false;
   ls->renderV2(*_display);
   _display->endFrame();
+}
+
+void UITask::clearSwitchedOffLock() {
+  ((LockScreen*)lock_screen)->setSwitchedOff(0);
+  ui2LockSwitchedOff() = false;
+  lockContentChanged();
 }
 
 #endif

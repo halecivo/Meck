@@ -354,6 +354,8 @@ public:
   // The battery ran out: draw the lock screen as the last frame before the
   // switch-off (Lock design P1-P5), from whatever screen the deck is on
   void drawSwitchedOffLock();
+  // Debug CLI only: back to the normal lock screen after drawSwitchedOffLock()
+  void clearSwitchedOffLock();
 #endif
   // SOS screen (docs/sos.md). gotoSosScreen() opens it with nothing selected.
   void gotoSosScreen();
