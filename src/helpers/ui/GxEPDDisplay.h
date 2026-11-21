@@ -243,6 +243,9 @@ public:
   // emulator requests one when a game quits and periodically during play.
   void requestFullRefresh() { _fullNext = true; }
 
+  // Called over and over while the panel draws, instead of delay(1)
+  void setBusyWait(void (*wait)(const void*)) { display.epd2.setBusyCallback(wait); }
+
   // Panel refreshes pushed so far (full, window and partial), for the
   // power log. Frames whose content did not change are not counted.
   uint32_t refreshCount() const { return _refreshCount; }
