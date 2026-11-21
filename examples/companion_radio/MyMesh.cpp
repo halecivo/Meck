@@ -1821,6 +1821,7 @@ MyMesh::MyMesh(mesh::Radio &radio, mesh::RNG &rng, mesh::RTCClock &rtc, SimpleMe
   _prefs.lock_transit_countdown = 1;   // minutes to go, not clock times
   _prefs.lock_map = 0;         // no map on the lock screen until switched on
   _prefs.lock_date_compact = 0;   // the date as a line under the clock
+  _prefs.lock_off_clear = 0;      // the lock screen's content stays when the battery runs out
   _prefs.multi_acks = 1;      // redundant ACKs on by default
   strcpy(_prefs.node_name, "NONAME");
   _prefs.freq = LORA_FREQ;

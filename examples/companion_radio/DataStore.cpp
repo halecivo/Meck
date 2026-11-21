@@ -345,6 +345,9 @@ void DataStore::loadPrefsInt(const char *filename, NodePrefs& _prefs, double& no
     if (file.read((uint8_t *)&_prefs.lock_date_compact, sizeof(_prefs.lock_date_compact)) != sizeof(_prefs.lock_date_compact)) {
       _prefs.lock_date_compact = 0;  // default: the date as a line
     }
+    if (file.read((uint8_t *)&_prefs.lock_off_clear, sizeof(_prefs.lock_off_clear)) != sizeof(_prefs.lock_off_clear)) {
+      _prefs.lock_off_clear = 0;  // default: the content stays when the battery runs out
+    }
 
     // Clamp to valid ranges
     if (_prefs.dark_mode > 1) _prefs.dark_mode = 0;
@@ -378,6 +381,7 @@ void DataStore::loadPrefsInt(const char *filename, NodePrefs& _prefs, double& no
     if (_prefs.lock_transit_countdown > 1) _prefs.lock_transit_countdown = 1;
     if (_prefs.lock_map > 1) _prefs.lock_map = 0;
     if (_prefs.lock_date_compact > 1) _prefs.lock_date_compact = 0;
+    if (_prefs.lock_off_clear > 1) _prefs.lock_off_clear = 0;
     // Force NUL termination on each canned message slot in case of garbage
     for (int i = 0; i < (int)(sizeof(_prefs.canned_msgs) / sizeof(_prefs.canned_msgs[0])); i++) {
       _prefs.canned_msgs[i][sizeof(_prefs.canned_msgs[0]) - 1] = '\0';
@@ -466,6 +470,7 @@ void DataStore::savePrefs(const NodePrefs& _prefs, double node_lat, double node_
     file.write((uint8_t *)&_prefs.lock_transit_countdown, sizeof(_prefs.lock_transit_countdown));  // 1600
     file.write((uint8_t *)&_prefs.lock_map, sizeof(_prefs.lock_map));                          // 1601
     file.write((uint8_t *)&_prefs.lock_date_compact, sizeof(_prefs.lock_date_compact));        // 1602
+    file.write((uint8_t *)&_prefs.lock_off_clear, sizeof(_prefs.lock_off_clear));              // 1603
 
     file.close();
   }

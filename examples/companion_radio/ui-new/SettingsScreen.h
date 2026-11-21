@@ -311,6 +311,7 @@ enum SettingsRowType : uint8_t {
   ROW_LOCK_TRANSIT_MIN, // Toggle: minutes to go instead of clock times
 #endif
 #if defined(MECK_UI_V2) && HAS_GPS
+  ROW_LOCK_OFF_CLEAR,   // Toggle: leave widgets, weather and notifications off the frame kept when the battery runs out
   ROW_LOCK_MAP,         // Toggle: the map on the lock screen while there is a fresh GPS fix
 #endif
 #ifdef MECK_UI_V2
@@ -693,6 +694,7 @@ private:
   #if HAS_GPS
       addRow(ROW_LOCK_MAP);
   #endif
+      addRow(ROW_LOCK_OFF_CLEAR);
 #endif
 #if defined(LilyGo_TDeck_Pro)
     } else if (_subScreen == SUB_SOS) {
@@ -3133,6 +3135,13 @@ public:
       case ROW_LOCK_TRANSIT_MIN:
         snprintf(tmp, sizeof(tmp), MECK_TR("  Minutes to departure: %s", "  Minutes avant le d\xC3\xA9part : %s"),
                  _prefs->lock_transit_countdown ? MECK_TR("ON", "OUI") : MECK_TR("OFF", "NON"));
+        display.print(tmp);
+        break;
+#endif
+#ifdef MECK_UI_V2
+      case ROW_LOCK_OFF_CLEAR:
+        snprintf(tmp, sizeof(tmp), MECK_TR("Clear when empty: %s", "Effacer si vide : %s"),
+                 _prefs->lock_off_clear ? MECK_TR("ON", "OUI") : MECK_TR("OFF", "NON"));
         display.print(tmp);
         break;
 #endif
@@ -5738,6 +5747,13 @@ public:
           Serial.printf("Settings: minutes to departure = %s\n", _prefs->lock_transit_countdown ? "ON" : "OFF");
           break;
         }
+#endif
+#ifdef MECK_UI_V2
+        case ROW_LOCK_OFF_CLEAR:
+          _prefs->lock_off_clear = _prefs->lock_off_clear ? 0 : 1;
+          the_mesh.savePrefs();
+          Serial.printf("Settings: clear lock screen content when empty = %s\n", _prefs->lock_off_clear ? "ON" : "OFF");
+          break;
 #endif
 #if defined(MECK_UI_V2) && HAS_GPS
         case ROW_LOCK_MAP: {

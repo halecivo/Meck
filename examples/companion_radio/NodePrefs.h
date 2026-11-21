@@ -212,6 +212,12 @@ struct NodePrefs {  // persisted to file
   // Older prefs files short-read it and keep 0 (off).
   uint8_t lock_date_compact;       // default 0
 
+  // Lock screen (UI v2): when the battery runs out, the last frame (which
+  // e-ink keeps with no power, out of reach until the deck is charged) leaves
+  // out the widgets, weather and notification counts. Older prefs files
+  // short-read it and keep 0 (the content stays).
+  uint8_t lock_off_clear;          // default 0
+
   // --- Font helpers (inline, no overhead) ---
   // Returns the DisplayDriver text-size index for "small/body" text.
   // T-Deck Pro: 0 = built-in 6×8 (or 7pt with custom fonts), 1 = 9pt.

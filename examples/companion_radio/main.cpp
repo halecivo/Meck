@@ -10093,10 +10093,12 @@ void meckLockDemoCmd(const char* arg) {
     }
     Serial.println("lockdemo: no free demo block");
     return;
-  } else if (strcmp(arg, "switchedoff") == 0) {
+  } else if (memcmp(arg, "switchedoff", 11) == 0) {
     // The last frame the lock screen draws when the battery runs out: nothing
-    // is switched off, "lockdemo off" puts the normal lock screen back
-    ui_task.drawSwitchedOffLock();
+    // is switched off, "lockdemo off" puts the normal lock screen back.
+    // "switchedoff clear" draws it as with Settings > Lock screen > Clear
+    // when empty, whatever the setting is.
+    ui_task.drawSwitchedOffLock(strstr(arg + 11, "clear") != nullptr);
   } else if (strcmp(arg, "off") == 0) {
     ui_task.clearSwitchedOffLock();
     ui_task.setLockWeather(w);

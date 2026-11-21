@@ -2248,6 +2248,7 @@ class LockScreen : public UIScreen {
   // The battery has run out: RTC time of the switch-off while the last frame
   // is drawn (Lock design P1-P5), else 0
   uint32_t _offAt = 0;
+  bool _offForceClear = false;   // debug CLI: "Clear when empty" for one frame
 #endif
 
 public:
@@ -2269,7 +2270,7 @@ public:
     while (j < UI2_LOCK_MAX_WIDGETS) _widgets[j++] = nullptr;
   }
   void setWeather(const Ui2LockWeather& w) { _weather = w; }
-  void setSwitchedOff(uint32_t at) { _offAt = at; }
+  void setSwitchedOff(uint32_t at, bool forceClear = false) { _offAt = at; _offForceClear = forceClear && at; }
 
 private:
   // Layout of the UI v2 lock screen (docs/lock-screen.md), 240 x 320:
@@ -2492,13 +2493,18 @@ private:
   }
 
   int16_t clockH() const { return _offAt ? OFF_SYMBOL : CLOCK_H; }
+  // Switched off with "Clear when empty" (Settings > Lock screen): the frame e-ink
+  // keeps cannot be changed until the deck is charged, so what is personal
+  // stays off it: widgets, weather and notification counts
+  bool clearWhenOff() const { return _offAt && (_node_prefs->lock_off_clear || _offForceClear); }
+  bool weatherShown() const { return _weather.valid && !clearWhenOff(); }
   // The clock's width, or the switched-off symbol's
   int16_t clockW(const char* timeBuf) const {
     return _offAt ? OFF_SYMBOL : Ui2Canvas::textWidth(timeBuf, UI2_F_NUM40);
   }
 
   int16_t heroHeight() {
-    if (!_weather.valid) return clockH();
+    if (!weatherShown()) return clockH();
     char rain[8];
     int16_t colH = 32 + (rainLine(rain, sizeof(rain)) ? 2 + 12 : 0);
     return colH > clockH() ? colH : clockH();
@@ -2510,7 +2516,7 @@ private:
     const int16_t cw = clockW(timeBuf);
     int16_t gw = 0;
     char rain[8];
-    if (_weather.valid) {
+    if (weatherShown()) {
       int16_t rw = rainLine(rain, sizeof(rain));
       gw = rw > 32 ? rw : 32;
     }
@@ -2537,7 +2543,7 @@ private:
     const int16_t cw = clockW(timeBuf);
     int16_t gw = 0, rw = 0;
     char rain[8];
-    if (_weather.valid) {
+    if (weatherShown()) {
       rw = rainLine(rain, sizeof(rain));
       gw = rw > 32 ? rw : 32;
     }
@@ -2592,7 +2598,7 @@ public:
 
     // Top group: clock (+ weather), date, notifications
     Notif nf[3];
-    const int nk = collectNotifs(nf);
+    const int nk = clearWhenOff() ? 0 : collectNotifs(nf);
     const int16_t heroH = heroHeight();
     // Compact date (Settings > Lock screen): a calendar tile right of the
     // clock (and the weather) in the same row, so the date line goes and the
@@ -2612,7 +2618,7 @@ public:
     const int16_t ww = SCREEN_W - 2 * PAD;
     int16_t stackH = 0;     // widgets and the gaps between them
     for (int i = 0; i < UI2_LOCK_MAX_WIDGETS && _widgets[i]; i++) {
-      wh[i] = _widgets[i]->height(ww, now);
+      wh[i] = clearWhenOff() ? 0 : _widgets[i]->height(ww, now);
       if (wh[i] < 0) wh[i] = 0;
       if (wh[i]) stackH += (stackH ? WIDGET_GAP : 0) + wh[i];
     }
@@ -3940,11 +3946,11 @@ void UITask::setLockWeather(const Ui2LockWeather& w) {
 }
 
 #if defined(MECK_UI_V2) && defined(LilyGo_TDeck_Pro)
-void UITask::drawSwitchedOffLock() {
+void UITask::drawSwitchedOffLock(bool forceClear) {
   if (_display == NULL) return;
   if (!_display->isOn()) _display->turnOn();
   LockScreen* ls = (LockScreen*)lock_screen;
-  ls->setSwitchedOff(rtc_clock.getCurrentTime());
+  ls->setSwitchedOff(rtc_clock.getCurrentTime(), forceClear);
   // One whole frame: a partial refresh would leave the previous screen's
   // ghost in what e-ink keeps with no power
   static_cast<GxEPDDisplay*>(_display)->requestFullRefresh();
